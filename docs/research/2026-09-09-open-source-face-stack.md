@@ -4,9 +4,20 @@ Date checked: 2026-09-09
 
 This note records candidate evidence, not a final dependency approval. Re-check exact versions, artifacts, hashes, license files, and upstream status before downloading or distributing models.
 
-## Leading Candidate: OpenCV + YuNet + SFace
+## Selected Runtime Direction: ONNX Runtime
 
-OpenCV is Apache-2.0 licensed, has Python and C++ interfaces, and officially documents desktop and mobile platform support. This makes Python suitable for a macOS prototype while leaving a path to a C++ core or thin native wrappers later.
+The approved architecture is ONNX-first. Phase 1 uses Python and ONNX Runtime on macOS; later Android and iOS clients use ONNX Runtime Mobile with the same model artifacts and explicit preprocessing/postprocessing contracts.
+
+- [ONNX Runtime Mobile overview](https://onnxruntime.ai/docs/get-started/with-mobile.html)
+- [Mobile deployment and platform packages](https://onnxruntime.ai/docs/tutorials/mobile/)
+- [Model usability checker for ORT Mobile, NNAPI, and Core ML](https://onnxruntime.ai/docs/tutorials/mobile/helpers/model-usability-checker.html)
+- [Custom/minimal runtime builds](https://onnxruntime.ai/docs/build/custom.html)
+
+ONNX Runtime is the runtime decision, not the recognition-model decision. Candidate artifacts still require separate licensing, provenance, accuracy, operator-support, footprint, and real-device checks.
+
+## Candidate Model Stack: OpenCV YuNet + SFace
+
+OpenCV is Apache-2.0 licensed, has Python and C++ interfaces, and officially documents desktop and mobile platform support. YuNet and SFace remain bake-off candidates, but the approved architecture does not require OpenCV as the inference runtime.
 
 - [OpenCV platform support](https://opencv.org/platforms/)
 - [OpenCV licensing and language overview](https://opencv.org/about/)
@@ -84,6 +95,7 @@ For every candidate detector and embedding artifact:
 3. Store code license and weight license separately.
 4. Record whether commercial use, modification, and redistribution are explicit.
 5. Record known training datasets and unresolved provenance.
-6. Test that macOS Python and the intended future C++/mobile runtime produce compatible normalized embeddings within a defined tolerance.
-7. Benchmark target-person recall, false-match behavior, small faces, profiles, occlusion, lighting, and age variation on consented fixtures.
-8. Reject any candidate that cannot pass the license, provenance, portability, and accuracy gates without an explicit operator decision.
+6. Run the ONNX Runtime Mobile usability checker and record unsupported operators, fallback, dynamic-shape issues, and accelerator recommendations.
+7. Test that macOS and future mobile runtimes produce compatible normalized embeddings within a defined tolerance.
+8. Benchmark one-shot target recall, false acceptance, small faces, profiles, occlusion, lighting, accessories, and age variation on consented fixtures.
+9. Reject any candidate that cannot pass the license, provenance, portability, and accuracy gates without an explicit operator decision.

@@ -1,254 +1,319 @@
 # Portable Face Core Design
 
-- Status: draft for operator review
+- Status: section-approved; consolidated document pending final operator review
 - Date: 2026-09-09
-- Scope: reusable face-processing core; no photo manager and no complete attendance application
+- Scope: macOS reference implementation for a future offline Android/iOS open-set face-identification core
 
 ## 1. Purpose
 
-Portable Face Core turns images or video frames into versioned face templates and similarity decisions that different local applications can consume. The first prototype runs on the operator's Mac and demonstrates enrollment, verification, and identification using consented images. The architecture must leave a credible path to Windows, Android, and iOS without requiring compatible applications to adopt Python or a particular database.
+Portable Face Core provides local face detection, alignment, embedding, and open-set 1:N identification for applications such as tablet check-in. The final product target is an Android or iOS tablet with no more than about 500 enrolled identities. It must identify locally without network access and return associated identity data only when confidence and quality are sufficient.
 
-The core is a similarity system, not an authority that proves legal identity. Applications retain responsibility for consent, policy, thresholds, human review, and consequences.
+Phase 1 is a macOS CLI reference prototype using static images. It proves one-shot enrollment, single-face identification, structured results, guarded adaptive updates, model selection, storage behavior, and failure handling. It does not claim secure authentication because it has no trusted camera, liveness, or replay protection.
 
-## 2. Goals
+## 2. Product Requirements
 
-- Provide a stable detect → align → embed → compare pipeline.
-- Enroll and update multiple identities from high-quality reference samples.
-- Support one-to-one verification and one-to-many identification.
-- Return similarity scores, quality signals, model version, and three decision bands.
-- Persist templates behind a replaceable repository interface.
-- Keep model and platform implementations replaceable.
-- Operate locally without cloud face APIs or biometric telemetry.
-- Use code and distributed artifacts compatible with commercial use and redistribution.
-- Make behavior measurable with repeatable calibration and regression datasets.
+- Registration is one capture action and one accepted still photo per person.
+- The user does not claim an identity first; the system performs open-set 1:N identification.
+- False acceptance is more serious than false rejection. Uncertain inputs return `review` or `unknown`, not a guessed name.
+- A successful result can include opaque identity ID, display name, and application metadata.
+- Repeated, trustworthy observations add useful templates over time instead of overwriting the previous face.
+- Children aging, hairstyle, eyewear, hats, pose, lighting, and background variation are explicit evaluation conditions.
+- Masked or seriously occluded faces may be rejected; mask recognition is not a Phase-one success requirement.
+- All inference must work on-device and offline.
+- Final capacity is no more than about 500 identities.
+- Code, libraries, and distributed model artifacts must permit commercial use and redistribution.
+- Real biometric data stays out of Git and is not sent to cloud face APIs or telemetry.
 
-## 3. Non-Goals for the First Implementation
+## 3. Phase-One Scope
 
-- Photo-library indexing, browsing, thumbnails, tags, albums, or Google Photos synchronization.
-- Copying school photos into permanent classification folders.
-- Training a foundation face-recognition neural network.
-- Automatic identity discovery from unlabeled group photos.
-- Production attendance, payroll, access control, surveillance, or authentication.
-- Liveness/anti-spoofing, although future interfaces must allow an application to add it before attendance decisions.
-- A GUI, server, camera loop, mobile application, or distributed vector database unless separately approved in the implementation plan.
+Phase 1 includes:
 
-## 4. Terminology
+- one shell entrypoint wrapping a macOS CLI;
+- static-image input only;
+- one real enrolled identity for the initial demonstration;
+- consented non-target faces as unknown/negative probes;
+- exactly one usable face in every enrollment and probe image;
+- one-shot enrollment from one image;
+- ONNX Runtime inference;
+- exact comparison, a versioned JSON result, and a human-readable summary;
+- shadow candidates, guarded promotion, bounded active templates, retirement, and rollback;
+- two to three compliant model candidates evaluated under the same protocol;
+- synthetic embeddings for the 500-identity capacity path;
+- encrypted exemplar/template storage through a replaceable repository interface.
 
-- **Detection:** locate zero or more faces and landmarks in an image.
-- **Alignment:** normalize a detected face using landmarks before embedding.
-- **Embedding/template:** a numerical vector representing similarity-relevant facial features. It is sensitive biometric data.
-- **Enrollment:** validate reference samples, create embeddings, and attach them to an identity. It is not foundation-model training.
-- **Verification (1:1):** compare a probe face with one claimed identity.
-- **Identification (1:N):** find candidate identities for a probe face.
-- **Calibration:** choose thresholds using labeled evaluation data and an application's risk profile.
-- **Decision band:** `confirmed`, `review`, or `rejected`; applications may rename or reinterpret these policy results.
+Phase 1 excludes:
 
-## 5. System Boundaries
+- video ingestion or frame extraction;
+- camera capture, Android, and iOS applications;
+- multiple faces in a single request image;
+- REST/server deployment and business-system integration;
+- liveness, replay protection, and an `authenticated` decision;
+- attendance rules, authorization, payroll, access control, or surveillance;
+- PhotoPrism, photo-library management, Google Photos, or permanent classification copies;
+- foundation-model training.
+
+## 4. Terminology and Decision States
+
+- **Enrollment:** create the initial identity template from one accepted registration photo.
+- **Probe:** the face presented for identification after enrollment.
+- **Embedding/template:** a normalized vector representing similarity-relevant face features; it is sensitive biometric data.
+- **Open-set identification:** find a known identity or decide that the probe is unknown.
+- **Shadow candidate:** a high-confidence observation not yet trusted as an active identity template.
+- **Active template:** a template participating in identity scoring.
+- **Retired template:** a non-matching template retained temporarily for rollback.
+
+Phase-one states are:
+
+- `matched`: strong similarity result under the current model and policy;
+- `review`: plausible but insufficient for automatic acceptance;
+- `unknown`: no trustworthy known identity;
+- `invalid_input`: the request cannot be evaluated, such as zero faces, multiple faces, unreadable input, or inadequate quality.
+
+`matched` never means `authenticated` in Phase 1.
+
+## 5. Architecture
 
 ```text
-Application adapter
-  ├── batch image CLI (Phase 1)
-  ├── future camera adapter
-  ├── future mobile bindings
-  └── future attendance application
-          │
-          ▼
-Portable Face Core API
-  ├── enrollment service
-  ├── verification service
-  ├── identification service
-  ├── calibration/decision policy
-  └── template repository interface
-          │
-          ▼
-Replaceable inference backend
-  ├── detector
-  ├── aligner/quality evaluator
-  └── embedding model
+CLI / future mobile adapter
+  → input orientation and decoding
+  → quality gate and exactly-one-face detector
+  → landmark alignment and normalized crop
+  → ONNX embedding inference
+  → exact active-template comparison
+  → identity aggregation and open-set policy
+  → matched / review / unknown / invalid_input
+  → event record and optional shadow candidate
 ```
 
-The core accepts decoded image data plus caller-supplied identifiers. Filesystem traversal, camera capture, HTTP, UI, and attendance events stay outside the core.
+Five logical components have clear boundaries:
 
-## 6. Core Contracts
+1. **Adapter** reads files in Phase 1 and later camera frames on mobile. It is not part of the recognition policy.
+2. **Face Pipeline** validates quality, detects exactly one face, aligns it, and produces a versioned normalized embedding.
+3. **Identity Repository** stores identities, model generations, active/retired templates, candidates, encrypted exemplars, revisions, and match events.
+4. **Identification Policy** computes identity-level scores and decision states.
+5. **Adaptive Update Policy** creates, corroborates, promotes, retires, and rolls back templates without in-place overwrite.
 
-### 6.1 Detection
+The core accepts decoded image data plus caller identifiers. Filesystem traversal, UI, HTTP, camera capture, and attendance events remain outside the core.
 
-Input: image pixels, orientation normalized by the adapter, and a request identifier.
+## 6. ONNX-First Portability Contract
 
-Output per face:
+ONNX is the primary model artifact format. Phase 1 uses Python with ONNX Runtime; Android and iOS are intended to use ONNX Runtime Mobile.
 
-- stable face index within the request;
-- bounding box and landmarks in original-image coordinates;
-- detector confidence;
-- estimated face size and quality diagnostics;
-- explicit rejection reasons such as too small, blurred, extreme pose, or incomplete crop.
+The portable contract versions all of the following:
 
-Detection returns zero, one, or many faces. It never guesses which face belongs to an identity.
+- image orientation and color order;
+- face box and landmark coordinates;
+- resize, crop, alignment, padding, and interpolation;
+- tensor layout, type, scale, mean, and standard deviation;
+- embedding normalization and numeric encoding;
+- identity aggregation and score direction;
+- model and preprocessing manifest;
+- template serialization and result JSON.
 
-### 6.2 Embedding
+Golden input/output fixtures must detect drift between macOS and later Android/iOS implementations. Platform accelerators such as NNAPI or Core ML are optional optimizations; CPU-correctness is the baseline.
 
-Input: image plus one accepted detected face.
+## 7. One-Shot Enrollment
 
-Output:
+The real registration flow is:
 
-- normalized embedding vector;
-- embedding model identifier and semantic version;
-- embedding dimension and numeric encoding;
-- preprocessing/alignment contract version;
-- quality metadata and creation timestamp.
+```text
+identity data + one photo
+  → decode and orient
+  → require exactly one face
+  → require minimum quality
+  → align and embed
+  → encrypt exemplar and template
+  → create identity revision 1
+```
 
-Embeddings generated by different model or preprocessing contract versions are incomparable unless an explicit compatibility test says otherwise.
+No person is asked to submit many headshots or perform a long scan. A single accepted photo is sufficient to create the identity, but the result is labeled a one-shot initial state rather than proof of production-grade robustness.
 
-### 6.3 Verification
+Zero-face, multi-face, unreadable, low-quality, or incompatible samples fail with reason codes and do not create a partial identity.
 
-Input: probe embedding, claimed identity, and policy profile.
+## 8. Identification Policy
 
-Output:
+For each probe, the system compares the normalized embedding with all eligible active templates. At the intended capacity, the default is exact comparison rather than an approximate vector index.
 
-- best and aggregate similarity scores;
-- number and quality range of reference templates used;
-- thresholds applied;
-- `confirmed`, `review`, or `rejected` band;
-- reason codes and model/template versions.
+The policy considers:
 
-### 6.4 Identification
+- the best and robust aggregate scores for each identity;
+- support across more than one active template when available;
+- the absolute top identity score;
+- the top-1/top-2 margin when multiple identities exist;
+- detector confidence and face quality;
+- model, preprocessing, template, and policy versions.
 
-Input: probe embedding, candidate identity scope, maximum result count, and policy profile.
+The policy must be calibrated at the identity level because adding templates increases the opportunity for coincidental high scores. Ranking first is never sufficient by itself. With one enrolled identity, the runner-up is absent, so non-target probes are essential to calibrate the unknown boundary.
 
-Output: ranked identity candidates with scores, margin from the next candidate, decision band, and diagnostic metadata. A low-margin best result must not be treated as confidently identified merely because it ranks first.
+## 9. Adaptive Template Bank
 
-## 7. Enrollment and Update Flow
+Recognition success never overwrites an existing template. A stricter update threshold than the normal `matched` threshold gates shadow-candidate creation.
 
-1. The adapter submits consented samples for one declared identity.
-2. Each initial sample must contain exactly one acceptable face.
-3. Zero-face, multi-face, unreadable, low-quality, or incompatible samples are rejected individually with machine-readable reasons.
-4. Accepted faces are embedded and checked for outliers against the identity's existing templates.
-5. The service records accepted templates, sample provenance identifiers, model version, and enrollment event. Raw reference images remain under application control and are not required in the template repository.
-6. Updating an identity adds or retires templates; it does not silently overwrite the previous set.
-7. A model upgrade creates a new template generation and requires explicit re-embedding from retained source samples. Old and new generations are never mixed in one comparison.
+A candidate must be:
 
-Suggested initial guidance is 10–20 varied, clear samples per identity, covering frontal/profile views, expression, lighting, eyewear, and time variation. The implementation plan must replace this guidance with measured minimum and quality acceptance criteria.
+- high quality and above the strict update threshold;
+- consistent with the identity, not merely one weak template;
+- non-duplicative and useful for appearance, age, accessory, pose, or lighting coverage;
+- corroborated by independent later events before promotion;
+- rejected from automatic promotion when severely occluded or otherwise outside the validated policy.
 
-## 8. Decision Bands and Feedback
+For an identity that still has only its one-shot enrollment template, the first later event may create a shadow candidate but cannot promote itself. At least one additional, temporally independent event must strongly match both the enrollment identity and the candidate cluster before the first promotion. Repeated processing of the same file, burst, or event never counts as independent corroboration.
 
-For a similarity score where higher means more similar:
+Active templates are cumulative but bounded. No template, including the initial enrollment template, is permanent. When the bank reaches capacity, all templates are rescored by utility:
 
-- `score >= confirmed_threshold` → `confirmed`
-- `review_threshold <= score < confirmed_threshold` → `review`
-- `score < review_threshold` → `rejected`
+```text
+utility =
+  quality
+  + independent-event support
+  + recency
+  + appearance and pose coverage
+  - redundancy
+  - mismatch or outlier risk
+```
 
-Thresholds belong to a named policy profile and model version. They must not be copied blindly from a model demo. Phase-one calibration prioritizes:
+The lowest-utility template retires only after the new candidate passes promotion. Distance from a centroid alone cannot drive eviction because a useful profile or eyewear sample may be intentionally different. Every promotion and retirement creates a new atomic revision. Retired templates do not participate in matching, remain available for a limited rollback policy, and are deleted after retention expiry.
 
-- high precision inside `confirmed`; and
-- high recall across `confirmed + review`.
+Chronological evaluation must prevent future probes from leaking into earlier identity state.
 
-Human feedback records whether a proposed match was accepted or rejected. Accepted matches may become candidate positive templates only after quality and outlier checks. Rejected matches are evaluation/calibration evidence and duplicate-review suppression data; they are not positive templates for the claimed identity.
+## 10. Data Model and Storage
 
-## 9. Data Model
+- `Identity`: opaque ID, display name, optional application metadata, lifecycle state.
+- `ModelManifest`: exact artifact hashes, licenses, provenance status, input/output contract, embedding dimensions.
+- `TemplateGeneration`: identity, model/preprocessing generation, compatibility state.
+- `FaceTemplate`: active or retired normalized embedding, quality, support, utility inputs, source reference.
+- `CandidateTemplate`: encrypted candidate embedding/crop, evidence, expiry, decision state.
+- `EncryptedExemplar`: bounded face crop needed for future re-embedding; never a full background image.
+- `PolicyProfile`: quality, match, review, unknown, update, aggregation, retention, and capacity settings.
+- `MatchEvent`: request, result, scores, versions, timestamp, and candidate side effect; no image.
+- `TemplateRevision`: atomic membership and policy history used for audit and rollback.
 
-The logical model is storage-independent:
+Phase 1 may use SQLite, but core services depend on repository and `KeyProvider` interfaces. Encryption keys remain outside the database. Later mobile adapters can use platform-secure storage without changing core semantics.
 
-- `Identity`: opaque ID, display label owned by the application, lifecycle state, timestamps.
-- `TemplateGeneration`: identity ID, model manifest ID, preprocessing version, generation state.
-- `FaceTemplate`: template ID, normalized vector, quality summary, consented source reference, creation/retirement metadata.
-- `ModelManifest`: exact artifact identifiers/checksums, runtime contract, dimensions, normalization, licenses, provenance status.
-- `PolicyProfile`: verification/identification thresholds, quality floors, version, calibration evidence reference.
-- `MatchEvent`: request ID, operation type, candidate IDs/scores, result band, versions, timestamp, feedback status.
-- `Feedback`: operator/application assertion, prior match event, accepted/rejected outcome, reason, timestamp.
+Names are application metadata, not identity keys. Export/import uses a versioned encrypted format and rejects incompatible model generations.
 
-Names are application metadata, not primary keys. Database export/import must preserve opaque IDs, model compatibility metadata, and version history. Raw images and attendance events are outside this database.
+## 11. CLI and Result Contract
 
-## 10. Privacy and Security
+The Phase-one shell entrypoint exposes explicit subcommands equivalent to:
 
-- Treat templates as sensitive biometric identifiers even though they are not normal photographs.
-- Default to local processing and deny network-dependent inference.
-- Separate template storage from source images and application business data.
-- Define repository-level encryption and key injection as interfaces before production use; Phase 1 may use a clearly labeled local development store only if approved.
-- Never log embeddings, raw image bytes, full filesystem paths, or personal names at normal log levels.
-- Support identity deletion, template retirement, event retention limits, and model-generation cleanup.
-- Use opaque IDs across the core boundary.
-- Do not claim embeddings are anonymous or impossible to misuse.
+```text
+./facecore.sh init
+./facecore.sh identity add --id person-001 --name "Test Person" --image enroll.jpg
+./facecore.sh identify --image probe.jpg
+./facecore.sh identity show --id person-001
+./facecore.sh candidates list
+./facecore.sh status
+```
 
-## 11. Portability Strategy
+Commands provide a human-readable summary and stable JSON. A successful match resembles:
 
-Phase 1 may use Python for orchestration and a shell wrapper for convenience. The durable interface must be specified independently of Python:
+```json
+{
+  "schema_version": 1,
+  "status": "matched",
+  "identity": {
+    "id": "person-001",
+    "display_name": "Test Person",
+    "metadata": {}
+  },
+  "score": 0.82,
+  "runner_up_score": null,
+  "decision": {
+    "threshold": 0.76,
+    "margin": null
+  },
+  "quality": {
+    "status": "accepted",
+    "reason_codes": []
+  },
+  "model_version": "model-id",
+  "template_revision": 3,
+  "candidate_created": true
+}
+```
 
-- fixed tensor/image input conventions;
-- fixed normalized output schema;
-- portable model artifact format where supported;
-- versioned serialization for templates and results;
-- golden-vector compatibility tests across runtimes;
-- backend conformance tests for Python, C++, and future mobile adapters.
+The numeric score and threshold above are illustrative schema values, not selected model defaults. The model bake-off and calibration evidence determine deployable values.
 
-OpenCV/ONNX is the leading candidate path. The implementation plan should favor a thin Python adapter over Python-only abstractions so equivalent C++ inference can be tested later. Windows, Android, and iOS are architectural targets, not Phase-one delivery claims.
+`review`, `unknown`, and `invalid_input` never fill a guessed display name. Normal recognition outcomes are not process failures; unreadable input, model integrity, store integrity, invalid configuration, or internal failures use non-zero exit codes.
 
-## 12. Error Handling
+No REST API is delivered in Phase 1. Future API or mobile layers wrap the same domain/result contract.
 
-Errors must distinguish:
+## 12. Privacy, Security, and Failure Handling
 
-- unreadable/unsupported input;
-- zero or multiple faces where exactly one is required;
-- low-quality face;
-- unavailable or checksum-invalid model artifact;
-- incompatible embedding/model generation;
-- corrupt or unavailable template store;
-- no eligible candidate identity;
-- ambiguous match/margin;
-- caller cancellation or resource exhaustion.
+- Full probe/background images are not retained by Face Core.
+- A bounded set of approved and candidate face crops and embeddings is encrypted at rest.
+- Normal logs exclude raw images, face crops, embeddings, full local paths, and personal data.
+- Identity deletion immediately removes active, candidate, retired, exemplar, and identity-link biometric data; a non-biometric audit tombstone may remain only if an application policy requires it.
+- Network availability cannot weaken thresholds or select an unsafe fallback.
+- Model checksum, model/preprocessing incompatibility, corrupt storage, unavailable keys, or incomplete migrations fail closed.
+- Template promotions, retirements, and event side effects are atomic and idempotent.
+- Interrupted work must not expose half-created identities or half-applied revisions.
+- Model changes create a new template generation and require re-embedding retained exemplars. Old and new generations never compare as if compatible.
 
-Batch adapters continue past per-file errors and emit a final count by outcome. Integrity errors involving models or the template store fail closed and stop the operation.
+Phase 1 is vulnerable to a printed or displayed photo because it has no liveness or replay protection. Its output is deliberately `matched`, not `authenticated`.
 
-## 13. Testing and Acceptance
+## 13. Model Bake-Off
 
-The implementation plan must create observable tests for:
+Two to three candidates must use the same one-shot enrollment photo, probe order, policy interface, and output measurements. A candidate first passes hard gates:
 
-- deterministic schema and reason codes;
-- zero/one/multiple-face enrollment behavior;
-- normalized embeddings and model-version incompatibility;
-- 1:1 and 1:N ranking behavior;
-- two-threshold boundary values;
-- rejected feedback never entering positive templates;
-- incremental identity updates and model-generation migration;
-- database export/import round-trip;
-- no network access during normal inference;
-- logs excluding raw biometric data and personal paths;
-- corrupted model/database fail-closed behavior;
-- cross-runtime golden-vector tolerance when a second runtime exists.
+- exact code and weight licenses allow commercial use and redistribution;
+- artifact source, version, checksum, and known training-data provenance are recorded;
+- inference runs under ONNX Runtime on macOS;
+- ONNX Runtime Mobile checks record operator, shape, fallback, and accelerator findings;
+- preprocessing and output contracts are reproducible and versioned.
 
-Quality acceptance must be measured on a consented, representative benchmark containing target and non-target people, children where applicable, group photos, small faces, blur, occlusion, profile, lighting, and time variation. Report precision and recall separately for `confirmed` and `confirmed + review`; do not use overall accuracy alone.
+Selection priorities are:
 
-## 14. Future Attendance Adapter
+1. lowest observed non-target false acceptance;
+2. highest direct `matched` rate for ordinary unoccluded target probes;
+3. useful `review/unknown` behavior rather than unsafe guessing;
+4. separately reported performance for eyewear, hats, profiles, complex backgrounds, age change, masks, blur, and occlusion;
+5. macOS latency, memory, and artifact size;
+6. Android/iOS feasibility and later real-device performance.
 
-A future attendance project may use verification or identification APIs, but must add and independently validate:
+If fewer than two candidates satisfy licensing and provenance gates, the project reports the shortage rather than weakening those gates.
 
-- trusted capture and camera health;
-- liveness/anti-spoofing and replay resistance;
-- multi-frame tracking and decision aggregation;
-- duplicate-event suppression and clock/location policy;
-- authorization and identity lifecycle;
-- audit, correction, deletion, retention, and manual fallback;
-- explicit threat model, consent, and applicable legal review.
+## 14. Evaluation and Acceptance
 
-The core should expose enough diagnostics for these controls but must not declare attendance from a face score.
+Evaluation data has three isolated roles:
 
-## 15. Phase-One Deliverable Boundary
+- one registration photo used for enrollment;
+- later target probes that never participate in initial enrollment;
+- consented non-target probes used to test the unknown boundary.
 
-After this design is approved, the implementation plan should cover only:
+The production registration UX still uses one photo. Additional target probes are development evidence that simulate later encounters, not required user submissions.
 
-1. a documented local development environment on the operator's Mac;
-2. one compliance-reviewed detector and embedding backend;
-3. local development template persistence with export/import;
-4. multi-identity enrollment from single-face reference images;
-5. file-based 1:1 verification and 1:N identification;
-6. calibrated three-band results and feedback recording;
-7. one shell entrypoint wrapping explicit subcommands;
-8. tests and a consented demo dataset that contains no private files in Git.
+Evaluation runs twice:
 
-It should not include PhotoPrism integration, Google Photos, a production server, mobile UI, camera capture, liveness, or attendance events.
+1. **Frozen one-shot:** only the initial registration template is active.
+2. **Chronological adaptive replay:** later events are processed in time order with shadow candidates enabled.
 
-## 16. Open Review Questions
+The report compares target match/review/unknown counts, non-target false acceptance, candidate creation/promotion, template churn, and drift. It always reports exact denominators; zero observed failures in a small corpus cannot be described as a zero real-world error rate.
 
-- Should the repository's original code use Apache-2.0 or MIT?
-- Must the first prototype encrypt the local development template database, or may encryption wait behind an explicit non-production warning?
-- Should the first plan include a second runtime compatibility spike, or only preserve the contract for it?
-- What operator-reviewed benchmark size and false-match tolerance should gate Phase-one completion?
+Phase-one functional acceptance requires:
+
+- one accepted photo creates a complete identity;
+- invalid enrollment leaves no partial identity;
+- target and non-target probes produce deterministic versioned results;
+- uncertain probes never become successful business events;
+- adaptive updates append revisions instead of overwriting templates;
+- initial templates can retire under the same utility policy as later templates;
+- rejected or ambiguous events never enter active templates;
+- database/model/key corruption fails closed;
+- real biometric files remain untracked;
+- synthetic 500-identity comparison is measured and is not the dominant end-to-end latency;
+- the winning model and policy are selected with documented evidence, limitations, and no production-authentication claim.
+
+Test categories include schema/reason codes, zero/one/multiple-face behavior, preprocessing and embedding normalization, model-generation incompatibility, score/margin boundaries, candidate corroboration, utility eviction, atomic revision rollback, encrypted export/import, deletion, no-network inference, log redaction, and failure injection.
+
+## 15. Future Roadmap
+
+1. **Android tablet prototype:** camera capture, offline 1:N identification, secure storage, and real 500-person device benchmarks.
+2. **iOS tablet prototype:** same ONNX artifacts, schemas, and golden vectors with iOS performance evidence.
+3. **Authentication layer:** trusted capture, liveness, anti-replay, multi-frame aggregation, and fallback methods before `authenticated` can exist.
+4. **Product integration:** identity/policy synchronization, offline event queues, APIs, attendance rules, authorization, audit, correction, and retention.
+5. **Pre-capture video adapter:** a later mobile capture feature may save one still plus up to five seconds immediately preceding the shutter action. Video recognition or template updates remain out of scope until separately researched.
+6. **Multi-face photo search:** an independent branch of work only after single-face identification is accurate and stable.
+
+## 16. Design Completion Gate
+
+After the operator approves this consolidated written specification, the next artifact is a detailed Phase-one implementation plan. Implementation must not begin until that plan is reviewed. The plan must choose concrete policy defaults, local data paths, model-candidate discovery tasks, test corpus inventory, encryption/key-provider mechanics, and verification commands without expanding Phase-one scope.

@@ -28,9 +28,12 @@ After reading, inspect live repository state with `git status` and recent commit
 - One core pipeline: detect → align → embed → compare.
 - Stable interfaces around replaceable detection and embedding backends.
 - Embeddings are biometric data; minimize, encrypt where appropriate, version, and delete deliberately.
-- Support one-to-one verification and one-to-many identification as distinct operations with distinct thresholds.
+- The approved product flow is open-set one-to-many identification; do not silently substitute a claimed-identity one-to-one flow.
 - Return scores and decision bands, not only a boolean.
-- Keep policy outside the model: applications decide what `confirmed`, `review`, and `rejected` mean.
+- Phase 1 uses `matched`, never `authenticated`; liveness and replay protection are not yet present.
+- Keep policy outside the model: applications decide what `matched`, `review`, and `unknown` mean.
+- Enrollment is one-shot: one registration action and one accepted photo per initial identity.
+- New templates accumulate through a guarded shadow-candidate flow; no initial or later template is permanent or overwritten in place.
 - Preserve portability by defining model-independent data contracts and keeping platform adapters thin.
 - Tests use consented or synthetic fixtures only.
 

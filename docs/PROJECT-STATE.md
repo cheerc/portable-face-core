@@ -4,63 +4,63 @@ Last updated: 2026-09-09 Asia/Taipei
 
 ## Current Status
 
-Portable Face Core is in **design draft / research initialization**. Documentation and repository boundaries exist; implementation, dependency installation, model download, training, enrollment, and private-data processing have not started.
+Portable Face Core is in **written design pending final operator review**. Six design sections were approved interactively. The consolidated specification is at `docs/specs/2026-09-09-portable-face-core-design.md`.
 
-The operator has approved the high-level split:
+There is no implementation, installed dependency, downloaded model, enrolled identity, private photo, embedding database, API, mobile app, or attendance product in this repository.
 
-- PhotoPrism is evaluated separately as the local photo manager and export tool.
-- This repository owns only a reusable face-recognition core and its contracts.
+## Product Direction
 
-The detailed design in `docs/specs/2026-09-09-portable-face-core-design.md` still requires operator review before an implementation plan is written.
+- Final target: Android/iOS tablet performs offline open-set 1:N face identification for up to 500 enrolled identities.
+- Registration: one student, one capture action, one accepted still photo.
+- Recognition: the user does not claim an identity first; the system returns a known identity only when the result is sufficiently strong, otherwise `review` or `unknown`.
+- Integration: future business systems consume a versioned result contract or API adapter; business attendance rules are not part of Face Core.
+- Photo-library management is handled separately through a PhotoPrism evaluation.
 
-## Approved Requirements
+## Approved Phase-One Boundary
 
-- Local filesystem processing; paths may live in Google Drive, iCloud Drive, Dropbox, or mounted NAS folders.
-- The core itself must not call a cloud face-recognition API or upload telemetry/biometric data.
-- Multiple identities are supported by the data model; the first prototype may validate one identity.
-- Initial enrollment samples contain exactly one clear target face per image. Zero-face or multi-face seeds must be rejected with reasons rather than guessed.
-- Similarity results use two configurable thresholds: high-confidence `confirmed`, middle-band `review`, and below-threshold `rejected`.
-- False matches may be retained as negative evaluation evidence, but must not be silently treated as positive identity templates.
-- Code, core libraries, and distributed model artifacts must allow commercial use and redistribution.
-- Phase-one daily operation may expose a single shell entrypoint, but public core interfaces must not depend on shell or Python.
-- Future targets include macOS, Windows, Android, and iOS.
+- macOS CLI reference prototype with one shell entrypoint.
+- Static images only; no video, camera, server, REST API, Android, or iOS implementation.
+- One real enrolled identity for the first accuracy demonstration; other consented faces are unknown/negative probes.
+- Every enrollment or probe image must contain exactly one usable face.
+- One-shot enrollment creates the initial template from one photo.
+- Offline ONNX inference and exact search; synthetic embeddings exercise the 500-identity capacity path.
+- Human-readable output plus a versioned JSON result.
+- Results are `matched`, `review`, `unknown`, or `invalid_input`; never `authenticated`.
+- High-confidence events enter a guarded shadow-candidate flow and may add templates after independent corroboration.
+- Active templates form a bounded, diverse, versioned bank. No template is permanent, and no template is overwritten in place.
+- Two to three license-compliant ONNX candidates are benchmarked before selecting one model stack.
 
-## Important Corrections
+## Approved Security and Privacy Rules
 
-- Enrollment is usually embedding/template creation, not retraining the foundation neural network.
-- A photo manager and a reusable recognition engine are different products.
-- Attendance is not equivalent to finding a person in archived photos. It adds live capture, anti-spoofing, identity policy, authorization, event deduplication, audit, retention, and manual fallback.
-- A model repository license alone may not settle training-data provenance. Public/commercial release requires an explicit model compliance record.
+- All inference works offline on device; network availability never changes thresholds or results.
+- Full background images are not stored by Face Core.
+- A limited set of face crops and embeddings may be retained encrypted.
+- Normal match events contain no image.
+- Keys remain separate from the database through a `KeyProvider` interface.
+- Model/store integrity failures fail closed.
+- Real photos, crops, embeddings, databases, attendance records, and secrets never enter Git.
+- `matched` is image similarity, not secure authentication. A future authentication layer requires trusted camera capture, liveness, anti-replay, and multi-frame policy.
 
-## Current Candidate Direction
+## Approved Portability Direction
 
-Use a replaceable backend interface around a portable pipeline:
+- ONNX-first model artifacts and ONNX Runtime on macOS.
+- ONNX Runtime Mobile is the intended Android/iOS runtime.
+- Preprocessing, postprocessing, normalization, template encoding, and JSON schemas are explicit and versioned.
+- Golden vectors must detect cross-runtime numerical or image-processing drift.
 
-```text
-image/frame
-  → face detector
-  → landmark alignment and quality checks
-  → embedding model
-  → template matcher
-  → score + decision band + diagnostics
-```
+## Future Phases
 
-OpenCV with YuNet and SFace is the leading prototype candidate because official implementations exist in Python and C++ and OpenCV targets desktop and mobile. This is not yet a locked dependency. Exact weights, versions, checksums, licenses, provenance, accuracy on consented fixtures, and mobile runtime compatibility remain release gates.
-
-## Pending Decisions
-
-1. Operator approval or revision of the draft design.
-2. Project license for original source code, likely Apache-2.0 or MIT.
-3. Exact detector and embedding model artifacts after compliance review.
-4. Template aggregation strategy: all embeddings, representative medoids, centroid plus outlier retention, or a hybrid.
-5. Encryption/key-management boundary for local template storage.
-6. Phase-one benchmark dataset and measurable acceptance thresholds.
-7. Whether the first implementation plan includes only file-based verification/identification or also a camera adapter spike.
+1. Android tablet prototype with camera, offline identification, 500-person device benchmarks, and secure storage.
+2. iOS tablet prototype using the same models, schemas, and golden vectors.
+3. Authentication layer with liveness, replay protection, multi-frame decisions, and fallback.
+4. Product/API integration for identity sync, offline event queues, attendance rules, audit, and authorization.
+5. Optional mobile capture adapter that saves a still image plus up to five seconds immediately preceding the shutter action. Video-based recognition remains a separate research decision.
+6. Separate multi-face-in-one-photo search work after single-face identification is stable.
 
 ## Next Session
 
-1. Read `AGENTS.md` and the documents it lists.
-2. Review the design with the operator section by section.
-3. Resolve ambiguities and update the spec; scan for placeholders, contradictions, and scope leaks.
-4. Ask the operator to approve the written spec.
-5. Only after approval, write a detailed implementation plan. Do not implement in the same step.
+1. Read `AGENTS.md` and this file.
+2. Ask the operator for final review of the consolidated written spec.
+3. Apply requested corrections and repeat spec self-review.
+4. After explicit written-spec approval, invoke the planning workflow and create a detailed Phase-one implementation plan.
+5. Do not implement during the planning step.
