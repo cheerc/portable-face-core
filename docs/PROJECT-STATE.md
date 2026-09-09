@@ -4,7 +4,7 @@ Last updated: 2026-09-09 Asia/Taipei
 
 ## Current Status
 
-Portable Face Core is in **written design pending final operator review**. Six design sections were approved interactively. The consolidated specification is at `docs/specs/2026-09-09-portable-face-core-design.md`.
+Portable Face Core is in **written design pending four operator decisions and final approval**. Six design sections were approved interactively, followed by an independent completeness and adversarial review. The consolidated specification is at `docs/specs/2026-09-09-portable-face-core-design.md`.
 
 There is no implementation, installed dependency, downloaded model, enrolled identity, private photo, embedding database, API, mobile app, or attendance product in this repository.
 
@@ -47,6 +47,23 @@ There is no implementation, installed dependency, downloaded model, enrolled ide
 - ONNX Runtime Mobile is the intended Android/iOS runtime.
 - Preprocessing, postprocessing, normalization, template encoding, and JSON schemas are explicit and versioned.
 - Golden vectors must detect cross-runtime numerical or image-processing drift.
+- Phase 1 commits only deterministic, non-biometric Layer-A fixtures and proves macOS self-conformance. A reproducible, privacy-reviewed real-face carrier and Android/iOS cross-runtime conformance are Phase-2 entry work.
+
+## Review Conclusions
+
+- The initial enrollment template remains replaceable under the same bounded utility policy as later templates; it is not retained indefinitely as a hidden anchor.
+- Similarity-based promotion gates all depend on the same embedder. They reduce risk but do not independently prove identity or eliminate poisoning.
+- Synthetic 500-identity data is valid for comparison capacity and latency only, not for false-acceptance or ranking claims.
+- Phase 1 must expose operator recovery for candidate rejection, identity rollback, and identity deletion.
+- Functional correctness does not accept a recognition model. The bake-off must provide a threshold-sweep operating table for an operator go/no-go decision.
+- Real-face golden fixtures, consent/retention workflow fields, calibrated multi-identity exclusion, and production authentication remain later-phase work unless an operator decision explicitly expands scope.
+
+## Pending Operator Decisions
+
+1. Split Phase 1 into accuracy-focused 1A and governance-focused 1B, or keep a combined milestone.
+2. Whether a trusted registration refresh occurs periodically, such as once per school year.
+3. Whether interactive Phase-1 identification may auto-promote templates or promotion remains evaluation-only until supported by evidence.
+4. Whether Phase 1 adds a few consented enrolled identities for real runner-up evidence or remains deliberately single-identity.
 
 ## Future Phases
 
@@ -60,7 +77,8 @@ There is no implementation, installed dependency, downloaded model, enrolled ide
 ## Next Session
 
 1. Read `AGENTS.md` and this file.
-2. Ask the operator for final review of the consolidated written spec.
-3. Apply requested corrections and repeat spec self-review.
-4. After explicit written-spec approval, invoke the planning workflow and create a detailed Phase-one implementation plan.
-5. Do not implement during the planning step.
+2. Obtain answers to the four pending operator decisions recorded above.
+3. Apply those decisions and repeat an exact-head spec review.
+4. Ask the operator for final approval of the consolidated written spec.
+5. After explicit written-spec approval, invoke the planning workflow and create a detailed Phase-one implementation plan.
+6. Do not implement during the planning step.
