@@ -175,6 +175,8 @@ All similarity-based promotion checks use the same embedding model and therefore
 
 Because periodic trusted re-enrollment is not guaranteed, the design must preserve useful appearance changes over time without making the original enrollment template permanent. An operator may still perform a fresh trusted registration as an explicit recovery action; that optional path does not replace guarded accumulation during normal operation.
 
+The combination of no guaranteed trusted refresh, no permanent anchor, and correlated similarity evidence leaves long-horizon cumulative drift as an open risk. The implementation plan must propose measurable drift indicators and a bounded response, then evaluate them in chronological replay. Phase 1 must report the remaining limitation rather than claim that promotion thresholds eliminate it.
+
 Active templates are cumulative but bounded. No template, including the initial enrollment template, is permanent. When the bank reaches capacity, all templates are rescored using the following utility factors:
 
 ```text
@@ -215,6 +217,7 @@ The Phase-one shell entrypoint exposes explicit subcommands equivalent to:
 ./facecore.sh identity add --id person-001 --name "Test Person" --image enroll.jpg
 ./facecore.sh identify --image probe.jpg
 ./facecore.sh identity show --id person-001
+./facecore.sh identity re-enroll --id person-001 --image trusted-refresh.jpg
 ./facecore.sh candidates list
 ./facecore.sh candidates reject --id <candidate-id> --reason <code>
 ./facecore.sh identity rollback --id <identity-id> --to-revision <n>
@@ -222,7 +225,9 @@ The Phase-one shell entrypoint exposes explicit subcommands equivalent to:
 ./facecore.sh status
 ```
 
-Reject, rollback, and delete use the same atomic revision machinery as automatic changes and return stable JSON. A manual action records actor `operator` and is never treated as a training or calibration signal.
+Trusted re-enrollment accepts one operator-supplied photo under the enrollment quality rules. It atomically creates a new revision with the new template as the sole active starting template and retires the previously active templates under the limited rollback retention policy; it preserves the identity ID and application metadata. It never overwrites history in place.
+
+Re-enroll, reject, rollback, and delete use the same atomic revision machinery as automatic changes and return stable JSON. A manual action records actor `operator` and is never treated as a training or calibration signal.
 
 Commands provide a human-readable summary and stable JSON. A successful match resembles:
 
@@ -358,4 +363,4 @@ The initial enrollment template remains governed by the same bounded utility and
 
 ## 17. Design Completion Gate
 
-After the operator approves this consolidated written specification, the next artifact is a detailed Phase-one implementation plan. Implementation must not begin until that plan is reviewed. The plan must choose concrete policy defaults, local data paths, model-candidate discovery tasks, test corpus inventory, encryption/key-provider mechanics, and verification commands without expanding Phase-one scope.
+After the operator approves this consolidated written specification, the next artifact is a detailed Phase-one implementation plan. Implementation must not begin until that plan is reviewed. The plan must choose concrete policy defaults, local data paths, model-candidate discovery tasks, test corpus inventory, encryption/key-provider mechanics, long-horizon drift indicators and response, and verification commands without expanding Phase-one scope.

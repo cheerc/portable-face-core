@@ -54,6 +54,7 @@ There is no implementation, installed dependency, downloaded model, enrolled ide
 
 - The initial enrollment template remains replaceable under the same bounded utility policy as later templates; it is not retained indefinitely as a hidden anchor.
 - Normal operation cannot depend on a yearly trusted refresh; useful later observations must accumulate through the guarded, bounded template lifecycle.
+- With no guaranteed trusted refresh, no permanent anchor, and only correlated similarity evidence, long-horizon cumulative drift remains an open risk. The implementation plan must propose measurable indicators and a bounded response; Phase 1 must not claim the risk is eliminated.
 - Similarity-based promotion gates all depend on the same embedder. They reduce risk but do not independently prove identity or eliminate poisoning.
 - Synthetic 500-identity data is valid for comparison capacity and latency only, not for false-acceptance or ranking claims.
 - Phase 1 must expose operator recovery for candidate rejection, identity rollback, and identity deletion.
