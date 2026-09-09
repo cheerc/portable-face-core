@@ -169,7 +169,7 @@ A candidate must be:
 
 For a future multi-identity gallery, promotion additionally requires identity exclusivity: a candidate must score better for its owning identity than for every other enrolled identity by a separately calibrated promotion margin. This policy obligation is vacuous with the single Phase-1 identity, so Phase 1 does not claim real evidence for it or build a look-alike workflow solely to simulate it.
 
-For an identity that still has only its one-shot enrollment template, the first later event may create a shadow candidate but cannot promote itself. At least one additional, temporally independent event must strongly match both the enrollment identity and the candidate cluster before the first promotion. Repeated processing of the same file, burst, or event never counts as independent corroboration.
+For an identity that currently has only one active template, whether from initial enrollment or trusted re-enrollment, the first later event may create a shadow candidate but cannot promote itself. At least one additional, temporally independent event must strongly match both the identity and the candidate cluster before the first promotion. Repeated processing of the same file, burst, or event never counts as independent corroboration.
 
 All similarity-based promotion checks use the same embedding model and therefore are correlated evidence, not independent proof of identity. They can reduce poisoning risk but cannot make self-learning safe against a confident, systematic misidentification. Liveness would establish that a live person is present, not which identity that person has. Whether the interactive Phase-1 path may auto-promote is an explicit operator decision; chronological replay must measure the behavior either way.
 
@@ -226,6 +226,8 @@ The Phase-one shell entrypoint exposes explicit subcommands equivalent to:
 ```
 
 Trusted re-enrollment accepts one operator-supplied photo under the enrollment quality rules. It atomically creates a new revision with the new template as the sole active starting template and retires the previously active templates under the limited rollback retention policy; it preserves the identity ID and application metadata. It never overwrites history in place.
+
+The `identity add` command is create-only. If the ID already exists, it fails without mutation and directs the operator to `identity re-enroll`; it never becomes an implicit overwrite or alternate refresh path.
 
 Re-enroll, reject, rollback, and delete use the same atomic revision machinery as automatic changes and return stable JSON. A manual action records actor `operator` and is never treated as a training or calibration signal.
 
