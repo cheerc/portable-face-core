@@ -1,0 +1,37 @@
+# Private runtime data
+/data/
+/people/
+/embeddings/
+/exports/
+/models/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Images and media are denied by default
+*.jpg
+*.jpeg
+*.png
+*.heic
+*.heif
+*.webp
+*.gif
+*.bmp
+*.tif
+*.tiff
+*.mp4
+*.mov
+
+# Python and tooling
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+.env
+.env.*
+!.env.example
