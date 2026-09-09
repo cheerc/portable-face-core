@@ -17,6 +17,7 @@ Phase 1 is a macOS CLI reference prototype using static images. It proves one-sh
 - False acceptance is more serious than false rejection. Uncertain inputs return `review` or `unknown`, not a guessed name.
 - A successful result can include opaque identity ID, display name, and application metadata.
 - Repeated, trustworthy observations add useful templates over time instead of overwriting the previous face.
+- Normal continuity cannot depend on a periodic trusted re-enrollment event. A fresh trusted registration may be offered as manual recovery, but long-term appearance change must be handled by the bounded adaptive-template design.
 - Children aging, hairstyle, eyewear, hats, pose, lighting, and background variation are explicit evaluation conditions.
 - Masked or seriously occluded faces may be rejected; mask recognition is not a Phase-one success requirement.
 - All inference must work on-device and offline.
@@ -171,6 +172,8 @@ For a future multi-identity gallery, promotion additionally requires identity ex
 For an identity that still has only its one-shot enrollment template, the first later event may create a shadow candidate but cannot promote itself. At least one additional, temporally independent event must strongly match both the enrollment identity and the candidate cluster before the first promotion. Repeated processing of the same file, burst, or event never counts as independent corroboration.
 
 All similarity-based promotion checks use the same embedding model and therefore are correlated evidence, not independent proof of identity. They can reduce poisoning risk but cannot make self-learning safe against a confident, systematic misidentification. Liveness would establish that a live person is present, not which identity that person has. Whether the interactive Phase-1 path may auto-promote is an explicit operator decision; chronological replay must measure the behavior either way.
+
+Because periodic trusted re-enrollment is not guaranteed, the design must preserve useful appearance changes over time without making the original enrollment template permanent. An operator may still perform a fresh trusted registration as an explicit recovery action; that optional path does not replace guarded accumulation during normal operation.
 
 Active templates are cumulative but bounded. No template, including the initial enrollment template, is permanent. When the bank reaches capacity, all templates are rescored using the following utility factors:
 
@@ -345,12 +348,11 @@ Test categories include schema/reason codes, zero/one/multiple-face behavior, pr
 
 ## 16. Open Operator Decisions
 
-The review converged on four product decisions that are not settled by technical analysis:
+The review has three remaining product decisions that are not settled by technical analysis:
 
 1. Split Phase 1 into **1A**, which proves the pipeline, model bake-off, and accuracy evidence, and **1B**, which completes adaptive-template and storage governance; or retain one combined milestone. Even when split, 1A should use revision-shaped storage so 1B does not require a destructive migration.
-2. Decide whether the product has a periodic trusted re-enrollment event, such as one new registration photo each school year. A trusted refresh bounds long-term appearance drift and may avoid an otherwise complex anchor mechanism.
-3. Decide whether interactive Phase-1 `identify` may automatically promote candidates, or whether promotion runs only inside ground-truthed chronological replay until sufficient evidence exists.
-4. Decide whether Phase 1 may enroll a small number of additional consented identities for non-degenerate top-1/top-2 evidence, or deliberately remain single-identity and defer real multi-identity calibration to Phase 2.
+2. Decide whether interactive Phase-1 `identify` may automatically promote candidates, or whether promotion runs only inside ground-truthed chronological replay until sufficient evidence exists.
+3. Decide whether Phase 1 may enroll a small number of additional consented identities for non-degenerate top-1/top-2 evidence, or deliberately remain single-identity and defer real multi-identity calibration to Phase 2.
 
 The initial enrollment template remains governed by the same bounded utility and retention rules as later templates. The rejected alternative of retaining it indefinitely as a hidden drift anchor would contradict that requirement and does not independently solve gradual poisoning.
 
