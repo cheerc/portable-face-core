@@ -4,7 +4,7 @@ Last updated: 2026-09-09 Asia/Taipei
 
 ## Current Status
 
-Portable Face Core is in **written design pending three operator decisions and final approval**. Six design sections were approved interactively, followed by an independent completeness and adversarial review. The consolidated specification is at `docs/specs/2026-09-09-portable-face-core-design.md`.
+Portable Face Core is in **written design pending two operator decisions and final approval**. Six design sections were approved interactively, followed by an independent completeness and adversarial review. The consolidated specification is at `docs/specs/2026-09-09-portable-face-core-design.md`.
 
 There is no implementation, installed dependency, downloaded model, enrolled identity, private photo, embedding database, API, mobile app, or attendance product in this repository.
 
@@ -14,6 +14,7 @@ There is no implementation, installed dependency, downloaded model, enrolled ide
 - Registration: one student, one capture action, one accepted still photo.
 - Continuity: periodic trusted re-enrollment is not guaranteed. Bounded adaptive templates must handle long-term appearance change; manual re-enrollment is optional recovery.
 - Recognition: the user does not claim an identity first; the system returns a known identity only when the result is sufficiently strong, otherwise `review` or `unknown`.
+- Learning: Phase 1 requires an explicit `correct` confirmation before an observation can enter the shadow-candidate flow. `not_me`, cancellation, and expiry never learn. Self-confirmation is supervision, not authentication.
 - Integration: future business systems consume a versioned result contract or API adapter; business attendance rules are not part of Face Core.
 - Photo-library management is handled separately through a PhotoPrism evaluation.
 
@@ -56,6 +57,7 @@ There is no implementation, installed dependency, downloaded model, enrolled ide
 - Normal operation cannot depend on a yearly trusted refresh; useful later observations must accumulate through the guarded, bounded template lifecycle.
 - With no guaranteed trusted refresh, no permanent anchor, and only correlated similarity evidence, long-horizon cumulative drift remains an open risk. The implementation plan must propose measurable indicators and a bounded response; Phase 1 must not claim the risk is eliminated.
 - Similarity-based promotion gates all depend on the same embedder. They reduce risk but do not independently prove identity or eliminate poisoning.
+- Phase 1 excludes unattended automatic learning. Explicit confirmation gates candidate creation but does not bypass independent corroboration, quality, exclusion, or promotion rules.
 - Synthetic 500-identity data is valid for comparison capacity and latency only, not for false-acceptance or ranking claims.
 - Phase 1 must expose operator recovery for candidate rejection, identity rollback, and identity deletion.
 - Functional correctness does not accept a recognition model. The bake-off must provide a threshold-sweep operating table for an operator go/no-go decision.
@@ -64,8 +66,7 @@ There is no implementation, installed dependency, downloaded model, enrolled ide
 ## Pending Operator Decisions
 
 1. Split Phase 1 into accuracy-focused 1A and governance-focused 1B, or keep a combined milestone.
-2. Whether interactive Phase-1 identification may auto-promote templates or promotion remains evaluation-only until supported by evidence.
-3. Whether Phase 1 adds a few consented enrolled identities for real runner-up evidence or remains deliberately single-identity.
+2. Whether Phase 1 adds a few consented enrolled identities for real runner-up evidence or remains deliberately single-identity.
 
 ## Future Phases
 
@@ -79,7 +80,7 @@ There is no implementation, installed dependency, downloaded model, enrolled ide
 ## Next Session
 
 1. Read `AGENTS.md` and this file.
-2. Obtain answers to the three pending operator decisions recorded above.
+2. Obtain answers to the two pending operator decisions recorded above.
 3. Apply those decisions and repeat an exact-head spec review.
 4. Ask the operator for final approval of the consolidated written spec.
 5. After explicit written-spec approval, invoke the planning workflow and create a detailed Phase-one implementation plan.
