@@ -22,4 +22,3 @@ The first question is whether one-shot face identification is accurate and usefu
 - Phase 1A is demonstrable but is not the persistent local product.
 - Confirmation and ground-truth-driven adaptive replay belong to Phase 1B.
 - Failure of the Phase-1A accuracy gate can stop the project before it accumulates persistence and governance cost.
-

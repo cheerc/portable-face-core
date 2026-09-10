@@ -23,4 +23,3 @@ The product cannot assume that every identity will receive a trusted registratio
 - A confirmed observation may still remain a shadow candidate or be rejected by later gates.
 - The initial and later templates remain bounded and replaceable; no permanent enrollment anchor is introduced.
 - Long-horizon drift remains an explicit open risk for the Phase-1B plan and chronological evaluation.
-
