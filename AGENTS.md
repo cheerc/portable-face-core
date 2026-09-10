@@ -7,7 +7,7 @@ This repository is a research-and-design initialization for a portable face-reco
 Every new session must read these files in order before proposing or making changes:
 
 1. `docs/PROJECT-STATE.md` — current status, approved decisions, pending gates, and next action.
-2. `docs/specs/2026-09-09-portable-face-core-design.md` — draft design and scope.
+2. `docs/specs/2026-09-09-portable-face-core-design.md` — the approved design and scope.
 3. `docs/research/2026-09-09-open-source-face-stack.md` — evidence and licensing notes for candidate stacks.
 4. `docs/decisions/0001-separate-face-core-from-photo-manager.md` — why this project excludes photo-library management.
 
