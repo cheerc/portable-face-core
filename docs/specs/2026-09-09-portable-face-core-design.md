@@ -17,6 +17,7 @@ Phase 1 is a macOS CLI reference prototype using static images. It proves one-sh
 - False acceptance is more serious than false rejection. Uncertain inputs return `review` or `unknown`, not a guessed name.
 - A successful result can include opaque identity ID, display name, and application metadata.
 - Repeated, trustworthy observations add useful templates over time instead of overwriting the previous face.
+- Phase-1 learning is confirmation-gated: an identification result cannot create a shadow candidate until a person explicitly marks the proposed identity as correct. Unattended automatic learning is excluded.
 - Normal continuity cannot depend on a periodic trusted re-enrollment event. A fresh trusted registration may be offered as manual recovery, but long-term appearance change must be handled by the bounded adaptive-template design.
 - Children aging, hairstyle, eyewear, hats, pose, lighting, and background variation are explicit evaluation conditions.
 - Masked or seriously occluded faces may be rejected; mask recognition is not a Phase-one success requirement.
@@ -60,6 +61,7 @@ Phase 1 excludes:
 - **Embedding/template:** a normalized vector representing similarity-relevant face features; it is sensitive biometric data.
 - **Open-set identification:** find a known identity or decide that the probe is unknown.
 - **Shadow candidate:** a high-confidence observation not yet trusted as an active identity template.
+- **Learning confirmation:** an explicit label that a proposed identity is correct or incorrect. Self-confirmation is useful supervision but is not secure identity proof; operator/staff confirmation carries a distinct actor type.
 - **Active template:** a template participating in identity scoring.
 - **Retired template:** a non-matching template retained temporarily for rollback.
 
@@ -83,7 +85,8 @@ CLI / future mobile adapter
   → exact active-template comparison
   → identity aggregation and open-set policy
   → matched / review / unknown / invalid_input
-  → event record and optional shadow candidate
+  → event record and confirmation opportunity
+  → confirmed observation may become a shadow candidate
 ```
 
 Five logical components have clear boundaries:
@@ -157,7 +160,9 @@ Open-set false acceptance grows with gallery size. Thresholds calibrated in Phas
 
 ## 9. Adaptive Template Bank
 
-Recognition success never overwrites an existing template. A stricter update threshold than the normal `matched` threshold gates shadow-candidate creation.
+Recognition success never overwrites an existing template and never learns by itself. A matched result first returns a confirmation opportunity. Only an explicit correct confirmation may make the observation eligible for shadow-candidate creation, after which a stricter update threshold than the normal `matched` threshold still applies.
+
+A `not_me` confirmation never creates or promotes a template and records a policy-error event without retaining the probe image. No response, cancellation, or confirmation expiry has the same no-learning outcome. The adapter may keep the observation only in memory while confirmation is pending; Face Core does not persist a pending face crop or embedding before confirmation.
 
 A candidate must be:
 
@@ -171,7 +176,9 @@ For a future multi-identity gallery, promotion additionally requires identity ex
 
 For an identity that currently has only one active template, whether from initial enrollment or trusted re-enrollment, the first later event may create a shadow candidate but cannot promote itself. At least one additional, temporally independent event must strongly match both the identity and the candidate cluster before the first promotion. Repeated processing of the same file, burst, or event never counts as independent corroboration.
 
-All similarity-based promotion checks use the same embedding model and therefore are correlated evidence, not independent proof of identity. They can reduce poisoning risk but cannot make self-learning safe against a confident, systematic misidentification. Liveness would establish that a live person is present, not which identity that person has. Whether the interactive Phase-1 path may auto-promote is an explicit operator decision; chronological replay must measure the behavior either way.
+All similarity-based promotion checks use the same embedding model and therefore are correlated evidence, not independent proof of identity. They can reduce poisoning risk but cannot make self-learning safe against a confident, systematic misidentification. Liveness would establish that a live person is present, not which identity that person has. Phase 1 therefore excludes unattended automatic learning: an explicit confirmation is required before candidate creation, and confirmation does not bypass corroboration or promotion gates.
+
+Self-confirmation contributes a human-provided label but does not establish who pressed the button, so it cannot turn `matched` into `authenticated` or independently authorize attendance. Operator/staff confirmation is recorded separately and may be assigned greater policy weight, but attendance authorization remains outside Face Core.
 
 Because periodic trusted re-enrollment is not guaranteed, the design must preserve useful appearance changes over time without making the original enrollment template permanent. An operator may still perform a fresh trusted registration as an explicit recovery action; that optional path does not replace guarded accumulation during normal operation.
 
@@ -216,6 +223,7 @@ The Phase-one shell entrypoint exposes explicit subcommands equivalent to:
 ./facecore.sh init
 ./facecore.sh identity add --id person-001 --name "Test Person" --image enroll.jpg
 ./facecore.sh identify --image probe.jpg
+./facecore.sh identify --image probe.jpg --confirm-learning
 ./facecore.sh identity show --id person-001
 ./facecore.sh identity re-enroll --id person-001 --image trusted-refresh.jpg
 ./facecore.sh candidates list
@@ -229,7 +237,9 @@ Trusted re-enrollment accepts one operator-supplied photo under the enrollment q
 
 The `identity add` command is create-only. If the ID already exists, it fails without mutation and directs the operator to `identity re-enroll`; it never becomes an implicit overwrite or alternate refresh path.
 
-Re-enroll, reject, rollback, and delete use the same atomic revision machinery as automatic changes and return stable JSON. A manual action records actor `operator` and is never treated as a training or calibration signal.
+With `--confirm-learning`, the CLI first prints the identification result and then asks `correct` or `not_me` while the decoded observation remains in process memory. It creates a shadow candidate only after `correct`; cancellation, EOF, timeout, or `not_me` exits without learning. Stable JSON records whether confirmation was requested, its actor type, and the resulting candidate side effect.
+
+Re-enroll, reject, rollback, and delete use the same atomic revision machinery as automatic changes and return stable JSON. A manual recovery action records actor `operator` and is never treated as a training or calibration signal. A learning confirmation is recorded as supervision evidence for its candidate but never as authentication proof.
 
 Commands provide a human-readable summary and stable JSON. A successful match resembles:
 
@@ -355,11 +365,10 @@ Test categories include schema/reason codes, zero/one/multiple-face behavior, pr
 
 ## 16. Open Operator Decisions
 
-The review has three remaining product decisions that are not settled by technical analysis:
+The review has two remaining product decisions that are not settled by technical analysis:
 
 1. Split Phase 1 into **1A**, which proves the pipeline, model bake-off, and accuracy evidence, and **1B**, which completes adaptive-template and storage governance; or retain one combined milestone. Even when split, 1A should use revision-shaped storage so 1B does not require a destructive migration.
-2. Decide whether interactive Phase-1 `identify` may automatically promote candidates, or whether promotion runs only inside ground-truthed chronological replay until sufficient evidence exists.
-3. Decide whether Phase 1 may enroll a small number of additional consented identities for non-degenerate top-1/top-2 evidence, or deliberately remain single-identity and defer real multi-identity calibration to Phase 2.
+2. Decide whether Phase 1 may enroll a small number of additional consented identities for non-degenerate top-1/top-2 evidence, or deliberately remain single-identity and defer real multi-identity calibration to Phase 2.
 
 The initial enrollment template remains governed by the same bounded utility and retention rules as later templates. The rejected alternative of retaining it indefinitely as a hidden drift anchor would contradict that requirement and does not independently solve gradual poisoning.
 
