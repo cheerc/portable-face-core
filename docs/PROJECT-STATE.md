@@ -4,7 +4,9 @@ Last updated: 2026-09-10 Asia/Taipei
 
 ## Current Status
 
-Portable Face Core is in **written design pending final operator approval**. Six design sections and all review decisions were approved interactively, followed by independent completeness and adversarial review. The consolidated specification is at `docs/specs/2026-09-09-portable-face-core-design.md`.
+Portable Face Core is in **approved written design; Phase-1A implementation planning is the next artifact**. Six design sections and all review decisions were approved interactively, followed by independent completeness and adversarial review. The operator approved the consolidated specification at `docs/specs/2026-09-09-portable-face-core-design.md` on 2026-09-10.
+
+That approval authorizes writing a detailed Phase-1A implementation plan and nothing else. It does not authorize implementation, dependency installation, model download, biometric data collection, or merging the design pull request. Phase 1A begins only after the plan is separately reviewed.
 
 There is no implementation, installed dependency, downloaded model, enrolled identity, private photo, embedding database, API, mobile app, or attendance product in this repository.
 
@@ -64,7 +66,7 @@ Phase 1 is split into two sequential milestones:
 
 ## Resolved Review Decisions
 
-No review decision remains open. The accepted choices are: no guaranteed periodic trusted refresh, confirmation-gated learning, separate Phase-1A/1B milestones, and a three-to-five-identity consented Phase-1A gallery.
+No review decision remains open. The accepted choices are: no guaranteed periodic trusted refresh, confirmation-gated learning, separate Phase-1A/1B milestones, and a three-to-five-identity consented Phase-1A gallery. The operator approved the consolidated written specification containing these choices on 2026-09-10.
 
 ## Future Phases
 
@@ -78,7 +80,7 @@ No review decision remains open. The accepted choices are: no guaranteed periodi
 ## Next Session
 
 1. Read `AGENTS.md` and this file.
-2. Repeat an exact-head spec review after the final gallery decision.
-3. Ask the operator for final approval of the consolidated written spec.
-4. After explicit written-spec approval, invoke the planning workflow and create a detailed Phase-1A implementation plan.
-5. Do not implement during the planning step.
+2. Invoke the planning workflow and create a detailed Phase-1A implementation plan covering model-candidate discovery, test-corpus inventory, in-memory repository shape, non-biometric report paths, accuracy and latency evidence, and verification commands.
+3. Keep Phase-1B governance mechanics out of that plan.
+4. Do not implement during the planning step; Phase 1A begins only after the plan is reviewed.
+5. Treat the design pull request as unmerged until the operator gives explicit merge authority.

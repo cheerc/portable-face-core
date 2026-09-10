@@ -1,6 +1,6 @@
 # Portable Face Core Design
 
-- Status: section-approved; consolidated document pending final operator review
+- Status: approved by the operator on 2026-09-10; the next artifact is the Phase-1A implementation plan
 - Date: 2026-09-09
 - Scope: macOS reference implementation for a future offline Android/iOS open-set face-identification core
 
@@ -414,6 +414,6 @@ The initial enrollment template remains governed by the same bounded utility and
 
 ## 17. Design Completion Gate
 
-After the operator approves this consolidated written specification, the next artifact is a detailed Phase-1A implementation plan. Phase 1A must not begin until that plan is reviewed. It must choose model-candidate discovery tasks, the test-corpus inventory, in-memory repository shape, non-biometric report paths, accuracy and latency evidence, and verification commands without implementing Phase-1B governance.
+The operator approved this consolidated written specification on 2026-09-10. The next artifact is a detailed Phase-1A implementation plan. Phase 1A must not begin until that plan is reviewed. It must choose model-candidate discovery tasks, the test-corpus inventory, in-memory repository shape, non-biometric report paths, accuracy and latency evidence, and verification commands without implementing Phase-1B governance.
 
 Only after the Phase-1A evidence receives an operator go/no-go decision may a separate Phase-1B implementation plan define persistent local data paths, encryption and `KeyProvider` mechanics, confirmation and revision workflows, long-horizon drift indicators and response, rollback/deletion behavior, and its own verification commands.

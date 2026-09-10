@@ -2,7 +2,7 @@
 
 Portable Face Core is a proposed local-first, reusable face-identification engine. Its goal is to provide the same detect, align, embed, and open-set identification contracts to a macOS reference CLI and future Android/iOS tablet applications without tying the algorithm to a photo manager or business system.
 
-**Status:** design/research initialization only. There is no runnable face-recognition code yet.
+**Status:** design approved on 2026-09-10; Phase-1A implementation planning is the next artifact. There is no runnable face-recognition code yet.
 
 ## Intended Capabilities
 
@@ -46,4 +46,4 @@ docs/
     └── 2026-09-09-portable-face-core-design.md
 ```
 
-Start with `AGENTS.md`. All review decisions are resolved; the written design is pending final operator approval before the Phase-1A implementation plan or source tree is added.
+Start with `AGENTS.md`. All review decisions are resolved and the operator approved the written design on 2026-09-10. The next artifact is the Phase-1A implementation plan; no source tree is added until that plan is reviewed.
