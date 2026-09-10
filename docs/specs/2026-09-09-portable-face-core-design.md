@@ -8,7 +8,7 @@
 
 Portable Face Core provides local face detection, alignment, embedding, and open-set 1:N identification for applications such as tablet check-in. The final product target is an Android or iOS tablet with no more than about 500 enrolled identities. It must identify locally without network access and return associated identity data only when confidence and quality are sufficient.
 
-Phase 1 is a macOS CLI reference prototype using static images. It proves one-shot enrollment, single-face identification, structured results, guarded adaptive updates, model selection, storage behavior, and failure handling. It does not claim secure authentication because it has no trusted camera, liveness, or replay protection.
+Phase 1 is split into two sequential macOS CLI milestones using static images. Phase 1A proves one-shot enrollment, single-face identification, model selection, deterministic structured results, and accuracy evidence without durable biometric storage. Phase 1B adds confirmation-gated adaptive updates, encrypted persistence, rollback, deletion, and governance using the contracts frozen in 1A. Neither milestone claims secure authentication because there is no trusted camera, liveness, or replay protection.
 
 ## 2. Product Requirements
 
@@ -28,22 +28,35 @@ Phase 1 is a macOS CLI reference prototype using static images. It proves one-sh
 
 ## 3. Phase-One Scope
 
-Phase 1 includes:
+Phase 1 is delivered as two gated milestones. Phase 1B does not begin until the operator reviews the Phase-1A evidence and records a go/no-go decision.
 
-- one shell entrypoint wrapping a macOS CLI;
+Phase 1A includes:
+
+- one shell entrypoint wrapping a macOS CLI and evaluation harness;
 - static-image input only;
 - one real enrolled identity for the initial demonstration;
 - consented non-target faces as unknown/negative probes;
 - exactly one usable face in every enrollment and probe image;
-- one-shot enrollment from one image;
-- ONNX Runtime inference;
-- exact comparison, a versioned JSON result, and a human-readable summary;
-- shadow candidates, guarded promotion, bounded active templates, retirement, and rollback;
-- two to three compliant model candidates evaluated under the same protocol;
-- synthetic embeddings for the 500-identity capacity path;
-- encrypted exemplar/template storage through a replaceable repository interface.
+- one-shot enrollment from one image into an in-memory evaluation session;
+- ONNX Runtime inference and exact comparison;
+- a versioned JSON result and human-readable summary;
+- two to three compliant model candidates evaluated under the same frozen one-shot protocol;
+- synthetic embeddings for comparison-capacity and latency measurement at 500 identities;
+- deterministic Layer-A fixtures and macOS self-conformance;
+- versioned result, policy, template, revision, and repository contracts shaped for Phase-1B persistence.
 
-Phase 1 excludes:
+Phase 1A writes aggregate evaluation reports and non-biometric result records only. It does not create a durable identity database, persist face crops or embeddings, run live adaptive promotion, or implement encrypted export/import.
+
+Phase 1B includes:
+
+- the selected Phase-1A model and operating point;
+- persistent identity enrollment and identification through the same versioned contracts;
+- confirmation-gated shadow candidates and chronological adaptive replay;
+- guarded promotion, bounded active templates, retirement, and rollback;
+- encrypted exemplar/template storage through a replaceable repository and `KeyProvider`;
+- identity deletion, candidate rejection, trusted re-enrollment, failure recovery, and encrypted export/import.
+
+Both Phase-1 milestones exclude:
 
 - video ingestion or frame extraction;
 - camera capture, Android, and iOS applications;
@@ -115,13 +128,13 @@ The portable contract versions all of the following:
 - model and preprocessing manifest;
 - template serialization and result JSON.
 
-Phase 1 commits a deterministic fixture generator rather than biometric images. At test time it generates face-free gradients, checkerboards, chroma patterns, EXIF-orientation cases, and synthetic tensors. Committed expected JSON values cover decoding, orientation, color order, resize, crop, padding, interpolation, tensor layout, scaling, normalization, embedding normalization, and numeric encoding. A macOS self-conformance command must reproduce those values.
+Phase 1A commits a deterministic fixture generator rather than biometric images. At test time it generates face-free gradients, checkerboards, chroma patterns, EXIF-orientation cases, and synthetic tensors. Committed expected JSON values cover decoding, orientation, color order, resize, crop, padding, interpolation, tensor layout, scaling, normalization, embedding normalization, and numeric encoding. A macOS self-conformance command must reproduce those values.
 
 These Layer-A fixtures do not validate detector or landmark equivalence on real faces. A reproducible and privacy-reviewed real-face conformance carrier remains a Phase-2 entry problem; it must not become an indefinite out-of-band biometric fixture by default. Android/iOS must pass cross-runtime conformance before mobile evaluation begins. Platform accelerators such as NNAPI or Core ML are optional optimizations; CPU correctness is the baseline.
 
 ## 7. One-Shot Enrollment
 
-The real registration flow is:
+The shared one-shot transformation is:
 
 ```text
 identity data + one photo
@@ -129,9 +142,9 @@ identity data + one photo
   → require exactly one face
   → require minimum quality
   → align and embed
-  → encrypt exemplar and template
-  → create identity revision 1
 ```
+
+Phase 1A places the resulting template in an in-memory, revision-shaped evaluation identity and discards it when the process exits. Phase 1B encrypts the exemplar and template, then atomically creates persistent identity revision 1.
 
 No person is asked to submit many headshots or perform a long scan. A single accepted photo is sufficient to create the identity, but the result is labeled a one-shot initial state rather than proof of production-grade robustness.
 
@@ -156,7 +169,7 @@ The implementation plan must choose and justify a robust identity aggregation fo
 
 The policy must be calibrated at the identity level because adding templates increases the opportunity for coincidental high scores. Ranking first is never sufficient by itself. With one enrolled identity, the runner-up is absent, so non-target probes are essential to calibrate the unknown boundary.
 
-Open-set false acceptance grows with gallery size. Thresholds calibrated in Phase 1 with one enrolled identity are provisional and cannot be extrapolated to 500 identities. Before multi-identity or target-capacity deployment, thresholds and margins must be recalibrated against a representative real gallery; this is a Phase-2 entry gate.
+Open-set false acceptance grows with gallery size. Thresholds calibrated in Phase 1A with one enrolled identity are provisional and cannot be extrapolated to 500 identities. Before multi-identity or target-capacity deployment, thresholds and margins must be recalibrated against a representative real gallery; this is a Phase-2 entry gate.
 
 ## 9. Adaptive Template Bank
 
@@ -172,17 +185,17 @@ A candidate must be:
 - corroborated by independent later events before promotion;
 - rejected from automatic promotion when severely occluded or otherwise outside the validated policy.
 
-For a future multi-identity gallery, promotion additionally requires identity exclusivity: a candidate must score better for its owning identity than for every other enrolled identity by a separately calibrated promotion margin. This policy obligation is vacuous with the single Phase-1 identity, so Phase 1 does not claim real evidence for it or build a look-alike workflow solely to simulate it.
+For a future multi-identity gallery, promotion additionally requires identity exclusivity: a candidate must score better for its owning identity than for every other enrolled identity by a separately calibrated promotion margin. This policy obligation is vacuous with the current single-identity Phase-1A scope, so Phase 1 does not claim real evidence for it or build a look-alike workflow solely to simulate it.
 
 For an identity that currently has only one active template, whether from initial enrollment or trusted re-enrollment, the first later event may create a shadow candidate but cannot promote itself. At least one additional, temporally independent event must strongly match both the identity and the candidate cluster before the first promotion. Repeated processing of the same file, burst, or event never counts as independent corroboration.
 
-All similarity-based promotion checks use the same embedding model and therefore are correlated evidence, not independent proof of identity. They can reduce poisoning risk but cannot make self-learning safe against a confident, systematic misidentification. Liveness would establish that a live person is present, not which identity that person has. Phase 1 therefore excludes unattended automatic learning: an explicit confirmation is required before candidate creation, and confirmation does not bypass corroboration or promotion gates.
+All similarity-based promotion checks use the same embedding model and therefore are correlated evidence, not independent proof of identity. They can reduce poisoning risk but cannot make self-learning safe against a confident, systematic misidentification. Liveness would establish that a live person is present, not which identity that person has. Phase 1B therefore excludes unattended automatic learning: an explicit confirmation is required before candidate creation, and confirmation does not bypass corroboration or promotion gates.
 
 Self-confirmation contributes a human-provided label but does not establish who pressed the button, so it cannot turn `matched` into `authenticated` or independently authorize attendance. Operator/staff confirmation is recorded separately and may be assigned greater policy weight, but attendance authorization remains outside Face Core.
 
 Because periodic trusted re-enrollment is not guaranteed, the design must preserve useful appearance changes over time without making the original enrollment template permanent. An operator may still perform a fresh trusted registration as an explicit recovery action; that optional path does not replace guarded accumulation during normal operation.
 
-The combination of no guaranteed trusted refresh, no permanent anchor, and correlated similarity evidence leaves long-horizon cumulative drift as an open risk. The implementation plan must propose measurable drift indicators and a bounded response, then evaluate them in chronological replay. Phase 1 must report the remaining limitation rather than claim that promotion thresholds eliminate it.
+The combination of no guaranteed trusted refresh, no permanent anchor, and correlated similarity evidence leaves long-horizon cumulative drift as an open risk. The Phase-1B implementation plan must propose measurable drift indicators and a bounded response, then evaluate them in chronological replay. Phase 1B must report the remaining limitation rather than claim that promotion thresholds eliminate it.
 
 Active templates are cumulative but bounded. No template, including the initial enrollment template, is permanent. When the bank reaches capacity, all templates are rescored using the following utility factors:
 
@@ -206,21 +219,31 @@ Chronological evaluation must prevent future probes from leaking into earlier id
 - `TemplateGeneration`: identity, model/preprocessing generation, compatibility state.
 - `FaceTemplate`: active or retired normalized embedding, quality, support, utility inputs, source reference.
 - `CandidateTemplate`: encrypted candidate embedding/crop, evidence, expiry, decision state.
-- `EncryptedExemplar`: a bounded pre-alignment face region plus a versioned `exemplar_margin`, clipped to the source image; never the full frame or unrestricted background. Phase 1 may select a minimal margin rather than retaining extra pixels for a migration it does not exercise.
+- `EncryptedExemplar`: a bounded pre-alignment face region plus a versioned `exemplar_margin`, clipped to the source image; never the full frame or unrestricted background. Phase 1B may select a minimal margin rather than retaining extra pixels for a migration it does not exercise.
 - `PolicyProfile`: quality, match, review, unknown, update, aggregation, retention, and capacity settings.
 - `MatchEvent`: request, result, scores, versions, timestamp, and candidate side effect; no image.
 - `TemplateRevision`: atomic membership and policy history used for audit and rollback.
 
-Phase 1 may use SQLite, but core services depend on repository and `KeyProvider` interfaces. Encryption keys remain outside the database. Later mobile adapters can use platform-secure storage without changing core semantics.
+Phase 1A uses an in-memory repository implementation and persists no biometric database, while freezing revision-shaped repository and data contracts. Phase 1B may use SQLite, but core services depend on repository and `KeyProvider` interfaces. Encryption keys remain outside the database. Later mobile adapters can use platform-secure storage without changing core semantics.
 
 Names are application metadata, not identity keys. Export/import uses a versioned encrypted format and rejects incompatible model generations.
 
 ## 11. CLI and Result Contract
 
-The Phase-one shell entrypoint exposes explicit subcommands equivalent to:
+The Phase-1A shell entrypoint exposes the stateless evaluation flow:
 
 ```text
 ./facecore.sh init
+./facecore.sh evaluate --enrollment enroll.jpg --probe probe.jpg
+./facecore.sh bakeoff --corpus <manifest>
+./facecore.sh conformance
+```
+
+Enrollment and probes remain in one process-local evaluation session; Phase 1A writes only aggregate reports and non-biometric result JSON.
+
+Phase 1B adds persistent and adaptive subcommands equivalent to:
+
+```text
 ./facecore.sh identity add --id person-001 --name "Test Person" --image enroll.jpg
 ./facecore.sh identify --image probe.jpg
 ./facecore.sh identify --image probe.jpg --confirm-learning
@@ -241,7 +264,7 @@ With `--confirm-learning`, the CLI first prints the identification result and th
 
 Re-enroll, reject, rollback, and delete use the same atomic revision machinery as automatic changes and return stable JSON. A manual recovery action records actor `operator` and is never treated as a training or calibration signal. A learning confirmation is recorded as supervision evidence for its candidate but never as authentication proof.
 
-Commands provide a human-readable summary and stable JSON. A successful match resembles:
+Commands provide a human-readable summary and stable JSON. Phase 1A uses the same result shape with a process-local revision; a successful Phase-1B match resembles:
 
 ```json
 {
@@ -322,36 +345,47 @@ Evaluation data has three isolated roles:
 
 The production registration UX still uses one photo. Additional target probes are development evidence that simulate later encounters, not required user submissions.
 
-Evaluation runs twice:
+Evaluation is staged:
 
-1. **Frozen one-shot:** only the initial registration template is active.
-2. **Chronological adaptive replay:** later events are processed in time order with shadow candidates enabled.
+1. **Phase 1A frozen one-shot:** every model candidate uses only the initial registration template. This produces the model and operating-point evidence used for the Phase-1A go/no-go decision.
+2. **Phase 1B chronological adaptive replay:** later events are processed in time order with confirmation-gated shadow candidates enabled for the selected model. The corpus ground-truth label supplies the explicit `correct` or `not_me` confirmation solely inside this evaluation harness; it is never a production confirmation source. Replay must exercise and measure candidate creation, corroboration, promotion, retirement, and rejection behavior against the frozen Phase-1A baseline.
 
-The report compares target match/review/unknown counts, non-target false acceptance, candidate creation/promotion, template churn, and drift. It always reports exact denominators; zero observed failures in a small corpus cannot be described as a zero real-world error rate.
+The Phase-1A report compares target match/review/unknown counts and non-target false acceptance for every candidate model. The Phase-1B report compares the selected model's frozen baseline with confirmation-gated candidate creation/promotion, template churn, and drift. Both always report exact denominators; zero observed failures in a small corpus cannot be described as a zero real-world error rate.
 
 The corpus inventory reports sample counts for age change, hairstyle, eyewear, hats, pose, lighting, complex background, masks, blur, and occlusion. A condition with zero samples is labeled `untested`; this requirement documents coverage and does not require collecting additional biometric data merely to fill a category. Because Phase 1 accepts exactly one usable face per image, its evaluation is biased toward posed single-person inputs and must disclose that limitation.
 
-For every candidate model and both evaluation modes, the evaluation report provides a threshold-sweep operating table with target `matched`/`review`/`unknown` counts and non-target false acceptances, all with exact denominators. Phase 1 sets no accuracy number before calibration data exists. Functional acceptance alone does not constitute model acceptance; the operator selects or rejects an operating point after reviewing this evidence.
+For every candidate model, the Phase-1A evaluation report provides a frozen one-shot threshold-sweep operating table with target `matched`/`review`/`unknown` counts and non-target false acceptances, all with exact denominators. Phase 1A sets no accuracy number before calibration data exists. Functional acceptance alone does not constitute model acceptance; the operator selects or rejects a model and operating point after reviewing this evidence. Phase 1B then measures the selected operating point under chronological adaptive replay against the frozen baseline.
 
-Phase-one functional acceptance requires:
+Phase-1A functional acceptance requires:
 
-- one accepted photo creates a complete identity;
-- invalid enrollment leaves no partial identity;
+- one accepted enrollment photo creates a complete process-local evaluation identity;
+- invalid enrollment leaves no partial session state;
 - target and non-target probes produce deterministic versioned results;
 - uncertain probes never become successful business events;
-- adaptive updates append revisions instead of overwriting templates;
-- initial templates can retire under the same utility policy as later templates;
-- rejected or ambiguous events never enter active templates;
-- database/model/key corruption fails closed;
+- model integrity or incompatibility fails closed;
+- no face crop, embedding, or identity database persists after the evaluation process exits;
 - real biometric files remain untracked;
-- synthetic 500-identity comparison is measured and is not the dominant end-to-end latency;
-- the winning model and policy are selected with documented evidence, limitations, and no production-authentication claim.
+- synthetic 500-identity comparison is measured within the predeclared comparison-latency budget;
+- deterministic Layer-A fixtures, committed expected JSON, and macOS self-conformance pass;
+- the winning model and operating point are selected with documented evidence, limitations, and no production-authentication claim.
+
+Phase-1B functional acceptance additionally requires:
+
+- persistent enrollment, identification, confirmation, and recovery commands follow the frozen contracts;
+- only an explicit correct confirmation can create a shadow candidate;
+- replay ground-truth confirmations exercise candidate creation, corroboration, promotion, rejection, retirement, and rollback;
+- adaptive updates append revisions instead of overwriting templates;
+- initial and trusted re-enrollment templates can retire under the same utility policy as later templates;
+- rejected, unconfirmed, or ambiguous events never enter active templates;
+- database, model, and key corruption fails closed;
+- encrypted persistence, deletion, rollback, and export/import behavior pass failure injection;
+- chronological adaptive replay is compared with the frozen Phase-1A baseline without temporal leakage.
 
 The synthetic 500-identity gallery measures comparison capacity and latency only. It does not estimate false acceptance, ranking quality, margin behavior, or policy-trigger frequency. The implementation plan must define an absolute comparison-latency budget before benchmarking and the report must show comparison time separately from end-to-end time.
 
-Phase 1 also delivers the deterministic Layer-A fixture generator, committed expected JSON, and a macOS self-conformance command. Cross-platform conformance is a Phase-2 entry gate.
+Cross-platform conformance remains a Phase-2 entry gate.
 
-Test categories include schema/reason codes, zero/one/multiple-face behavior, preprocessing and embedding normalization, model-generation incompatibility, score/margin boundaries, candidate corroboration, utility eviction, atomic revision rollback, encrypted export/import, deletion, no-network inference, log redaction, and failure injection. Temporal-leakage tests assert that the decision for event N cannot read any template revision or evidence timestamped after event N. With the small Phase-1 corpus, capacity eviction, rollback depth, and multi-identity promotion exclusion have synthetic or unit-level evidence only and must not be reported as production validation.
+Phase-1A tests cover schema/reason codes, zero/one/multiple-face behavior, preprocessing and embedding normalization, model-generation incompatibility, score/margin boundaries, no-network inference, deterministic fixtures, and failure handling without durable biometric state. Phase-1B adds confirmation paths, candidate corroboration, utility eviction, atomic revision rollback, encrypted export/import, deletion, log redaction, storage/key failure injection, and temporal-leakage tests. Temporal-leakage tests assert that the decision for event N cannot read any template revision or evidence timestamped after event N. With the small Phase-1 corpus, capacity eviction, rollback depth, and multi-identity promotion exclusion have synthetic or unit-level evidence only and must not be reported as production validation.
 
 ## 15. Future Roadmap
 
@@ -365,13 +399,14 @@ Test categories include schema/reason codes, zero/one/multiple-face behavior, pr
 
 ## 16. Open Operator Decisions
 
-The review has two remaining product decisions that are not settled by technical analysis:
+The review has one remaining product decision that is not settled by technical analysis:
 
-1. Split Phase 1 into **1A**, which proves the pipeline, model bake-off, and accuracy evidence, and **1B**, which completes adaptive-template and storage governance; or retain one combined milestone. Even when split, 1A should use revision-shaped storage so 1B does not require a destructive migration.
-2. Decide whether Phase 1 may enroll a small number of additional consented identities for non-degenerate top-1/top-2 evidence, or deliberately remain single-identity and defer real multi-identity calibration to Phase 2.
+1. Decide whether Phase 1A may enroll a small number of additional consented identities for non-degenerate top-1/top-2 evidence, or deliberately remain single-identity and defer real multi-identity calibration to Phase 2.
 
 The initial enrollment template remains governed by the same bounded utility and retention rules as later templates. The rejected alternative of retaining it indefinitely as a hidden drift anchor would contradict that requirement and does not independently solve gradual poisoning.
 
 ## 17. Design Completion Gate
 
-After the operator approves this consolidated written specification, the next artifact is a detailed Phase-one implementation plan. Implementation must not begin until that plan is reviewed. The plan must choose concrete policy defaults, local data paths, model-candidate discovery tasks, test corpus inventory, encryption/key-provider mechanics, long-horizon drift indicators and response, and verification commands without expanding Phase-one scope.
+After the operator approves this consolidated written specification, the next artifact is a detailed Phase-1A implementation plan. Phase 1A must not begin until that plan is reviewed. It must choose model-candidate discovery tasks, the test-corpus inventory, in-memory repository shape, non-biometric report paths, accuracy and latency evidence, and verification commands without implementing Phase-1B governance.
+
+Only after the Phase-1A evidence receives an operator go/no-go decision may a separate Phase-1B implementation plan define persistent local data paths, encryption and `KeyProvider` mechanics, confirmation and revision workflows, long-horizon drift indicators and response, rollback/deletion behavior, and its own verification commands.
