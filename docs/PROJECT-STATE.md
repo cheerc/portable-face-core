@@ -6,7 +6,9 @@ Last updated: 2026-09-10 Asia/Taipei
 
 Portable Face Core is in **approved written design; Phase-1A implementation planning is the next artifact**. Six design sections and all review decisions were approved interactively, followed by independent completeness and adversarial review. The operator approved the consolidated specification at `docs/specs/2026-09-09-portable-face-core-design.md` on 2026-09-10.
 
-That approval authorizes writing a detailed Phase-1A implementation plan and nothing else. It does not authorize implementation, dependency installation, model download, biometric data collection, or merging the design pull request. Phase 1A begins only after the plan is separately reviewed.
+That approval authorized writing a detailed Phase-1A implementation plan and nothing else. It did not authorize implementation, dependency installation, model download, or biometric data collection.
+
+That plan now exists at `docs/plans/2026-09-10-phase-1a-implementation-plan.md` and is **pending review**. Implementation begins only after the plan is reviewed. The plan itself adds no source tree, installs nothing, and downloads no model.
 
 There is no implementation, installed dependency, downloaded model, enrolled identity, private photo, embedding database, API, mobile app, or attendance product in this repository.
 
@@ -80,7 +82,7 @@ No review decision remains open. The accepted choices are: no guaranteed periodi
 ## Next Session
 
 1. Read `CLAUDE.md` and this file.
-2. Invoke the planning workflow and create a detailed Phase-1A implementation plan covering model-candidate discovery, test-corpus inventory, in-memory repository shape, non-biometric report paths, accuracy and latency evidence, and verification commands.
-3. Keep Phase-1B governance mechanics out of that plan.
-4. Do not implement during the planning step; Phase 1A begins only after the plan is reviewed.
-5. Treat the design pull request as unmerged until the operator gives explicit merge authority.
+2. Read `docs/plans/2026-09-10-phase-1a-implementation-plan.md` and review it; it is pending review, not approved.
+3. Note its two blocking dependencies before any code: Spike S1 (model candidate licensing and provenance gate) and Prerequisite P1 (consented evaluation corpus, operator-owned).
+4. Do not implement, install dependencies, or download a model until the plan is reviewed.
+5. Keep Phase-1B governance mechanics out of Phase-1A work.

@@ -40,10 +40,12 @@ docs/
 │   ├── 0005-confirmation-gated-adaptive-learning.md
 │   ├── 0006-split-phase-one-accuracy-governance.md
 │   └── 0007-small-consented-evaluation-gallery.md
+├── plans/
+│   └── 2026-09-10-phase-1a-implementation-plan.md
 ├── research/
 │   └── 2026-09-09-open-source-face-stack.md
 └── specs/
     └── 2026-09-09-portable-face-core-design.md
 ```
 
-Start with `CLAUDE.md`. All review decisions are resolved and the operator approved the written design on 2026-09-10. The next artifact is the Phase-1A implementation plan; no source tree is added until that plan is reviewed.
+Start with `CLAUDE.md`. All review decisions are resolved and the operator approved the written design on 2026-09-10. The Phase-1A implementation plan is at `docs/plans/2026-09-10-phase-1a-implementation-plan.md`; no source tree is added until that plan is reviewed.
