@@ -1,10 +1,10 @@
 # Project State
 
-Last updated: 2026-09-09 Asia/Taipei
+Last updated: 2026-09-10 Asia/Taipei
 
 ## Current Status
 
-Portable Face Core is in **written design pending two operator decisions and final approval**. Six design sections were approved interactively, followed by an independent completeness and adversarial review. The consolidated specification is at `docs/specs/2026-09-09-portable-face-core-design.md`.
+Portable Face Core is in **written design pending one operator decision and final approval**. Six design sections were approved interactively, followed by an independent completeness and adversarial review. The consolidated specification is at `docs/specs/2026-09-09-portable-face-core-design.md`.
 
 There is no implementation, installed dependency, downloaded model, enrolled identity, private photo, embedding database, API, mobile app, or attendance product in this repository.
 
@@ -14,23 +14,21 @@ There is no implementation, installed dependency, downloaded model, enrolled ide
 - Registration: one student, one capture action, one accepted still photo.
 - Continuity: periodic trusted re-enrollment is not guaranteed. Bounded adaptive templates must handle long-term appearance change; manual re-enrollment is optional recovery.
 - Recognition: the user does not claim an identity first; the system returns a known identity only when the result is sufficiently strong, otherwise `review` or `unknown`.
-- Learning: Phase 1 requires an explicit `correct` confirmation before an observation can enter the shadow-candidate flow. `not_me`, cancellation, and expiry never learn. Self-confirmation is supervision, not authentication.
+- Learning: Phase 1B requires an explicit `correct` confirmation before an observation can enter the shadow-candidate flow. `not_me`, cancellation, and expiry never learn. Self-confirmation is supervision, not authentication.
 - Integration: future business systems consume a versioned result contract or API adapter; business attendance rules are not part of Face Core.
 - Photo-library management is handled separately through a PhotoPrism evaluation.
 
 ## Approved Phase-One Boundary
 
-- macOS CLI reference prototype with one shell entrypoint.
-- Static images only; no video, camera, server, REST API, Android, or iOS implementation.
-- One real enrolled identity for the first accuracy demonstration; other consented faces are unknown/negative probes.
-- Every enrollment or probe image must contain exactly one usable face.
-- One-shot enrollment creates the initial template from one photo.
-- Offline ONNX inference and exact search; synthetic embeddings exercise the 500-identity capacity path.
-- Human-readable output plus a versioned JSON result.
-- Results are `matched`, `review`, `unknown`, or `invalid_input`; never `authenticated`.
-- High-confidence events enter a guarded shadow-candidate flow and may add templates after independent corroboration.
-- Active templates form a bounded, diverse, versioned bank. No template is permanent, and no template is overwritten in place.
-- Two to three license-compliant ONNX candidates are benchmarked before selecting one model stack.
+Phase 1 is split into two sequential milestones:
+
+- **Phase 1A — accuracy first:** macOS static-image CLI and in-memory evaluation harness; one-shot enrollment, exact offline ONNX comparison, versioned results, deterministic conformance fixtures, two-to-three-model bake-off, and 500-vector capacity/latency evidence. It writes no persistent biometric database.
+- **Phase 1B — governance:** persistent identity CLI, confirmation-gated learning, chronological adaptive replay, bounded template revisions, encrypted storage, rollback, re-enrollment, deletion, and export/import.
+- Phase 1B starts only after the operator reviews Phase-1A evidence and records a go/no-go decision.
+- Phase 1A freezes result, policy, template, revision, and repository contracts in a revision-shaped form so Phase 1B does not require destructive redesign.
+- Static images and exactly one usable face per enrollment/probe remain the boundary for both milestones; no video, camera, server, REST API, Android, or iOS implementation.
+- One real enrolled identity remains the current first-demonstration scope; other consented faces are unknown/negative probes pending the final operator decision.
+- Results remain `matched`, `review`, `unknown`, or `invalid_input`; never `authenticated`.
 
 ## Approved Security and Privacy Rules
 
@@ -49,24 +47,23 @@ There is no implementation, installed dependency, downloaded model, enrolled ide
 - ONNX Runtime Mobile is the intended Android/iOS runtime.
 - Preprocessing, postprocessing, normalization, template encoding, and JSON schemas are explicit and versioned.
 - Golden vectors must detect cross-runtime numerical or image-processing drift.
-- Phase 1 commits only deterministic, non-biometric Layer-A fixtures and proves macOS self-conformance. A reproducible, privacy-reviewed real-face carrier and Android/iOS cross-runtime conformance are Phase-2 entry work.
+- Phase 1A commits only deterministic, non-biometric Layer-A fixtures and proves macOS self-conformance. A reproducible, privacy-reviewed real-face carrier and Android/iOS cross-runtime conformance are Phase-2 entry work.
 
 ## Review Conclusions
 
 - The initial enrollment template remains replaceable under the same bounded utility policy as later templates; it is not retained indefinitely as a hidden anchor.
 - Normal operation cannot depend on a yearly trusted refresh; useful later observations must accumulate through the guarded, bounded template lifecycle.
-- With no guaranteed trusted refresh, no permanent anchor, and only correlated similarity evidence, long-horizon cumulative drift remains an open risk. The implementation plan must propose measurable indicators and a bounded response; Phase 1 must not claim the risk is eliminated.
+- With no guaranteed trusted refresh, no permanent anchor, and only correlated similarity evidence, long-horizon cumulative drift remains an open risk. The Phase-1B implementation plan must propose measurable indicators and a bounded response; Phase 1B must not claim the risk is eliminated.
 - Similarity-based promotion gates all depend on the same embedder. They reduce risk but do not independently prove identity or eliminate poisoning.
-- Phase 1 excludes unattended automatic learning. Explicit confirmation gates candidate creation but does not bypass independent corroboration, quality, exclusion, or promotion rules.
+- Phase 1B excludes unattended automatic learning. Explicit confirmation gates candidate creation but does not bypass independent corroboration, quality, exclusion, or promotion rules.
 - Synthetic 500-identity data is valid for comparison capacity and latency only, not for false-acceptance or ranking claims.
-- Phase 1 must expose operator recovery for candidate rejection, identity rollback, and identity deletion.
+- Phase 1B must expose operator recovery for candidate rejection, identity rollback, and identity deletion.
 - Functional correctness does not accept a recognition model. The bake-off must provide a threshold-sweep operating table for an operator go/no-go decision.
 - Real-face golden fixtures, consent/retention workflow fields, calibrated multi-identity exclusion, and production authentication remain later-phase work unless an operator decision explicitly expands scope.
 
 ## Pending Operator Decisions
 
-1. Split Phase 1 into accuracy-focused 1A and governance-focused 1B, or keep a combined milestone.
-2. Whether Phase 1 adds a few consented enrolled identities for real runner-up evidence or remains deliberately single-identity.
+1. Whether Phase 1A adds a few consented enrolled identities for real runner-up evidence or remains deliberately single-identity.
 
 ## Future Phases
 
@@ -80,8 +77,8 @@ There is no implementation, installed dependency, downloaded model, enrolled ide
 ## Next Session
 
 1. Read `AGENTS.md` and this file.
-2. Obtain answers to the two pending operator decisions recorded above.
+2. Obtain an answer to the one pending operator decision recorded above.
 3. Apply those decisions and repeat an exact-head spec review.
 4. Ask the operator for final approval of the consolidated written spec.
-5. After explicit written-spec approval, invoke the planning workflow and create a detailed Phase-one implementation plan.
+5. After explicit written-spec approval, invoke the planning workflow and create a detailed Phase-1A implementation plan.
 6. Do not implement during the planning step.
