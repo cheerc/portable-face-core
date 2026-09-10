@@ -79,7 +79,7 @@ No review decision remains open. The accepted choices are: no guaranteed periodi
 
 ## Next Session
 
-1. Read `AGENTS.md` and this file.
+1. Read `CLAUDE.md` and this file.
 2. Invoke the planning workflow and create a detailed Phase-1A implementation plan covering model-candidate discovery, test-corpus inventory, in-memory repository shape, non-biometric report paths, accuracy and latency evidence, and verification commands.
 3. Keep Phase-1B governance mechanics out of that plan.
 4. Do not implement during the planning step; Phase 1A begins only after the plan is reviewed.

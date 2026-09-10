@@ -28,7 +28,7 @@ Photo-library organization is being evaluated separately with PhotoPrism. Applic
 ## Repository Map
 
 ```text
-AGENTS.md
+CLAUDE.md
 README.md
 docs/
 ├── PROJECT-STATE.md
@@ -46,4 +46,4 @@ docs/
     └── 2026-09-09-portable-face-core-design.md
 ```
 
-Start with `AGENTS.md`. All review decisions are resolved and the operator approved the written design on 2026-09-10. The next artifact is the Phase-1A implementation plan; no source tree is added until that plan is reviewed.
+Start with `CLAUDE.md`. All review decisions are resolved and the operator approved the written design on 2026-09-10. The next artifact is the Phase-1A implementation plan; no source tree is added until that plan is reviewed.
