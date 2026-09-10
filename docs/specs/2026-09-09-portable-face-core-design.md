@@ -316,7 +316,7 @@ Phase 1 is vulnerable to a printed or displayed photo because it has no liveness
 
 ## 13. Model Bake-Off
 
-Two to three candidates must use the same one-shot enrollment photo, probe order, policy interface, and output measurements. A candidate first passes hard gates:
+Two to three candidates must use the same one-shot enrollment gallery, probe order, policy interface, and output measurements. Every candidate receives the same single registration photo for each enrolled identity. A candidate first passes hard gates:
 
 - exact code and weight licenses allow commercial use and redistribution;
 - artifact source, version, checksum, and known training-data provenance are recorded;
@@ -327,11 +327,12 @@ Two to three candidates must use the same one-shot enrollment photo, probe order
 Selection priorities are:
 
 1. lowest observed non-target false acceptance;
-2. highest direct `matched` rate for ordinary unoccluded target probes;
-3. useful `review/unknown` behavior rather than unsafe guessing;
-4. separately reported performance for eyewear, hats, profiles, complex backgrounds, age change, masks, blur, and occlusion;
-5. macOS latency, memory, and artifact size;
-6. Android/iOS feasibility and later real-device performance.
+2. lowest cross-identity confusion and the safest top-1/top-2 margin distribution;
+3. highest direct `matched` rate for ordinary unoccluded target probes;
+4. useful `review/unknown` behavior rather than unsafe guessing;
+5. separately reported performance for eyewear, hats, profiles, complex backgrounds, age change, masks, blur, and occlusion;
+6. macOS latency, memory, and artifact size;
+7. Android/iOS feasibility and later real-device performance.
 
 If fewer than two candidates satisfy licensing and provenance gates, the project reports the shortage rather than weakening those gates. The report lists every excluded candidate, its failed gate, and supporting evidence; the operator then decides whether to pause or explicitly revise the bake-off requirement.
 
