@@ -4,7 +4,7 @@ Last updated: 2026-09-10 Asia/Taipei
 
 ## Current Status
 
-Portable Face Core is in **written design pending one operator decision and final approval**. Six design sections were approved interactively, followed by an independent completeness and adversarial review. The consolidated specification is at `docs/specs/2026-09-09-portable-face-core-design.md`.
+Portable Face Core is in **written design pending final operator approval**. Six design sections and all review decisions were approved interactively, followed by independent completeness and adversarial review. The consolidated specification is at `docs/specs/2026-09-09-portable-face-core-design.md`.
 
 There is no implementation, installed dependency, downloaded model, enrolled identity, private photo, embedding database, API, mobile app, or attendance product in this repository.
 
@@ -27,7 +27,7 @@ Phase 1 is split into two sequential milestones:
 - Phase 1B starts only after the operator reviews Phase-1A evidence and records a go/no-go decision.
 - Phase 1A freezes result, policy, template, revision, and repository contracts in a revision-shaped form so Phase 1B does not require destructive redesign.
 - Static images and exactly one usable face per enrollment/probe remain the boundary for both milestones; no video, camera, server, REST API, Android, or iOS implementation.
-- One real enrolled identity remains the current first-demonstration scope; other consented faces are unknown/negative probes pending the final operator decision.
+- Phase 1A enrolls three to five explicitly consented identities, one registration photo each, plus consented unknown/negative probes. Every input still contains exactly one usable face.
 - Results remain `matched`, `review`, `unknown`, or `invalid_input`; never `authenticated`.
 
 ## Approved Security and Privacy Rules
@@ -59,11 +59,12 @@ Phase 1 is split into two sequential milestones:
 - Synthetic 500-identity data is valid for comparison capacity and latency only, not for false-acceptance or ranking claims.
 - Phase 1B must expose operator recovery for candidate rejection, identity rollback, and identity deletion.
 - Functional correctness does not accept a recognition model. The bake-off must provide a threshold-sweep operating table for an operator go/no-go decision.
+- The three-to-five-identity gallery provides real runner-up margins and cross-identity confusion evidence, but cannot justify 500-person false-acceptance or accuracy claims.
 - Real-face golden fixtures, consent/retention workflow fields, calibrated multi-identity exclusion, and production authentication remain later-phase work unless an operator decision explicitly expands scope.
 
-## Pending Operator Decisions
+## Resolved Review Decisions
 
-1. Whether Phase 1A adds a few consented enrolled identities for real runner-up evidence or remains deliberately single-identity.
+No review decision remains open. The accepted choices are: no guaranteed periodic trusted refresh, confirmation-gated learning, separate Phase-1A/1B milestones, and a three-to-five-identity consented Phase-1A gallery.
 
 ## Future Phases
 
@@ -77,8 +78,7 @@ Phase 1 is split into two sequential milestones:
 ## Next Session
 
 1. Read `AGENTS.md` and this file.
-2. Obtain an answer to the one pending operator decision recorded above.
-3. Apply those decisions and repeat an exact-head spec review.
-4. Ask the operator for final approval of the consolidated written spec.
-5. After explicit written-spec approval, invoke the planning workflow and create a detailed Phase-1A implementation plan.
-6. Do not implement during the planning step.
+2. Repeat an exact-head spec review after the final gallery decision.
+3. Ask the operator for final approval of the consolidated written spec.
+4. After explicit written-spec approval, invoke the planning workflow and create a detailed Phase-1A implementation plan.
+5. Do not implement during the planning step.

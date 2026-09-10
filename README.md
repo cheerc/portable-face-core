@@ -38,11 +38,12 @@ docs/
 │   ├── 0003-one-shot-adaptive-template-bank.md
 │   ├── 0004-onnx-first-portability.md
 │   ├── 0005-confirmation-gated-adaptive-learning.md
-│   └── 0006-split-phase-one-accuracy-governance.md
+│   ├── 0006-split-phase-one-accuracy-governance.md
+│   └── 0007-small-consented-evaluation-gallery.md
 ├── research/
 │   └── 2026-09-09-open-source-face-stack.md
 └── specs/
     └── 2026-09-09-portable-face-core-design.md
 ```
 
-Start with `AGENTS.md`. The written design is pending one operator decision and final approval before the Phase-1A implementation plan or source tree is added.
+Start with `AGENTS.md`. All review decisions are resolved; the written design is pending final operator approval before the Phase-1A implementation plan or source tree is added.

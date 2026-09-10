@@ -34,7 +34,7 @@ Phase 1A includes:
 
 - one shell entrypoint wrapping a macOS CLI and evaluation harness;
 - static-image input only;
-- one real enrolled identity for the initial demonstration;
+- three to five explicitly consented enrolled identities for the initial evaluation gallery;
 - consented non-target faces as unknown/negative probes;
 - exactly one usable face in every enrollment and probe image;
 - one-shot enrollment from one image into an in-memory evaluation session;
@@ -167,9 +167,9 @@ The policy considers:
 
 The implementation plan must choose and justify a robust identity aggregation form, such as a median, trimmed mean, or support/second-best rule. A single maximum similarity is insufficient once an identity has multiple templates.
 
-The policy must be calibrated at the identity level because adding templates increases the opportunity for coincidental high scores. Ranking first is never sufficient by itself. With one enrolled identity, the runner-up is absent, so non-target probes are essential to calibrate the unknown boundary.
+The policy must be calibrated at the identity level because adding identities or templates increases the opportunity for coincidental high scores. Ranking first is never sufficient by itself. Phase 1A enrolls three to five identities so every probe has a real runner-up score and margin; consented non-target probes remain essential to calibrate the unknown boundary.
 
-Open-set false acceptance grows with gallery size. Thresholds calibrated in Phase 1A with one enrolled identity are provisional and cannot be extrapolated to 500 identities. Before multi-identity or target-capacity deployment, thresholds and margins must be recalibrated against a representative real gallery; this is a Phase-2 entry gate.
+Open-set false acceptance grows with gallery size. Thresholds calibrated in Phase 1A with three to five enrolled identities are provisional and cannot be extrapolated to 500 identities. Before multi-identity or target-capacity deployment, thresholds and margins must be recalibrated against a representative real gallery; this is a Phase-2 entry gate.
 
 ## 9. Adaptive Template Bank
 
@@ -185,7 +185,7 @@ A candidate must be:
 - corroborated by independent later events before promotion;
 - rejected from automatic promotion when severely occluded or otherwise outside the validated policy.
 
-For a future multi-identity gallery, promotion additionally requires identity exclusivity: a candidate must score better for its owning identity than for every other enrolled identity by a separately calibrated promotion margin. This policy obligation is vacuous with the current single-identity Phase-1A scope, so Phase 1 does not claim real evidence for it or build a look-alike workflow solely to simulate it.
+For a multi-identity gallery, promotion additionally requires identity exclusivity: a candidate must score better for its owning identity than for every other enrolled identity by a separately calibrated promotion margin. Phase 1A records cross-identity score and margin evidence but has no live promotion path. Phase-1B chronological replay exercises this obligation with the selected model; the small gallery remains insufficient to claim target-capacity validation.
 
 For an identity that currently has only one active template, whether from initial enrollment or trusted re-enrollment, the first later event may create a shadow candidate but cannot promote itself. At least one additional, temporally independent event must strongly match both the identity and the candidate cluster before the first promotion. Repeated processing of the same file, burst, or event never counts as independent corroboration.
 
@@ -339,18 +339,18 @@ If fewer than two candidates satisfy licensing and provenance gates, the project
 
 Evaluation data has three isolated roles:
 
-- one registration photo used for enrollment;
-- later target probes that never participate in initial enrollment;
+- one registration photo for each of three to five explicitly consented enrolled identities;
+- later target probes grouped by identity that never participate in initial enrollment;
 - consented non-target probes used to test the unknown boundary.
 
-The production registration UX still uses one photo. Additional target probes are development evidence that simulate later encounters, not required user submissions.
+The production registration UX still uses one photo per person. Additional target probes are development evidence that simulate later encounters, not required user submissions. All evaluation biometric files remain local and outside Git. The corpus owner records the applicable consent, guardian authorization when required, retention deadline, and deletion procedure outside the Face Core identity schema.
 
 Evaluation is staged:
 
 1. **Phase 1A frozen one-shot:** every model candidate uses only the initial registration template. This produces the model and operating-point evidence used for the Phase-1A go/no-go decision.
 2. **Phase 1B chronological adaptive replay:** later events are processed in time order with confirmation-gated shadow candidates enabled for the selected model. The corpus ground-truth label supplies the explicit `correct` or `not_me` confirmation solely inside this evaluation harness; it is never a production confirmation source. Replay must exercise and measure candidate creation, corroboration, promotion, retirement, and rejection behavior against the frozen Phase-1A baseline.
 
-The Phase-1A report compares target match/review/unknown counts and non-target false acceptance for every candidate model. The Phase-1B report compares the selected model's frozen baseline with confirmation-gated candidate creation/promotion, template churn, and drift. Both always report exact denominators; zero observed failures in a small corpus cannot be described as a zero real-world error rate.
+The Phase-1A report compares per-identity and aggregate target match/review/unknown counts, top-1/top-2 margins, cross-identity confusion, and non-target false acceptance for every candidate model. The Phase-1B report compares the selected model's frozen baseline with confirmation-gated candidate creation/promotion, template churn, and drift. Both always report exact denominators; zero observed failures in a small corpus cannot be described as a zero real-world error rate.
 
 The corpus inventory reports sample counts for age change, hairstyle, eyewear, hats, pose, lighting, complex background, masks, blur, and occlusion. A condition with zero samples is labeled `untested`; this requirement documents coverage and does not require collecting additional biometric data merely to fill a category. Because Phase 1 accepts exactly one usable face per image, its evaluation is biased toward posed single-person inputs and must disclose that limitation.
 
@@ -361,6 +361,7 @@ Phase-1A functional acceptance requires:
 - one accepted enrollment photo creates a complete process-local evaluation identity;
 - invalid enrollment leaves no partial session state;
 - target and non-target probes produce deterministic versioned results;
+- every enrolled identity has per-identity outcomes, runner-up margins, and a confusion-matrix row in the report;
 - uncertain probes never become successful business events;
 - model integrity or incompatibility fails closed;
 - no face crop, embedding, or identity database persists after the evaluation process exits;
@@ -397,11 +398,16 @@ Phase-1A tests cover schema/reason codes, zero/one/multiple-face behavior, prepr
 6. **Multi-face photo search:** an independent branch of work only after single-face identification is accurate and stable.
 7. **Real-face cross-platform fixtures:** before Phase 2 evaluation, choose a reproducible carrier with explicit consent, retention, deletion, and redistribution rules; do not silently turn Phase-1 samples into permanent fixtures.
 
-## 16. Open Operator Decisions
+## 16. Resolved Review Decisions
 
-The review has one remaining product decision that is not settled by technical analysis:
+No product decision from the review remains open. The operator selected:
 
-1. Decide whether Phase 1A may enroll a small number of additional consented identities for non-degenerate top-1/top-2 evidence, or deliberately remain single-identity and defer real multi-identity calibration to Phase 2.
+1. no guaranteed periodic trusted re-enrollment;
+2. confirmation-gated supervised learning with no unattended automatic learning;
+3. separate Phase-1A accuracy and Phase-1B governance milestones;
+4. a three-to-five-identity consented Phase-1A evaluation gallery.
+
+The small gallery makes ranking and margin behavior observable but remains non-representative of a 500-person deployment. It does not relax the Phase-2 representative-gallery recalibration gate.
 
 The initial enrollment template remains governed by the same bounded utility and retention rules as later templates. The rejected alternative of retaining it indefinitely as a hidden drift anchor would contradict that requirement and does not independently solve gradual poisoning.
 
