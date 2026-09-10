@@ -102,7 +102,18 @@ These are the measurable definitions spec §7 and §14 require the plan to choos
 
 **Identity aggregation `aggregation_strategy: single_template_passthrough`.** In Phase 1A every identity holds exactly one template, so the identity score is that template's score; median, trimmed mean, and support rules are degenerate. The aggregation interface is frozen so Phase 1B can add `trimmed_mean_top_k` without a contract change, but no multi-template strategy is implemented now. This is the justified choice spec §8 asks for: with one template per identity, a robust aggregate and a maximum are the same number, and implementing an unexercised strategy would be untested code.
 
-**Comparison-latency budget** (spec §14 requires this be declared *before* benchmarking): for exact comparison of one probe embedding against 500 active templates, single process, on the reference machine (Apple M1, arm64, macOS 26.6.2): **p95 ≤ 10 ms, p99 ≤ 20 ms**. The report must record machine, interpreter, NumPy and ONNX Runtime versions, and must show comparison time separately from end-to-end time. A run on a materially different machine class does not inherit this budget; the report says so and the operator re-declares.
+**Comparison stage — exact boundary.** The budget below is meaningless without saying what it times, so the boundary is defined by a principle rather than a list, to keep it from being gamed: **every step whose cost grows with the number of enrolled identities is inside the comparison stage.**
+
+- Inside: similarity computation of the probe embedding against all active templates, per-identity aggregation, ranking, top-1/top-2 margin computation, and decision-band assignment.
+- Outside: decode, EXIF orientation, quality gating, detection, alignment, ONNX embedding inference, report assembly, and file I/O. None of these scale with identity count.
+
+An implementer may not move an N-scaling step into the end-to-end series to make the comparison series pass. Task 11's test asserts the boundary by scaling the gallery from 50 to 500 and requiring the comparison series to grow while the end-to-end remainder stays flat within noise.
+
+**Comparison-latency budget** (spec §14 requires this be declared *before* benchmarking): for the comparison stage as defined above, one probe against 500 active templates, single process, on the reference machine (Apple M1, arm64, macOS 26.6.2): **p95 ≤ 1.0 ms, p99 ≤ 2.0 ms**.
+
+Basis, so the number is auditable rather than arbitrary: a measured NumPy floor for the 500×512 matmul plus top-2 selection is p95 ≈ 0.013 ms on the reference machine (2026-09-10). The budget allows roughly 75× that floor to cover per-identity aggregation, banding, and interpreter overhead, while still failing loudly if the comparison stage is implemented as a per-identity Python loop — which would land near 0.5 ms and consume most of the allowance. An earlier draft of this plan set 10 ms, which is roughly 790× the measured floor and could not fail; that budget would have been decorative.
+
+The report must record machine, interpreter, NumPy and ONNX Runtime versions, and must show comparison time separately from end-to-end time. A run on a materially different machine class does not inherit this budget; the report says so and the operator re-declares.
 
 **Decision bands.** `matched` requires identity score `>= match_threshold` **and** top-1/top-2 margin `>= margin_threshold`; `review` requires score `>= review_threshold`; otherwise `unknown`. No numeric value is chosen in this plan — Task 10 sweeps them and the operator picks from the table.
 
@@ -388,11 +399,13 @@ The deterministic fixture generator lands here rather than in Task 12 because Ta
 - Every candidate receives the same enrollment gallery, the same probe order, and the same policy interface; a test asserts identical probe ordering across candidates.
 - Each identity is enrolled from exactly one registration photo, asserted by the harness.
 - A condition with zero samples is emitted as `untested`, never as a zero error rate.
+- The bake-off emits a **corpus inventory table with one row per condition for all ten spec §14 conditions** — age change, hairstyle, eyewear, hats, pose, lighting, complex background, masks, blur, occlusion — each carrying its sample count. All ten rows are always present; a condition absent from the manifest renders as `untested`, not as a missing row. The table is emitted even when the corpus is unavailable under Prerequisite P1, in which case every row reads `untested` — coverage is documented, and a gap is visible rather than silent.
+- The report states the spec §14 limitation that Phase-1A evaluation is biased toward posed single-person inputs, because exactly one usable face per image is required.
 
 **Test-first evidence:**
-- Failing case: a manifest whose enrollment path resolves under the repository root.
-- RED: `.venv/bin/python -m pytest tests/eval/test_corpus.py -q` → `Failed: DID NOT RAISE ConfigurationError`.
-- Minimal behavior: resolve the path, compare against the repository root, refuse on containment.
+- Failing case: a manifest whose enrollment path resolves under the repository root; and separately, a manifest naming only three conditions rendering an inventory table with three rows instead of ten.
+- RED: `.venv/bin/python -m pytest tests/eval/test_corpus.py tests/eval/test_bakeoff.py -q` → `Failed: DID NOT RAISE ConfigurationError`, then `assert 3 == 10` on inventory row count.
+- Minimal behavior: resolve the path, compare against the repository root, refuse on containment; render the inventory from the fixed ten-condition list rather than from the manifest's observed keys.
 - GREEN: same command → pass.
 - Project verification: `.venv/bin/python -m pytest tests/ -q` → no regression.
 
@@ -411,13 +424,14 @@ The deterministic fixture generator lands here rather than in Task 12 because Ta
 - Every row carries target `matched`/`review`/`unknown` counts, non-target false acceptances, and **exact denominators**.
 - Per-identity outcomes, runner-up margins, and a confusion-matrix row exist for every enrolled identity.
 - Zero observed failures is rendered as `0/N`, never as a rate, and never as "zero error rate".
+- **Minimum denominator for rate rendering is 30.** Below it the cell shows counts only, as `k/N`. At or above it a rate may appear, but `k/N` is still shown alongside — a rate never replaces its denominator anywhere in the report. Phase-1A galleries are three to five identities, so most cells will be counts-only by construction; that is the intended outcome, not a degraded one.
 - The table is produced for every candidate model, including any marked `provenance_unresolved`.
 - Reports are written under `./reports/`, which `.gitignore` denies. A report containing an embedding value, a face crop, a full local path, or a per-image identity label fails a redaction assertion in `eval/report.py` before the file is written — the guard is code, not a reviewer's habit.
 
 **Test-first evidence:**
 - Failing case: a table row rendering `0.0%` for a denominator of 4; and separately, a report body carrying a raw embedding vector.
 - RED: `.venv/bin/python -m pytest tests/eval/test_sweep.py tests/eval/test_report.py -q` → `assert '0.0%' == '0/4'`, and `Failed: DID NOT RAISE RedactionError`.
-- Minimal behavior: render counts over denominators and forbid rate formatting below a declared minimum denominator; scan the assembled report for float arrays, absolute paths, and identity labels before writing.
+- Minimal behavior: render counts over denominators and forbid rate formatting below the minimum denominator of 30; scan the assembled report for float arrays, absolute paths, and identity labels before writing.
 - GREEN: same command → pass.
 - Project verification: `.venv/bin/ruff check src tests` → clean.
 
@@ -434,13 +448,14 @@ The deterministic fixture generator lands here rather than in Task 12 because Ta
 **Acceptance:**
 - Comparison time is reported separately from end-to-end time.
 - The report records machine, interpreter, NumPy and ONNX Runtime versions.
-- The declared budget (p95 ≤ 10 ms, p99 ≤ 20 ms on the reference machine) is asserted, and a breach fails the acceptance rather than being noted.
+- The declared budget (p95 ≤ 1.0 ms, p99 ≤ 2.0 ms on the reference machine) is asserted, and a breach fails the acceptance rather than being noted.
+- The comparison stage matches the boundary defined in the frozen defaults: the gallery is swept at 50, 100, 250, and 500 identities, and the test asserts the comparison series grows with identity count while the end-to-end remainder stays flat within noise. This is what stops an N-scaling step being reclassified as end-to-end.
 - The report states in prose that synthetic vectors measure capacity and latency only, and estimate no false acceptance, ranking quality, margin behavior, or policy-trigger frequency.
 
 **Test-first evidence:**
-- Failing case: a benchmark reporting a single blended end-to-end number.
-- RED: `.venv/bin/python -m pytest tests/eval/test_capacity.py -q` → `KeyError: 'comparison_p95_ms'`.
-- Minimal behavior: time the comparison stage in isolation; emit both series.
+- Failing case: a benchmark reporting a single blended end-to-end number; and separately, a comparison series that does not grow between a 50-identity and a 500-identity gallery, which proves an N-scaling step was timed outside it.
+- RED: `.venv/bin/python -m pytest tests/eval/test_capacity.py -q` → `KeyError: 'comparison_p95_ms'`, then `assert 0.98 > 1.5` on the 500-vs-50 growth ratio.
+- Minimal behavior: time the comparison stage as bounded above, in isolation; emit both series across the four gallery sizes.
 - GREEN: same command → pass.
 - Project verification: `./facecore.sh bakeoff --corpus tests/fixtures/synthetic-corpus.json` → capacity section present in the report.
 
