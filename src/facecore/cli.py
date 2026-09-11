@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from facecore import SCHEMA_VERSION
-from facecore.errors import FaceCoreError, InputDecodeError
+from facecore.errors import FaceCoreError
 from facecore.eval.session import EvaluationSession
 
 
@@ -76,11 +76,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "init":
         return cmd_init()
     if args.command == "evaluate":
-        try:
-            return cmd_evaluate(args.enrollment, args.probe)
-        except InputDecodeError:
-            print(json.dumps(_result_payload("invalid_input")))
-            return 2
+        # cmd_evaluate maps FaceCoreError (incl. InputDecodeError) itself;
+        # no dead except here (Task 5.5 cleanup).
+        return cmd_evaluate(args.enrollment, args.probe)
     return 5
 
 

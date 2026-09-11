@@ -8,12 +8,14 @@ from facecore import SCHEMA_VERSION
 from facecore.contracts.template import FaceTemplate, TemplateRevision
 from facecore.pipeline.decode import decode_image
 from facecore.pipeline.detect import DetectedFace, enforce_single_face
+from facecore.pipeline.yunet import YuNetDetector
 from facecore.repository.memory import InMemoryRepository
 
 
 class EvaluationSession:
-    def __init__(self) -> None:
+    def __init__(self, detector: YuNetDetector | None = None) -> None:
         self._repository = InMemoryRepository()
+        self._detector = detector
 
     def identity_count(self) -> int:
         return len(self._repository.list_active_templates())
@@ -23,12 +25,15 @@ class EvaluationSession:
 
         Undecodable bytes raise InputDecodeError (exit-2 type, never
         invalid_input — Task 3 contract); the CLI maps it to exit 2.
+        With a detector (Task 5.5), faces come from the real adapter;
+        without one, any decodable image is no usable face (Task 5 gate).
         """
         decoded = decode_image(data)
-        # Zero-face in Phase 1A: without a detector artifact, any decodable
-        # image is treated as no usable face (exactly-one-face gate, Task 5).
-        _ = decoded
-        faces: list[DetectedFace] = []
+        faces: list[DetectedFace]
+        if self._detector is None:
+            faces = []
+        else:
+            faces = self._detector.detect(decoded)
         status, _code, _face = enforce_single_face(faces)
         if status != "ok":
             return "invalid_input"
