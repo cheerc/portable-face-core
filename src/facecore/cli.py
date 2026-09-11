@@ -243,6 +243,12 @@ def cmd_bakeoff(corpus: Path, models: Path, out: Path) -> int:
     return 0
 
 
+def cmd_conformance() -> int:
+    from facecore.conformance.check import check_conformance_cli
+
+    return check_conformance_cli()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="facecore")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -254,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
     bo.add_argument("--corpus", required=True, type=Path)
     bo.add_argument("--models", required=True, type=Path)
     bo.add_argument("--out", required=True, type=Path)
+    sub.add_parser("conformance")
     args = parser.parse_args(argv)
     if args.command == "init":
         return cmd_init()
@@ -263,6 +270,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_evaluate(args.enrollment, args.probe)
     if args.command == "bakeoff":
         return cmd_bakeoff(args.corpus, args.models, args.out)
+    if args.command == "conformance":
+        return cmd_conformance()
     return 5
 
 
