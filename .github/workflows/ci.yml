@@ -1,0 +1,30 @@
+# PR-D CI (operator-via-codex addition): existing verification commands only.
+# Matrix: macos-14 (arm64) + ubuntu-latest, Python 3.14.
+# Steps install the pinned dev deps then run pytest, ruff check, mypy.
+
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  verify:
+    strategy:
+      matrix:
+        os: [macos-14, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install package with dev extras
+        run: pip install -e .[dev]
+      - name: Run tests
+        run: python -m pytest tests/ -q
+      - name: Lint
+        run: ruff check src tests
+      - name: Typecheck
+        run: mypy src
