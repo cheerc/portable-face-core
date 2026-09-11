@@ -1,13 +1,22 @@
-"""Task 1 RED/GREEN: ModelManifest skeleton — S1 fields verbatim, UNVERIFIED empty."""
+"""Task 1 RED/GREEN + Task 6 measured fill: manifest fields from S1/Phase-1.
+
+Task 6 update: the pre-Task-6 completion list ran 2026-09-11, so the
+measured fields now carry values; the no-backfill rule still holds —
+values come from shasum/checker runs, never from git blob SHA-1.
+"""
 
 from facecore.contracts.manifest import ModelManifest, ProvenanceStatus
 
 
-def test_s1_unverified_fields_stay_empty_not_backfilled() -> None:
+def test_measured_fields_carry_phase1_values_not_backfilled() -> None:
     manifest = ModelManifest.sface_2021dec_fp32()
-    # S1 recorded retrieval 2026-09-11; weight hash/checker are UNVERIFIED there.
-    assert manifest.weight_sha256 is None
-    assert manifest.mobile_usability is None
+    # Measured 2026-09-11; == hash quoted in upstream issue #313.
+    assert (
+        manifest.weight_sha256
+        == "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"
+    )
+    assert manifest.mobile_usability is not None
+    assert "BatchNormalization" in manifest.mobile_usability
     assert manifest.provenance == ProvenanceStatus.UNRESOLVED
 
 
