@@ -76,16 +76,38 @@ MARGIN_GRID = [round(v, 2) for v in [x * 0.05 for x in range(0, 11)]]
 REVIEW_THRESHOLD = 0.5
 
 
-def render_per_probe_detail(
-    rows: list[tuple[str, str, float | None, float | None]],
-) -> list[str]:
-    """Per-probe lines as `basename → status (score, margin)`.
+ProbeRow = tuple[str, str, float | None, float | None, str | None, str | None]
 
+
+def render_per_probe_detail(
+    rows: list[tuple[str, str, float | None, float | None]] | list[ProbeRow],
+) -> list[str]:
+    """Per-probe lines, self-contained (verification-grade, work order 2).
+
+    6-tuple rows render `basename → status (top1 S, margin M) | expected E,
+    predicted P` so a reader judges each pairing without rerunning. 4-tuple
+    rows keep the legacy `basename → status (score, margin)` shape (PR #14).
     Basename only — absolute paths never enter the report (redaction guard
-    red line). Identity labels are not rendered per probe either.
+    red line). Identity names here are manifest-derived gallery ids
+    (expected/predicted), never real names.
     """
     lines: list[str] = []
-    for path, status, score, margin in rows:
+    for row in rows:
+        if len(row) == 6:
+            path, status, top1, runner_up, expected, predicted = row
+            name = Path(path).name
+            if top1 is None:
+                detail = "n/a, n/a"
+            else:
+                base = runner_up if runner_up is not None else 0.0
+                detail = f"top1 {top1:.4f}, margin {top1 - base:.4f}"
+            exp = expected if expected is not None else "n/a"
+            pred = predicted if predicted is not None else "n/a"
+            lines.append(
+                f"{name} → {status} ({detail}) | expected {exp}, predicted {pred}"
+            )
+            continue
+        path, status, score, margin = row
         name = Path(path).name
         score_s = f"{score:.4f}" if score is not None else "n/a"
         margin_s = f"{margin:.4f}" if margin is not None else "n/a"
@@ -182,11 +204,13 @@ def cmd_bakeoff(corpus: Path, models: Path, out: Path) -> int:
             outcome.top_score if outcome.top_score is not None else -1.0
         )
     per_identity: dict[str, list[str]] = {}
-    per_probe: list[tuple[str, str, float | None, float | None]] = []
+    per_probe: list[ProbeRow] = []
     for entry, vector in zip(target_files, target_vectors, strict=True):
         if vector is None:
             per_identity.setdefault(entry.identity, []).append("invalid_input")
-            per_probe.append((entry.path, "invalid_input", None, None))
+            per_probe.append(
+                (entry.path, "invalid_input", None, None, entry.identity, None)
+            )
             continue
         outcome = run_candidate(gallery, [vector], session._repository, model_version)[
             0
@@ -196,7 +220,16 @@ def cmd_bakeoff(corpus: Path, models: Path, out: Path) -> int:
         target_margins.append(outcome.margin)
         status = band_of(score, outcome.margin)
         per_identity.setdefault(entry.identity, []).append(status)
-        per_probe.append((entry.path, status, outcome.top_score, outcome.margin))
+        per_probe.append(
+            (
+                entry.path,
+                status,
+                outcome.top_score,
+                outcome.runner_up_score,
+                entry.identity,
+                outcome.top_identity,
+            )
+        )
     rows = sweep_thresholds(
         target_scores=target_scores,
         target_margins=target_margins,
