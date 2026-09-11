@@ -47,7 +47,11 @@ class ModelManifest:
                 "https://raw.githubusercontent.com/opencv/opencv_zoo/main/"
                 "models/face_recognition_sface/LICENSE"
             ),
-            weight_sha256=None,
+            # Measured 2026-09-11 (shasum -a 256) against the downloaded
+            # artifact; == hash quoted in upstream issue #313.
+            weight_sha256=(
+                "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"
+            ),
             provenance=ProvenanceStatus.UNRESOLVED,
             provenance_note=(
                 "Upstream issue #313 OPEN as of 2026-09-11; no maintainer reply."
@@ -55,7 +59,12 @@ class ModelManifest:
             embedding_dim=128,
             input_width=112,
             input_height=112,
-            mobile_usability=None,
+            # Measured 2026-09-11 via ORT 1.30.0 mobile-usability checker.
+            mobile_usability=(
+                "2026-09-11 checker: NNAPI 87/87 YES; CoreML-NN 87/87 YES; "
+                "CoreML-MLProgram NO "
+                "(unsupported: BatchNormalization, Flatten)"
+            ),
         )
 
     def verify_sha256(self, actual: str) -> bool:
