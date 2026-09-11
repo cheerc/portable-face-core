@@ -4,6 +4,9 @@
 /embeddings/
 /exports/
 /models/
+/reports/
+/corpus/
+/build/
 *.db
 *.db-shm
 *.db-wal

@@ -38,3 +38,11 @@ class ConfigurationError(FaceCoreError):
     """Invalid configuration (e.g. biometric manifest inside the repo)."""
 
     exit_code = 5
+
+
+class RedactionError(Exception):
+    """Report body tripped the biometric/PII guard — never written to disk.
+
+    Internal guard only (Task 10): no CLI command exposes it, so it carries
+    no exit code. Declared as a change in PR-G.
+    """
