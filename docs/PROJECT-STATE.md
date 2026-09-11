@@ -6,6 +6,8 @@ Last updated: 2026-09-12 Asia/Taipei
 
 **Operator selection: A** (decision d-20260911181002229319-23) — SFace Pair 1 (YuNet 2023mar + SFace 2021dec fp32) stays **provisional**; frozen 0.90 detector gate untouched; occlusion handled via capture-condition guidance + Phase-1B confirmation-gated shadow bank. The **selection gate stays OPEN** (provisional): it closes only after Phase-1B chronological replay validates the selected point against the frozen Phase-1A baseline.
 
+The Phase-1B implementation plan has been drafted (`docs/plans/2026-09-12-phase-1b-implementation-plan.md`) per arbitration `d-20260911184146033747-27` and is pending operator review. Implementation remains locked pending the ADR 0006 go/no-go decision.
+
 ## Current Status
 
 Portable Face Core has **completed Phase-1A implementation**. All Phase-1A code, contracts, in-memory repository, pipeline components (decoding, orientation, quality gating, single-face detection, deterministic alignment, ONNX embedding), identification policy, evaluation session, reference CLI (`facecore.sh init`, `evaluate`, `bakeoff`, `conformance`), synthetic 500-vector capacity benchmark, and deterministic Layer-A conformance check have been delivered, verified test-first across all tasks, and validated under strict typing (mypy), linting (ruff), and dual-runner CI (macos-14 and ubuntu-latest).
@@ -93,9 +95,11 @@ No review decision remains open. The accepted choices are: no guaranteed periodi
 
 ## Next Session
 
-Phase 1A is closed pending Phase-1B standby. Next session entry:
+Phase 1A is closed. Phase-1B implementation plan (`docs/plans/2026-09-12-phase-1b-implementation-plan.md`) is drafted and pending operator review. Next session entry:
 
-1. Read `CLAUDE.md` and this file.
+1. Read `CLAUDE.md`, `docs/plans/2026-09-12-phase-1b-implementation-plan.md`, and this file.
 2. Selection evidence: no-weights skeleton `docs/2026-09-12-model-selection-report-skeleton.md` (gate OPEN, provisional).
-3. Phase-1B starts only with a separate operator instruction (implementation plan + go/no-go decision, ADR 0006) — **not** opened by this PR.
-4. Do not begin Phase-1B implementation (persistent identity CLI, confirmation-gated learning, chronological adaptive replay, encrypted storage, rollback, deletion) until that instruction lands.
+3. Operator decisions required:
+   - Record the Phase-1B governance go/no-go decision (ADR 0006).
+   - Resolve Operator-level premises (weights dual gate, P1 corpus chronology, exemplar margin, retention TTL).
+4. Do not begin Phase-1B implementation (persistent identity CLI, confirmation-gated learning, chronological adaptive replay, encrypted storage, rollback, deletion) until the operator records the Phase-1B go/no-go decision.

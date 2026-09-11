@@ -41,7 +41,8 @@ docs/
 │   ├── 0006-split-phase-one-accuracy-governance.md
 │   └── 0007-small-consented-evaluation-gallery.md
 ├── plans/
-│   └── 2026-09-10-phase-1a-implementation-plan.md
+│   ├── 2026-09-10-phase-1a-implementation-plan.md
+│   └── 2026-09-12-phase-1b-implementation-plan.md
 ├── research/
 │   ├── 2026-09-09-open-source-face-stack.md
 │   └── 2026-09-10-model-candidate-gate.md
