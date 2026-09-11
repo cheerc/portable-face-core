@@ -26,6 +26,7 @@
 
 # Python and tooling
 .venv/
+*.egg-info/
 __pycache__/
 *.py[cod]
 .pytest_cache/
