@@ -144,3 +144,5 @@ tests/
 ```
 
 Start with `CLAUDE.md`. Phase 1A is implemented and verified on macOS arm64. The model candidate bake-off evaluation was performed against the initial P1 consented gallery; the model selection gate remains OPEN pending operator review. Next milestone is operator model selection and the Phase-1B governance go/no-go decision.
+
+Licensed under the MIT License — see LICENSE.
