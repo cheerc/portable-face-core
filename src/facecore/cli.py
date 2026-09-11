@@ -76,6 +76,23 @@ MARGIN_GRID = [round(v, 2) for v in [x * 0.05 for x in range(0, 11)]]
 REVIEW_THRESHOLD = 0.5
 
 
+def render_per_probe_detail(
+    rows: list[tuple[str, str, float | None, float | None]],
+) -> list[str]:
+    """Per-probe lines as `basename → status (score, margin)`.
+
+    Basename only — absolute paths never enter the report (redaction guard
+    red line). Identity labels are not rendered per probe either.
+    """
+    lines: list[str] = []
+    for path, status, score, margin in rows:
+        name = Path(path).name
+        score_s = f"{score:.4f}" if score is not None else "n/a"
+        margin_s = f"{margin:.4f}" if margin is not None else "n/a"
+        lines.append(f"{name} → {status} ({score_s}, {margin_s})")
+    return lines
+
+
 def cmd_bakeoff(corpus: Path, models: Path, out: Path) -> int:
     from facecore.contracts.manifest import ModelManifest
     from facecore.contracts.policy import PolicyProfile
@@ -165,9 +182,11 @@ def cmd_bakeoff(corpus: Path, models: Path, out: Path) -> int:
             outcome.top_score if outcome.top_score is not None else -1.0
         )
     per_identity: dict[str, list[str]] = {}
+    per_probe: list[tuple[str, str, float | None, float | None]] = []
     for entry, vector in zip(target_files, target_vectors, strict=True):
         if vector is None:
             per_identity.setdefault(entry.identity, []).append("invalid_input")
+            per_probe.append((entry.path, "invalid_input", None, None))
             continue
         outcome = run_candidate(gallery, [vector], session._repository, model_version)[
             0
@@ -175,9 +194,9 @@ def cmd_bakeoff(corpus: Path, models: Path, out: Path) -> int:
         score = outcome.top_score if outcome.top_score is not None else -1.0
         target_scores.append(score)
         target_margins.append(outcome.margin)
-        per_identity.setdefault(entry.identity, []).append(
-            band_of(score, outcome.margin)
-        )
+        status = band_of(score, outcome.margin)
+        per_identity.setdefault(entry.identity, []).append(status)
+        per_probe.append((entry.path, status, outcome.top_score, outcome.margin))
     rows = sweep_thresholds(
         target_scores=target_scores,
         target_margins=target_margins,
@@ -212,6 +231,13 @@ def cmd_bakeoff(corpus: Path, models: Path, out: Path) -> int:
             f"unknown {format_cell(sweep.unknown, sweep.target_denom)}, "
             f"FA {format_cell(sweep.false_accepts, sweep.nontarget_denom)}"
         )
+    lines += [
+        "",
+        "## Per-probe detail "
+        f"(display anchor match>={ANCHOR_MATCH} margin>={ANCHOR_MARGIN}; not selected)",
+        "",
+    ]
+    lines += render_per_probe_detail(per_probe)
     lines += [
         "",
         "## Per-identity target outcomes "
