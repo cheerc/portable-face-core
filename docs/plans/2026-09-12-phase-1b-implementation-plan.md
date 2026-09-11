@@ -11,10 +11,11 @@
 - Decision `d-20260911174928737696-16`: ONNX weights download dual-gate blocker (S1 clear + operator decision required).
 - Decision `d-20260911171253541089-12`: Pair 2 comparison preconditions (matrix stage).
 - Decision `d-20260911184146033747-27`: Team discuss arbitration (D1–D5 rulings, 7-PR structure, layered premises, frozen manifest).
-- Decision `d-20260911185748092685-28`: PR #19 review rework instructions (P1/P2 fixes: non-binding premises, S1B crypto neutrality, P0 structured gate, corroboration counting, drift lifecycle, generation migration, crypto-erasure model, conditional closeout, temporal leakage A/B, full export/import state).
-- Decision `d-20260911190712794016-29`: PR #19 r1 review rework round 2 (DEK granularity & KeyProvider placement, utility [0,1] contract & composite normalization, full governance state export/import, backup retention policy & limitation).
+- Decision `d-20260911185748092685-28`: PR #19 review rework instructions (P1/P2 fixes).
+- Decision `d-20260911190712794016-29`: PR #19 r1 review rework round 2.
+- Decision `d-20260911191746908253-30`: PR #19 r2 review rework round 3 (external KeyProvider/SQLite atomicity protocol, active template retained exemplar lifecycle, export/import key re-homing, full manifest compatibility check, complete Operator Decision Manifest consumer dependencies).
 
-**Goal:** Extend the verified in-memory Phase-1A face recognition pipeline into a production-grade on-device governance engine: persistent encrypted identity and candidate storage, `KeyProvider` abstraction, confirmation-gated shadow candidate learning, multi-event corroboration, utility-driven bounded template bank with capacity eviction, atomic revisions and identity recovery CLI (add, show, re-enroll, rollback, delete, candidate reject), model generation migration with exemplar re-embedding, encrypted export/import of full governance state, long-horizon drift indicators with bounded response, and a chronological adaptive replay harness with strict temporal-leakage prevention that measures adaptive behavior against the frozen Phase-1A baseline.
+**Goal:** Extend the verified in-memory Phase-1A face recognition pipeline into a production-grade on-device governance engine: persistent encrypted identity and candidate storage, `KeyProvider` abstraction with journaled tombstone atomicity, confirmation-gated shadow candidate learning, multi-event corroboration, utility-driven bounded template bank with capacity eviction, atomic revisions and identity recovery CLI (add, show, re-enroll, rollback, delete, candidate reject), active template retained exemplar lifecycle and model generation migration with re-embedding, authenticated export/import key re-homing of full governance state, long-horizon drift indicators with bounded response, and a chronological adaptive replay harness with strict temporal-leakage prevention that measures adaptive behavior against the frozen Phase-1A baseline.
 
 **Tech stack:** Python, Encrypted Storage Repository (engine and cipher scheme determined by Spike S1B decision manifest), `KeyProvider` abstraction, NumPy, Pillow, pytest, ruff, mypy. Pure on-device offline execution; zero network access; zero external ORM or unvetted native dependencies.
 
@@ -39,6 +40,7 @@ In accordance with arbitration `d-20260911184146033747-27` item (8), this implem
   - `d-20260911184146033747-27` (Phase-1B discuss arbitration)
   - `d-20260911185748092685-28` (PR #19 review rework instructions)
   - `d-20260911190712794016-29` (PR #19 r1 review rework round 2)
+  - `d-20260911191746908253-30` (PR #19 r2 review rework round 3)
 
 **Dispatch verification rule:** If the provider `main` tip, relevant blob SHAs, or active governing decisions differ from this manifest during task intake, the implementer must halt immediately, report the drift to the Lead, and await explicit re-base instruction.
 
@@ -62,11 +64,11 @@ These rules govern all Phase-1B implementation work without exception (spec §§
 
 ## 3. Evidence and Open Hypotheses (Layered Premises)
 
-In accordance with arbitration `d-20260911184146033747-27` and rework decisions `d-20260911185748092685-28` / `d-20260911190712794016-29`, project premises are strictly partitioned into **Operator-level** and **Commander/Lead-level**.
+In accordance with arbitration `d-20260911184146033747-27` and rework decisions `d-20260911185748092685-28`, `d-20260911190712794016-29`, and `d-20260911191746908253-30`, project premises are strictly partitioned into **Operator-level** and **Commander/Lead-level**.
 
 ### Operator-level Premises (Provisional & Non-Binding until Operator Decision Manifest)
 
-**CRITICAL POLICY ENFORCEMENT:** All numerical thresholds, retention periods, and policy values listed below and in Section 6 are **provisional recommendations only**. They are **non-binding** and do not authorize implementation. Every implementation task that consumes these values (Tasks 3, 4, 5, 8) carries a hard structural dependency on an **Operator Decision Manifest** recording explicit sign-off on each item.
+**CRITICAL POLICY ENFORCEMENT:** All numerical thresholds, retention periods, key custody models, and policy values listed below and in Section 6 are **provisional recommendations only**. They are **non-binding** and do not authorize implementation. Every implementation task that consumes these values (**Tasks 2, 3, 4, 5, 6, and 8**) carries a hard structural dependency on an **Operator Decision Manifest** recording explicit sign-off on each item.
 
 1. **Formal Phase-1B Go/No-Go Decision (ADR 0006 Gate):**
    - *Status:* Pending operator review of this plan and Phase-1A evidence (`d-20260911181317619341-25`).
@@ -79,27 +81,27 @@ In accordance with arbitration `d-20260911184146033747-27` and rework decisions 
    - *Requirement:* Operator provides multi-timestamp consented probe sequences, OR formally authorizes synthetic temporal streams as the primary governance verification vehicle while real replay is labeled `blocked` with open selection gate (`d-20260911181002229319-23`).
 4. **Exemplar Crop Margin & Storage Authorization (`exemplar_margin`):**
    - *Status:* Spec §10 line 222 defines `EncryptedExemplar` as a bounded pre-alignment region plus `exemplar_margin`.
-   - *Provisional recommendation:* Minimal crop margin `0.0` (tight crop, no extra background) to honor data minimization. Binding value set in Operator Decision Manifest.
+   - *Provisional recommendation:* Minimal crop margin `0.0` (tight crop, no extra background) to honor data minimization. Binding value set in Operator Decision Manifest. Consumed by Tasks 1, 2, 7.
 5. **Promotion-Confirmation Semantics:**
    - *Status:* Spec §9 line 176 requires explicit `correct` confirmation for candidate creation.
-   - *Provisional recommendation:* Candidate creation strictly requires explicit `correct`; once created and corroborated by subsequent independent events, promotion to active template is deterministic and automated. Binding value set in Operator Decision Manifest.
+   - *Provisional recommendation:* Candidate creation strictly requires explicit `correct`; once created and corroborated by subsequent independent events, promotion to active template is deterministic and automated. Binding value set in Operator Decision Manifest. Consumed by Tasks 3, 4.
 6. **Retention TTL and Rollback Revision Depth Limit:**
    - *Status:* Spec §9 line 211 states retired templates remain available for a limited rollback policy and are deleted after retention expiry.
-   - *Provisional recommendation:* Maximum rollback depth = 5 revisions; retired template retention TTL = 90 days. Binding values set in Operator Decision Manifest.
+   - *Provisional recommendation:* Maximum rollback depth = 5 revisions; retired template retention TTL = 90 days. Binding values set in Operator Decision Manifest. Consumed by Tasks 2, 4, 5, 8.
 7. **Key Custody Model:**
    - *Status:* Spec §10 line 227 mandates keys stay outside DB via `KeyProvider`.
-   - *Provisional recommendation:* Software-backed key store for macOS development CLI, with interface seam for Phase-2 mobile KeyStore/KeyChain. Binding value set in Operator Decision Manifest.
+   - *Provisional recommendation:* Software-backed external key store for macOS development CLI (`FileKeyProvider`), with interface seam for Phase-2 mobile KeyStore/KeyChain. Binding value set in Operator Decision Manifest. Consumed by Tasks 2, 5, 6.
 8. **Actor Taxonomy in Audit Trail:**
    - *Status:* Spec §11 lines 263–265 distinguishes `user` (supervision) and `operator` (recovery/re-enroll).
-   - *Provisional recommendation:* `"user"` for live probe confirmation; `"operator"` for CLI administrative actions. Binding value set in Operator Decision Manifest.
+   - *Provisional recommendation:* `"user"` for live probe confirmation; `"operator"` for CLI administrative actions. Binding value set in Operator Decision Manifest. Consumed by Task 5.
 
 ### Commander/Lead-level Premises (Architectural Decisions Resolved in Spikes)
 
 1. **Storage Engine & Encryption Scheme Selection (Spike S1B):**
    - *Requirement:* Neutral architecture specification. The system requires an `EncryptedStorageRepository` satisfying spec §10 and §12 (confidentiality at rest, authenticated integrity, fail-closed exit code 4, ACID transactions, atomic revision commits, zero plaintext on disk).
    - *Spike Responsibility:* Spike S1B evaluates storage routes (e.g., standard library SQLite with application-layer AEAD field encryption vs alternatives) and produces the binding `storage-crypto-manifest.md`. Task 2 depends strictly on S1B's decision manifest; no specific engine, cipher mode, or AAD format is preselected in this plan.
-2. **Transaction Isolation & Durability Contract:**
-   - Transactions must execute atomically (`BEGIN IMMEDIATE`). Failure or process interruption mid-transaction must leave zero partial revisions, orphaned biometric payloads, or unencrypted temp files.
+2. **Transaction Isolation & Journaled Tombstone Protocol:**
+   - SQLite transactions execute atomically (`BEGIN IMMEDIATE`). Key destruction in external `KeyProvider` is coordinated via a **Journaled Tombstone & Recovery Protocol** (Section 7) ensuring crash-consistent, idempotent, and fail-closed atomicity across SQLite/KeyProvider/WAL boundaries.
 3. **Event Independence & Composite Ordering Contract:**
    - In accordance with arbitration `d-20260911184146033747-27` item (6) and finding P2-13, event ordering and independence are determined by the composite key `(timestamp, sequence_number, event_uuid, source_sha256)`.
    - Equal timestamps are valid and processed strictly in ascending `sequence_number` order. Consecutive events within `min_corroboration_interval_secs` (provisional 60s) or with matching image digests are treated as a single burst and cannot satisfy independent corroboration. A backward `sequence_number` is an error and rejected.
@@ -107,8 +109,8 @@ In accordance with arbitration `d-20260911184146033747-27` and rework decisions 
    - All six factors defined by exact mathematical formulas normalized to `[0.0, 1.0]`. Composite score is explicitly clamped to $[0.0, 1.0]$. Tie-breaking uses earliest creation timestamp, with `template_id` lexicographical comparison as the final deterministic tie-breaker.
 5. **Identity Collision Defense:**
    - `identity add` is create-only and enforces strict uniqueness at the storage layer; existing IDs fail immediately without mutation (exit code 4).
-6. **Model Generation Migration Specification:**
-   - When a model manifest or geometry changes, stored `EncryptedExemplar` records are re-embedded atomically. If alignment or crop geometry cannot be reproduced, the identity transitions to `status: re_enrollment_required` and identification queries return `review` with reason code `identity_re_enrollment_required` (spec §12 lines 313–314).
+6. **Active Template Retained Exemplar Lifecycle & Migration:**
+   - Active templates (`face_templates`) retain their associated `encrypted_exemplar` and crop metadata throughout their lifecycle (initial enrollment, promotion, trusted re-enrollment, retirement). When a model manifest changes, stored exemplars are re-embedded atomically. If alignment or crop geometry cannot be reproduced, the identity transitions to `status: re_enrollment_required` and identification queries return `review` with reason code `identity_re_enrollment_required` (spec §12 lines 313–314).
 
 ---
 
@@ -140,8 +142,9 @@ In accordance with arbitration `d-20260911184146033747-27` item (1), implementat
   2. Define authenticated encryption scheme, AAD structure, nonce generation, and format versioning.
   3. Detail `KeyProvider` interface and deliver macOS software key provider (`FileKeyProvider`).
   4. Specify external `KeyProvider` placement for record-specific Data Encryption Keys (DEKs). SQLite stores only opaque `key_id` references; DEKs are managed, stored, and destroyed exclusively within the KeyProvider.
-  5. Detail transaction boundaries, crash consistency, and fail-closed WAL checkpoint handling.
-  6. Explicitly document threat model limitations: Logical deletion + cryptographic key erasure via KeyProvider; acknowledge physical SSD/flash wear-leveling remanence limitations. Key rotation is deferred to Phase 2.
+  5. Specify the Journaled Tombstone & Recovery Protocol for two-phase atomic key destruction and SQLite mutation.
+  6. Detail transaction boundaries, crash consistency, and fail-closed WAL checkpoint handling.
+  7. Explicitly document threat model limitations: Logical deletion + cryptographic key erasure via KeyProvider; acknowledge physical SSD/flash wear-leveling remanence limitations. Key rotation is deferred to Phase 2.
 - **Blocks:** Task 2 (Encrypted Storage Repository).
 
 ### Spike S2B — Model Weights and Corpus Chronology Readiness
@@ -229,24 +232,42 @@ The storage layer enforces strict relational isolation. **Key Placement Rule:** 
 
 1. `identities`: `id` (TEXT PRIMARY KEY), `display_name` (TEXT), `status` (TEXT: `active`, `re_enrollment_required`, `deleted`), `current_revision` (INTEGER), `created_at` (TEXT), `updated_at` (TEXT).
 2. `template_revisions`: `id` (INTEGER PRIMARY KEY AUTOINCREMENT), `identity_id` (TEXT), `revision` (INTEGER), `active_template_ids` (TEXT: JSON list), `retired_template_ids` (TEXT: JSON list), `policy_version` (INTEGER), `created_at` (TEXT), `actor` (TEXT: `user`, `operator`).
-3. `face_templates`: `id` (TEXT PRIMARY KEY), `identity_id` (TEXT), `generation_id` (TEXT), `status` (TEXT: `active`, `retired`), `key_id` (TEXT), `encrypted_embedding` (BLOB), `nonce` (BLOB), `quality_score` (REAL), `utility_score` (REAL), `additional_corroboration_count` (INTEGER), `created_at` (TEXT), `retired_at` (TEXT NULL).
-4. `candidate_templates`: `id` (TEXT PRIMARY KEY), `identity_id` (TEXT), `generation_id` (TEXT), `status` (TEXT: `pending`, `promoted`, `rejected`, `expired`), `key_id` (TEXT), `encrypted_embedding` (BLOB), `encrypted_exemplar` (BLOB NULL), `nonce` (BLOB), `quality_score` (REAL), `additional_corroboration_count` (INTEGER DEFAULT 0), `evidence_log` (TEXT: JSON), `expires_at` (TEXT), `created_at` (TEXT).
+3. `face_templates`: `id` (TEXT PRIMARY KEY), `identity_id` (TEXT), `generation_id` (TEXT), `status` (TEXT: `active`, `retired`), `key_id` (TEXT), `encrypted_embedding` (BLOB), `nonce` (BLOB), `encrypted_exemplar` (BLOB), `exemplar_crop_box` (TEXT: JSON), `exemplar_landmarks` (TEXT: JSON), `exemplar_margin` (REAL), `quality_score` (REAL), `utility_score` (REAL), `additional_corroboration_count` (INTEGER), `created_at` (TEXT), `retired_at` (TEXT NULL).
+4. `candidate_templates`: `id` (TEXT PRIMARY KEY), `identity_id` (TEXT), `generation_id` (TEXT), `status` (TEXT: `pending`, `promoted`, `rejected`, `expired`), `key_id` (TEXT), `encrypted_embedding` (BLOB), `encrypted_exemplar` (BLOB NULL), `exemplar_crop_box` (TEXT NULL), `exemplar_landmarks` (TEXT NULL), `nonce` (BLOB), `quality_score` (REAL), `additional_corroboration_count` (INTEGER DEFAULT 0), `evidence_log` (TEXT: JSON), `expires_at` (TEXT), `created_at` (TEXT).
 5. `match_events`: `id` (TEXT PRIMARY KEY), `timestamp` (TEXT), `sequence_number` (INTEGER), `status` (TEXT), `decision_score` (REAL), `runner_up_score` (REAL NULL), `matched_identity_id` (TEXT NULL), `candidate_created` (INTEGER), `actor` (TEXT NULL). (Zero image or embedding data).
+6. `deletion_tombstones`: `id` (INTEGER PRIMARY KEY AUTOINCREMENT), `target_type` (TEXT: `record`, `identity`), `target_id` (TEXT), `key_id` (TEXT NULL), `status` (TEXT: `pending_key_destruction`, `key_destroyed`), `created_at` (TEXT).
 
-### Cryptographic Erasure & Deletion Lifecycle (Finding P1-1)
+### Retained Exemplar Lifecycle (Finding P1-2)
 
-1. **Record-Level Purge (Retired/Candidate Expiry):**
-   - When a retired template or expired candidate passes its retention deadline (90 days), `repository.purge_record(record_id)` calls `key_provider.destroy_key(key_id)`.
-   - With the record-specific DEK destroyed in the external KeyProvider, that specific record's ciphertext becomes mathematically unrecoverable across the live database, WAL, snapshots, and historical backups, even if an attacker possesses the database file and the KeyProvider's master key.
-   - In SQLite, the row's ciphertext columns are overwritten with CSPRNG random bytes (`os.urandom`) and the row is deleted.
-2. **Identity-Level Deletion (`identity delete --id <id>`):**
-   - Transaction `BEGIN IMMEDIATE` acquires exclusive lock.
-   - All active, retired, candidate, and exemplar blobs for `<id>` are overwritten with random bytes and rows deleted.
-   - Rows in `identities` and `template_revisions` are deleted.
-   - All `match_events` referencing `<id>` have `matched_identity_id` set to `NULL` (irreversibly anonymized audit tombstone).
-   - `key_provider.destroy_identity_keys(identity_id)` is invoked, permanently destroying all DEKs associated with `<id>` in the external key store.
-   - Transaction commits. SQLite `PRAGMA wal_checkpoint(TRUNCATE)` is executed immediately. If checkpointing fails or returns busy, the operation fails closed with exit code `4` (`StoreCorruptionError`).
-3. **Threat Model Limitation:**
+To satisfy spec §12 line 313 (model migration and re-embedding), every active and candidate template retains an encrypted crop:
+1. **Enrollment:** Initial registration photo produces active template 1. Its pre-alignment face crop is encrypted under a unique record DEK and saved in `face_templates.encrypted_exemplar` alongside crop coordinates and landmarks.
+2. **Promotion:** When a candidate promotes to active template, its `encrypted_exemplar` is preserved and linked to the new active template record.
+3. **Trusted Re-enrollment:** Generates a new active template containing the new photo's encrypted exemplar.
+4. **Retirement & Purge:** Retired templates preserve their encrypted exemplar until retention expiry (90 days), after which the exemplar DEK is destroyed via KeyProvider and the record is purged.
+
+### Journaled Tombstone & Two-Phase Erasure Protocol (Finding P1-1)
+
+Because SQLite transactions cannot span external `KeyProvider` operations, deletion and purge execute via a durable **Journaled Tombstone Protocol**:
+
+1. **Step 1 (Journaled Tombstone in SQLite):**
+   - SQLite transaction begins (`BEGIN IMMEDIATE`).
+   - For `identity delete`: `identities.status` is set to `deleted`, and records in `deletion_tombstones` are inserted with `status = 'pending_key_destruction'`. Plaintext buffers are scrubbed.
+   - For record purge: record is marked tombstoned.
+   - Active queries immediately filter out tombstoned identities and records.
+   - Transaction commits.
+2. **Step 2 (Key Destruction in KeyProvider):**
+   - Repository invokes `key_provider.destroy_key(key_id)` or `key_provider.destroy_identity_keys(identity_id)`.
+   - DEKs are permanently destroyed in the external key store.
+3. **Step 3 (Final Purge & Checkpoint in SQLite):**
+   - SQLite transaction begins (`BEGIN IMMEDIATE`).
+   - Ciphertext blocks in `face_templates` and `candidate_templates` are overwritten with random bytes (`os.urandom`) and rows deleted.
+   - Rows in `identities`, `template_revisions`, and `deletion_tombstones` are deleted.
+   - Associated `match_events` have `matched_identity_id` set to `NULL` (audit anonymization).
+   - Transaction commits.
+   - SQLite `PRAGMA wal_checkpoint(TRUNCATE)` is executed immediately. If checkpointing fails or returns busy, operation raises `StoreCorruptionError` (exit code 4).
+4. **Crash Recovery & Reconciliation:**
+   - On repository initialization, `reconcile_tombstones()` checks for any records in `deletion_tombstones`. If keys still exist, it completes destruction in KeyProvider, purges the SQLite rows, and truncates the WAL, ensuring crash consistency and fail-closed atomicity across all boundaries.
+5. **Threat Model Limitation:**
    - *Scope:* Destroying DEKs in the external KeyProvider guarantees that database-only backups, WAL files, and disk slack space become permanently undecryptable.
    - *Limitation 1 (Simultaneous Full Backup):* If an operator copies both the database file AND the external KeyProvider secret file at the exact same instant prior to deletion, that offline combined snapshot retains the keys known at that time. Phase 1B guarantees that live operations render existing database files undecryptable upon key destruction.
    - *Limitation 2 (Hardware Remanence):* Physical flash memory wear-leveling controllers prevent operating systems from guaranteeing zero physical NAND cell remanence.
@@ -265,17 +286,22 @@ The storage layer enforces strict relational isolation. **Key Placement Rule:** 
 
 ---
 
-## 8. Synthetic Streams and Adversarial Governance Testing
+## 8. Authenticated Export / Import Key Re-Homing Protocol (Finding P1-3)
 
-In accordance with arbitration `d-20260911184146033747-27` item (6), synthetic data in Phase 1B is strictly scoped to **governance state-machine validation** and **adversarial policy testing**:
+To permit seamless migration between distinct KeyProvider environments without raw key exposure:
 
-### Adversarial Test Streams:
-1. **Wrong confirmation label:** Probe matches identity A, but input is `not_me`. Asserts zero candidates created, policy error recorded.
-2. **Duplicate image hash:** Exact same image file submitted repeatedly. Asserts duplicate detection, zero candidate creation, zero corroboration credit.
-3. **Burst event stream:** Multiple distinct probes submitted within `< 60s`. Asserts burst suppression prevents multiple corroboration counts.
-4. **Out-of-order sequence:** Event with backward `sequence_number` injected. Asserts replay harness refuses out-of-order events.
-5. **Cross-identity margin tie:** Candidate matches identity A at 0.90 and identity B at 0.89 (margin 0.01 < promotion margin 0.12). Asserts promotion refusal.
-6. **Corrupt storage / missing key injection:** Storage header corrupted or key altered mid-operation. Asserts clean fail-closed exit code `4`.
+1. **Export Protocol (`export_identities(path, export_passphrase)`):**
+   - Source repository verifies complete state: `policy_profile`, `model_manifest`, identities, revisions, active templates, retired templates, candidates across all statuses (`pending`, `promoted`, `rejected`, `expired`) with evidence logs, exemplars, and audit tombstones.
+   - For each record, the source `KeyProvider` un-wraps the record's DEK in memory.
+   - An export key-wrapping key $K_{\text{export}}$ is derived from `export_passphrase` via HKDF-SHA256 with a CSPRNG salt.
+   - Every DEK is encrypted under $K_{\text{export}}$ using AES-256-GCM (producing `wrapped_dek`, `wrap_nonce`, `wrap_tag`). Raw key bytes are never written to disk.
+   - The encrypted biometric payloads are copied into the archive alongside their wrapped DEKs.
+2. **Import & Re-Homing Protocol (`import_identities(path, export_passphrase, dest_key_provider)`):**
+   - Archive integrity and manifest compatibility are verified first (Section 11, Task 6).
+   - In-memory re-homing: Destination KeyProvider uses $K_{\text{export}}$ to unwrap each DEK in memory.
+   - For each record, Destination KeyProvider generates a new destination-local `key_id`, re-encrypts the DEK under the destination KeyProvider master key, and stores it in destination key custody.
+   - Destination SQLite database inserts rows referencing the new destination `key_id` values.
+   - The biometric ciphertext payloads are preserved without re-encryption; their cryptographic access is securely transferred to destination custody.
 
 ---
 
@@ -300,7 +326,7 @@ src/facecore/
 ├── contracts/
 │   ├── candidate.py        # CandidateTemplate, CandidateStatus, EvidenceRecord
 │   ├── confirmation.py     # ConfirmationRequest, ConfirmationVerdict, ActorType
-│   ├── crypto.py           # EncryptedBlob, KeyReference, KeyProviderProtocol
+│   ├── crypto.py           # EncryptedBlob, KeyReference, KeyProviderProtocol, WrappedKey
 │   ├── drift.py            # DriftMetrics, DriftStatus, DriftPolicy
 │   ├── export.py           # ExportContainer, ExportMetadata, ExportManifest (full state)
 │   ├── migration.py        # ModelMigrationManifest, MigrationResult, GenerationStatus
@@ -309,8 +335,8 @@ src/facecore/
 │   ├── base.py             # PersistentRepository protocol
 │   ├── cipher.py           # Authenticated cipher abstraction (AEAD)
 │   ├── key_provider.py     # KeyProvider protocol, FileKeyProvider, MockKeyProvider
-│   ├── sqlite_repo.py      # SQLite implementation with ACID transactions & WAL
-│   ├── export.py           # Encrypted export/import serializer and unpacker
+│   ├── sqlite_repo.py      # SQLite implementation with Journaled Tombstones & WAL
+│   ├── export.py           # Authenticated export/import serializer and re-homer
 │   └── migrations/         # Schema DDL (v1)
 ├── governance/
 │   ├── candidate.py        # Candidate creation, update gate, expiry check
@@ -336,7 +362,7 @@ src/facecore/
 - **Files:**
   - Create: `docs/plans/2026-09-12-phase-1b-implementation-plan.md`
   - Modify: `README.md` (repository map); `docs/PROJECT-STATE.md` ("Current Status" & "Next Session")
-- **Interfaces:** Consumes spec §§9–12, 14, Phase-1A closeout state (`98b202a`), arbitration `d-20260911184146033747-27`, and rework decisions `d-20260911185748092685-28` / `d-20260911190712794016-29`.
+- **Interfaces:** Consumes spec §§9–12, 14, Phase-1A closeout state (`98b202a`), arbitration `d-20260911184146033747-27`, and rework decisions `d-20260911185748092685-28`, `d-20260911190712794016-29`, `d-20260911191746908253-30`.
 - **Acceptance:**
   - Repository map in `README.md` lists `docs/plans/2026-09-12-phase-1b-implementation-plan.md`.
   - `docs/PROJECT-STATE.md` records Phase-1B plan drafted and pending operator review, with implementation locked until ADR 0006 go/no-go.
@@ -356,33 +382,34 @@ src/facecore/
   - Test: `tests/contracts/test_governance_contracts.py`
 - **Interfaces:** Produces `CandidateTemplate`, `ConfirmationRequest`, `EncryptedBlob`, `KeyProviderProtocol`, `DriftMetrics`, `ExportContainer`, `ModelMigrationManifest`, `GovernancePolicy` (`governance_policy_version: 1`).
 - **Acceptance:**
+  - `FaceTemplate` models `encrypted_exemplar`, crop bounding box, landmarks, and `key_id`. (Finding P1-2).
   - `CandidateTemplate` models `additional_corroboration_count` initialized to `0` at creation.
   - `ExportContainer` schema models complete governance state: active templates, retired templates, candidates in all statuses (`pending`, `promoted`, `rejected`, `expired`) with evidence logs, exemplars, revisions, full policy profile, model manifest, and audit tombstones. (Finding P1-3).
   - `GovernancePolicy` marks all operational values as provisional pending Operator Decision Manifest.
 - **Test-first evidence:**
-  - Failing case: Constructing `CandidateTemplate` without `additional_corroboration_count = 0` or missing key_id reference raises validation error.
+  - Failing case: Constructing `CandidateTemplate` without `additional_corroboration_count = 0` or constructing `FaceTemplate` without exemplar fields raises validation error.
   - RED: `pytest tests/contracts/test_governance_contracts.py -q` → `ModuleNotFoundError: No module named 'facecore.contracts.candidate'`.
   - Minimal behavior: Implement dataclass models, enums, JSON encoders, and validation predicates.
   - GREEN: `pytest tests/contracts/test_governance_contracts.py -q` → all pass.
   - Project verification: `mypy src tests` and `ruff check src tests` clean.
 
 ### Task 2: Encrypted Storage Repository & KeyProvider Implementation
-- **Depends on:** Prerequisite P0, Spike S1B decision manifest, Task 1.
+- **Depends on:** Prerequisite P0, Spike S1B decision manifest, Operator Decision Manifest (Key Custody), Task 1.
 - **Files:**
   - Create: `src/facecore/storage/cipher.py`, `src/facecore/storage/key_provider.py`, `src/facecore/storage/sqlite_repo.py`, `src/facecore/storage/migrations/v1.sql`
   - Test: `tests/storage/test_cipher.py`, `tests/storage/test_key_provider.py`, `tests/storage/test_sqlite_repo.py`, `tests/storage/test_stress.py`
 - **Interfaces:** Produces `KeyProvider` protocol, `FileKeyProvider`, `SQLitePersistentRepository` implementing `PersistentRepository`.
 - **Acceptance:**
   - Implements storage and cipher scheme selected in Spike S1B manifest (AEAD field encryption with unique nonces).
-  - DEKs are managed exclusively by `KeyProvider`; SQLite stores only opaque `key_id` references. (Finding P1-1).
-  - Purging an individual retired record invokes `key_provider.destroy_key(key_id)`, mathematically destroying its decryption capability.
+  - DEKs are managed exclusively by `KeyProvider`; SQLite stores only opaque `key_id` references.
+  - Deletion and purge follow the Journaled Tombstone Protocol (Section 7). Crash injection before key destruction, after key destruction, and during checkpoint fails closed and reconciles cleanly on startup. (Finding P1-1).
   - Database corruption, missing key, or invalid auth tag raises `StoreCorruptionError` or `KeyNotFoundError` (exit code 4).
   - WAL checkpoint failure handles fail-closed.
-  - 10,000-event + 20-revision + 5-backup rotation retention stress test passes with stable query latency. (Finding P2).
+  - 10,000-event + 20-revision + 5-backup rotation retention stress test passes with stable query latency.
 - **Test-first evidence:**
-  - Failing case: Bit-flipping ciphertext or missing key_id raises `StoreCorruptionError` (exit code 4).
-  - RED: `pytest tests/storage/test_sqlite_repo.py -k "test_tampered_ciphertext" -q` → `Failed: DID NOT RAISE StoreCorruptionError`.
-  - Minimal behavior: Implement SQLite schema, AEAD cipher, external KeyProvider DEK management, and fail-closed error handling.
+  - Failing case: Simulating crash immediately after key destruction leaves orphaned unusable rows that fail startup reconciliation.
+  - RED: `pytest tests/storage/test_sqlite_repo.py -k "test_tombstone_reconciliation_after_crash" -q` → `Failed: DID NOT RECONCILE TOMBSTONES`.
+  - Minimal behavior: Implement SQLite schema, AEAD cipher, external KeyProvider DEK management, journaled tombstone reconciliation, and fail-closed error handling.
   - GREEN: `pytest tests/storage/ -q` → all pass.
   - Project verification: `mypy src` clean; memory leak checks pass under 10k iterations.
 
@@ -415,53 +442,55 @@ src/facecore/
   - Probes within `burst_suppression_min_interval_secs` (60s) or duplicate image hashes increment zero corroboration counts.
   - Promotion strictly requires: (a) `additional_corroboration_count >= additional_corroboration_min_events` (1), (b) cross-identity exclusivity margin $\ge$ `promotion_margin` (0.12).
   - Single seed confirmation remains `pending`; only a second independent event can promote it.
-  - Active bank capacity (5) triggers 6-factor utility rescoring using exact Section 6 formulas. Output score is strictly in $[0.0, 1.0]$. (Finding P1-2).
+  - When promoted, active template copies the candidate's `encrypted_exemplar` and crop metadata into `face_templates`. (Finding P1-2).
+  - Active bank capacity (5) triggers 6-factor utility rescoring using exact Section 6 formulas. Output score is strictly in $[0.0, 1.0]$.
   - Initial template enjoys no permanent exemption and retires under the same utility policy.
   - Deterministic tie-breaking: timestamp followed by `template_id`.
 - **Test-first evidence:**
-  - Failing case: Single confirmed candidate seed promotes itself without a second independent event; or utility score falls outside $[0.0, 1.0]$ on anti-parallel / penalty inputs. (Finding P1-2).
+  - Failing case: Single confirmed candidate seed promotes itself without a second independent event; or utility score falls outside $[0.0, 1.0]$ on anti-parallel / penalty inputs.
   - RED: `pytest tests/governance/test_promotion.py -k "test_single_seed_event_cannot_self_promote" -q` → `assert candidate.status == 'pending' (got 'promoted')`.
-  - Minimal behavior: Implement `additional_corroboration_count` checks, exclusivity query, clamped 6-factor formulas, and atomic retirement.
+  - Minimal behavior: Implement `additional_corroboration_count` checks, exclusivity query, clamped 6-factor formulas, exemplar propagation, and atomic retirement.
   - GREEN: `pytest tests/governance/test_promotion.py tests/governance/test_utility_eviction.py -q` → all pass.
   - Project verification: Boundary tests pass for anti-parallel ($\cos = -1 \implies U_C = 1.0$), duplicate ($\cos = 1 \implies U_{Red} = 1.0$), empty-bank, and all-penalty maximum suppression resulting in clean $0.0$.
 
 ### Task 5: Identity Lifecycle CLI & Recovery Operations
-- **Depends on:** Prerequisite P0, Task 2, Task 4, Operator Decision Manifest (Rollback Depth & Retention TTL).
+- **Depends on:** Prerequisite P0, Task 2, Task 4, Operator Decision Manifest (Rollback Depth, Retention TTL, Actor Taxonomy).
 - **Files:**
   - Create: `src/facecore/governance/lifecycle.py`
   - Modify: `src/facecore/cli.py` (add `identity add/show/re-enroll/rollback/delete`, `candidates list/reject`, `status`)
   - Test: `tests/cli/test_identity_lifecycle.py`, `tests/storage/test_crypto_erasure.py`
 - **Interfaces:** CLI subcommands emitting stable JSON per spec §11.
 - **Acceptance:**
-  - `identity add` is create-only; duplicate ID fails without mutation (exit code 4).
-  - `identity re-enroll` atomically retires active templates and installs new photo as sole active template; resets drift reference.
+  - `identity add` is create-only; duplicate ID fails without mutation (exit code 4). Stores initial photo's `encrypted_exemplar` in `face_templates`.
+  - `identity re-enroll` atomically retires active templates and installs new photo as sole active template with new exemplar; resets drift reference.
   - `identity rollback --to-revision <n>` restores revision $n$, retiring newer templates; refuses if revision exceeds `rollback_max_depth`.
-  - `identity delete` executes cryptographic erasure: calls `key_provider.destroy_identity_keys(identity_id)` to permanently destroy all DEKs, overwrites template/candidate rows, anonymizes match events, and executes `PRAGMA wal_checkpoint(TRUNCATE)`. (Finding P1-1).
+  - `identity delete` executes cryptographic erasure via the Journaled Tombstone Protocol: inserts deletion tombstone, destroys DEKs via `key_provider.destroy_identity_keys(identity_id)`, overwrites template rows, anonymizes match events, and executes `PRAGMA wal_checkpoint(TRUNCATE)`. (Finding P1-1).
   - Decryption test proves residual ciphertext blocks in backups, WAL, or free pages cannot be decrypted once DEKs are erased in KeyProvider.
 - **Test-first evidence:**
   - Failing case: Attempting to decrypt backup ciphertext using KeyProvider after `identity delete` succeeds.
   - RED: `pytest tests/storage/test_crypto_erasure.py -k "test_backup_ciphertext_undecryptable_after_dek_destruction" -q` → `Failed: DEK was not destroyed`.
-  - Minimal behavior: Implement KeyProvider DEK destruction, transactional delete, checkpoint fail-closed handling, and CLI commands.
+  - Minimal behavior: Implement KeyProvider DEK destruction, journaled tombstone delete, checkpoint fail-closed handling, and CLI commands.
   - GREEN: `pytest tests/cli/test_identity_lifecycle.py tests/storage/test_crypto_erasure.py -q` → all pass.
   - Project verification: Correct exit codes: 0 normal, 2 bad input, 4 store error.
 
-### Task 6: Encrypted Export / Import with Full Governance State
-- **Depends on:** Prerequisite P0, Task 5.
+### Task 6: Encrypted Export / Import with Key Re-Homing & Full Manifest Compatibility
+- **Depends on:** Prerequisite P0, Task 5, Operator Decision Manifest (Export Key Model).
 - **Files:**
   - Create: `src/facecore/storage/export.py`
   - Modify: `src/facecore/cli.py` (add `export`, `import`)
   - Test: `tests/storage/test_export_import.py`
-- **Interfaces:** Produces `export_identities(path, key) -> ExportManifest`, `import_identities(path, key) -> ImportResult`.
+- **Interfaces:** Produces `export_identities(path, passphrase) -> ExportManifest`, `import_identities(path, passphrase, dest_key_provider) -> ImportResult`.
 - **Acceptance:**
-  - Export archive serializes complete governance state: `policy_profile`, `model_manifest`, identities, template revisions, active templates, retired templates, candidate templates across all statuses (`pending`, `promoted`, `rejected`, `expired`) with evidence logs and expiry, exemplars, and anonymized match events. (Finding P1-3).
-  - Import verifies model manifest: mismatched model version or embedding dimension fails closed with exit code `3` (`ModelIncompatibilityError`) and makes zero database writes.
-  - Round-trip test: Exporting an identity with modified policy, candidates across all four statuses, and retired templates; importing into a clean database; asserting that custom policy is restored, all candidate statuses and evidence logs are preserved, and subsequent rollback or candidate rejection functions identically.
+  - Export archive serializes complete governance state: `policy_profile`, `model_manifest` (artifact hash, detector generation, preprocessing parameters, tensor layout, dimension, precision), identities, template revisions, active templates, retired templates, candidates across all statuses (`pending`, `promoted`, `rejected`, `expired`) with evidence logs and expiry, exemplars, and anonymized match events. (Finding P1-3).
+  - Implements the Authenticated Key Re-Homing Protocol (Section 8): DEKs are wrapped with export key derived from passphrase; destination KeyProvider re-encrypts DEKs under destination master key and generates new `key_id` entries. Raw keys are never exposed. (Finding P1-3).
+  - Full Manifest Compatibility Check: Verifies complete `ModelManifest`. If embedder hash, dimension, detector generation, or preprocessing contract differs, import fails closed with exit code `3` (`ModelIncompatibilityError`) with zero database writes. (Finding P1-4).
+  - Round-trip test: Exporting an identity from KeyProvider A with modified policy, candidates across all four statuses, and retired templates; importing into KeyProvider B; asserting that custom policy is restored, all candidate statuses and evidence logs are preserved, and subsequent rollback or candidate rejection functions identically.
 - **Test-first evidence:**
-  - Failing case: Export archive omits policy profile, rejected/expired candidates, or model manifest. (Finding P1-3).
-  - RED: `pytest tests/storage/test_export_import.py -k "test_export_includes_all_candidate_statuses_and_policy" -q` → `KeyError: 'policy_profile'`.
-  - Minimal behavior: Implement complete state serialization, header verification, and transactional import unpacking.
+  - Failing case: Importing archive into KeyProvider B with copied opaque key IDs leaves records undecryptable; or importing archive with identical model version but mismatched detector/preprocessing generation succeeds. (Findings P1-3, P1-4).
+  - RED: `pytest tests/storage/test_export_import.py -k "test_mismatched_detector_generation_refused" -q` → `Failed: DID NOT RAISE ModelIncompatibilityError`.
+  - Minimal behavior: Implement authenticated key re-homing, complete state serialization, full manifest verification, and transactional import unpacking.
   - GREEN: `pytest tests/storage/test_export_import.py -q` → all pass.
-  - Project verification: Imported database passes 100% of identity lifecycle and candidate governance tests.
+  - Project verification: Imported database passes 100% of identity lifecycle and candidate governance tests under KeyProvider B.
 
 ### Task 7: Model Generation Migration & Exemplar Re-Embedding
 - **Depends on:** Prerequisite P0, Task 5, Task 6.
@@ -471,7 +500,7 @@ src/facecore/
   - Test: `tests/governance/test_model_migration.py`
 - **Interfaces:** Produces `ModelMigrationManager.migrate_generation(new_manifest) -> MigrationReport`.
 - **Acceptance:**
-  - When runtime model/preprocessing upgrades to a new generation, migration re-embeds stored `EncryptedExemplar` records atomically.
+  - When runtime model/preprocessing upgrades to a new generation, migration re-embeds stored `EncryptedExemplar` records from active and retired templates atomically. (Finding P1-2).
   - If exemplar crop geometry or landmark alignment cannot be reproduced under new detector/aligner, identity status transitions to `re_enrollment_required`.
   - Identification queries against `re_enrollment_required` identities immediately return `review` with reason code `identity_re_enrollment_required`.
   - Cross-generation comparison assertion: Tests verify that embeddings from different generations are never compared directly.
@@ -555,7 +584,7 @@ src/facecore/
 - **Acceptance:**
   - Benchmarks 500 synthetic identities (2,500 vectors) in encrypted storage: comparison p95 $\le$ 3.0 ms; fetch & decrypt p95 $\le$ 15.0 ms.
   - Validates CLI fail-closed integration when uninitialized or tampered.
-  - Verifies managed backup retention ceiling (`backup_max_count = 5`). (Finding P2).
+  - Verifies managed backup retention ceiling (`backup_max_count = 5`).
   - **Conditional Docs Closeout:**
     - If real replay was completed: `docs/PROJECT-STATE.md` records Phase-1B completion and requests operator review to close ADR 0006.
     - If real replay was blocked: `docs/PROJECT-STATE.md` records Phase-1B Governance Engine delivered (provisional) with model selection gate remaining OPEN pending weights/corpus.
@@ -571,18 +600,18 @@ src/facecore/
 
 ## 12. PR Boundaries
 
-In accordance with arbitration `d-20260911184146033747-27` and rework decisions `d-20260911185748092685-28` / `d-20260911190712794016-29`, implementation is partitioned into **7 distinct PRs**.
+In accordance with arbitration `d-20260911184146033747-27` and rework decisions `d-20260911185748092685-28`, `d-20260911190712794016-29`, and `d-20260911191746908253-30`, implementation is partitioned into **7 distinct PRs**.
 
-**Hard Gate:** PR-C through PR-G require prior approval of Prerequisite P0 (ADR 0006 Go/No-Go Decision). PR-A and PR-B are docs-only and exempt.
+**Hard Gate:** PR-C through PR-G require prior approval of Prerequisite P0 (ADR 0006 Go/No-Go Decision) and the relevant Operator Decision Manifest items. PR-A and PR-B are docs-only and exempt.
 
 | PR | Included Tasks | Scope & Boundaries | Independent Acceptance Criteria |
 |---|---|---|---|
 | **PR-A** | Task 0 | Plan only (docs-only). Land `docs/plans/2026-09-12-phase-1b-implementation-plan.md`, update `README.md` map and `docs/PROJECT-STATE.md`. No Python source code. | Map matches disk exactly; `PROJECT-STATE.md` reflects 1B planning status; CI passes. ADR 0006 gate remains intact. |
-| **PR-B** | Spikes S1B, S2B | Research manifests (docs-only). Land storage/crypto manifest and model/corpus readiness reports. | Concrete AAD specifications, nonce rules, KeyProvider seam, DEK architecture, model SHAs, and corpus chronology recorded. |
-| **PR-C** | Task 1, Task 2 | Foundation: Contracts, `KeyProvider`, AEAD cipher, and encrypted repository. **Requires P0 approval.** | All contracts versioned (`schema_version: 1`, `governance_policy_version: 1`). SQLite ACID transactions, tampering detection, KeyProvider DEK destruction tests, and 10k-event + 5-backup stress test pass. Zero CLI mutation. |
-| **PR-D** | Task 3, Task 4 | Adaptive Core: Confirmation-gated candidate pipeline, corroboration, promotion exclusivity, 6-factor utility rescoring, and capacity eviction. **Requires P0 approval.** | Candidate creation strictly gated by `correct` (`additional_corroboration_count = 0`); burst suppression active; cross-identity margin enforced; lowest-utility template evicted on capacity; utility scores strictly in $[0.0, 1.0]$ across all boundaries; atomic revisions committed. Modules and fixtures split between T3 and T4; T3 tests pass independently of T4. |
-| **PR-E** | Task 5, Task 6, Task 7 | Administrative CLI, Recovery & Generation Migration: `identity add/show/re-enroll/rollback/delete`, `candidates list/reject`, encrypted export/import of full state, exemplar re-embedding. **Requires P0 approval.** | `identity add` collision blocked; `re-enroll` and `rollback` atomic; `delete` proves KeyProvider DEK destruction and backup unrecoverability; export/import round-trips full governance state (including policy profile, model manifest, and all candidate statuses); model migration handles geometry mismatch fallback. Failure matrices split across tasks. |
-| **PR-F** | Task 8, Task 9 | Drift Monitoring & Replay Engine: Lifecycle-safe drift metrics, bounded response policy, chronological replay harness, A/B temporal-leakage isolation tests. **Requires P0 approval.** | Drift threshold breach triggers `review` and `re_enrollment_required`; replay executes in strict composite key order; A/B temporal leakage tests prove future suffix does not alter event $N$ decisions. |
+| **PR-B** | Spikes S1B, S2B | Research manifests (docs-only). Land storage/crypto manifest and model/corpus readiness reports. | Concrete AAD specifications, nonce rules, KeyProvider seam, DEK placement, journaled tombstone protocol, model SHAs, and corpus chronology recorded. |
+| **PR-C** | Task 1, Task 2 | Foundation: Contracts, `KeyProvider`, AEAD cipher, encrypted repository, and Journaled Tombstone Protocol. **Requires P0 approval & Operator Key Custody Manifest.** | All contracts versioned (`schema_version: 1`, `governance_policy_version: 1`). SQLite ACID transactions, tampering detection, KeyProvider DEK destruction tests, journaled tombstone crash reconciliation, and 10k-event + 5-backup stress test pass. Zero CLI mutation. |
+| **PR-D** | Task 3, Task 4 | Adaptive Core: Confirmation-gated candidate pipeline, corroboration, promotion exclusivity, 6-factor utility rescoring, exemplar propagation, and capacity eviction. **Requires P0 approval & Operator Confirmation/Promotion Manifest.** | Candidate creation strictly gated by `correct` (`additional_corroboration_count = 0`); burst suppression active; cross-identity margin enforced; lowest-utility template evicted on capacity; active template retains exemplar; utility scores strictly in $[0.0, 1.0]$ across all boundaries; atomic revisions committed. Modules and fixtures split between T3 and T4; T3 tests pass independently of T4. |
+| **PR-E** | Task 5, Task 6, Task 7 | Administrative CLI, Recovery & Generation Migration: `identity add/show/re-enroll/rollback/delete`, `candidates list/reject`, authenticated export/import key re-homing of full state, exemplar re-embedding. **Requires P0 approval & Operator Retention/Actor/Export Manifest.** | `identity add` collision blocked; `re-enroll` and `rollback` atomic; `delete` proves KeyProvider DEK destruction, journaled tombstones, and backup unrecoverability; export/import round-trips full governance state with key re-homing; full manifest verification blocks mismatched detector/preprocessing generations; model migration handles geometry mismatch fallback. Failure matrices split across tasks. |
+| **PR-F** | Task 8, Task 9 | Drift Monitoring & Replay Engine: Lifecycle-safe drift metrics, bounded response policy, chronological replay harness, A/B temporal-leakage isolation tests. **Requires P0 approval & Operator Drift Bounds Manifest.** | Drift threshold breach triggers `review` and `re_enrollment_required`; replay executes in strict composite key order; A/B temporal leakage tests prove future suffix does not alter event $N$ decisions. |
 | **PR-G** | Task 10, Task 11 | Evaluation, Benchmark & Conditional Closeout: SFace Pair 1 replay run vs 1A frozen baseline, 500-identity capacity benchmark, conditional `project-docs-maintain` pass. **Requires P0 approval.** | Replay report emitted with exact denominators and delta comparison; if real replay blocked, selection gate stays OPEN and docs reflect partial status; 500-identity benchmark meets latency budget; backup retention ceiling enforced; redaction check clean. |
 
 **Partial Red Rule:** Within multi-task PRs (PR-D, PR-E), tests are partitioned into distinct test files (`test_candidate_pipeline.py` vs `test_promotion.py`; `test_identity_lifecycle.py` vs `test_model_migration.py`). A failing test under Task 4 or Task 7 does not prevent Task 3 or Task 5 from demonstrating independent functional correctness.
@@ -606,7 +635,7 @@ Restating explicit boundaries to prevent scope creep (spec §§9–12, 14; arbit
 
 ## 14. Highest Risks & Stop Conditions
 
-In accordance with arbitration `d-20260911184146033747-27` and rework decisions `d-20260911185748092685-28` / `d-20260911190712794016-29`, the plan defines five concrete risks with pre-planned mitigations and **three non-negotiable STOP conditions**:
+In accordance with arbitration `d-20260911184146033747-27` and rework decisions `d-20260911185748092685-28`, `d-20260911190712794016-29`, and `d-20260911191746908253-30`, the plan defines five concrete risks with pre-planned mitigations and **three non-negotiable STOP conditions**:
 
 ### Explicit STOP Conditions:
 1. **STOP Condition 1 (Unsupervised Learning Breach):** If any code path, test, or replay execution allows an unconfirmed observation (or one confirmed with `not_me`, canceled, or timed out) to create an active template, candidate, or persistent biometric artifact, or allows a candidate seed event to promote itself without an additional independent corroboration event → **HALT IMMEDIATELY**. Reviewer must reject the PR.
