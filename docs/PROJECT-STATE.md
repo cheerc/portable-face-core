@@ -1,16 +1,18 @@
 # Project State
 
-Last updated: 2026-09-10 Asia/Taipei
+Last updated: 2026-09-11 Asia/Taipei
 
 ## Current Status
 
-Portable Face Core is in **approved written design; Phase-1A implementation planning is the next artifact**. Six design sections and all review decisions were approved interactively, followed by independent completeness and adversarial review. The operator approved the consolidated specification at `docs/specs/2026-09-09-portable-face-core-design.md` on 2026-09-10.
+Portable Face Core has **completed Phase-1A implementation**. All Phase-1A code, contracts, in-memory repository, pipeline components (decoding, orientation, quality gating, single-face detection, deterministic alignment, ONNX embedding), identification policy, evaluation session, reference CLI (`facecore.sh init`, `evaluate`, `bakeoff`, `conformance`), synthetic 500-vector capacity benchmark, and deterministic Layer-A conformance check have been delivered, verified test-first across all tasks, and validated under strict typing (mypy), linting (ruff), and dual-runner CI (macos-14 and ubuntu-latest).
 
-That approval authorized writing a detailed Phase-1A implementation plan and nothing else. It did not authorize implementation, dependency installation, model download, or biometric data collection.
+The Phase-1A model candidate bake-off evaluation was executed against the initial consented gallery (P1 corpus, 5 enrolled identities, 6 target probes, 4 non-target probes) using the SFace 2021dec fp32 embedder and YuNet detector:
+- **Enrollment**: 5 of 5 identities successfully enrolled with single accepted photos (`enrollment refused: 0`).
+- **Target probe behavior**: 5 of 6 target probe screenshots yielded zero single faces at the frozen 0.90 detector confidence gate and were honestly refused per design (`target probes usable: 1/6`).
+- **Non-target false acceptance**: Scored 4 of 4 probes; 0 false acceptances at match threshold >= 0.85 (`0/4`).
+- **Model selection gate**: With exactly 1 usable target probe in the initial capture conditions, statistical margins and cross-identity confusion are undecidable. In strict conformance with spec §14 and Task 10 non-extrapolation rules, the **model selection gate remains OPEN pending operator review and decision**; no artificial operating point was forced.
 
-That plan now exists at `docs/plans/2026-09-10-phase-1a-implementation-plan.md` and is **pending review**. Implementation begins only after the plan is reviewed. The plan itself adds no source tree, installs nothing, and downloads no model.
-
-There is no implementation, installed dependency, downloaded model, enrolled identity, private photo, embedding database, API, mobile app, or attendance product in this repository.
+Phase 1A persists no biometric database, face crops, or embeddings; inference executes entirely offline. Phase-1B governance mechanics remain untouched.
 
 ## Product Direction
 
@@ -82,7 +84,8 @@ No review decision remains open. The accepted choices are: no guaranteed periodi
 ## Next Session
 
 1. Read `CLAUDE.md` and this file.
-2. Read `docs/plans/2026-09-10-phase-1a-implementation-plan.md` and review it; it is pending review, not approved.
-3. Note its two blocking dependencies before any code: Spike S1 (model candidate licensing and provenance gate) and Prerequisite P1 (consented evaluation corpus, operator-owned).
-4. Do not implement, install dependencies, or download a model until the plan is reviewed.
-5. Keep Phase-1B governance mechanics out of Phase-1A work.
+2. Review Phase-1A implementation deliverables and the bake-off operating table report (`reports/phase-1a-bakeoff.md`).
+3. Operator decisions required:
+   - Review bake-off evidence and decide whether to select a candidate model (e.g. SFace 2021dec fp32) / adjust probe capture conditions, or require additional calibration data.
+   - Record the Phase-1B governance go/no-go decision (ADR 0006).
+4. Do not begin Phase-1B implementation (persistent identity CLI, confirmation-gated learning, chronological adaptive replay, encrypted storage, rollback, deletion) until the operator records the Phase-1B go/no-go decision.
