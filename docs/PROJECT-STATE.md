@@ -1,16 +1,26 @@
 # Project State
 
-Last updated: 2026-09-11 Asia/Taipei
+Last updated: 2026-09-12 Asia/Taipei
+
+## Current Status
+
+**Operator selection: A** (decision d-20260911181002229319-23) — SFace Pair 1 (YuNet 2023mar + SFace 2021dec fp32) stays **provisional**; frozen 0.90 detector gate untouched; occlusion handled via capture-condition guidance + Phase-1B confirmation-gated shadow bank. The **selection gate stays OPEN** (provisional): it closes only after Phase-1B chronological replay validates the selected point against the frozen Phase-1A baseline.
 
 ## Current Status
 
 Portable Face Core has **completed Phase-1A implementation**. All Phase-1A code, contracts, in-memory repository, pipeline components (decoding, orientation, quality gating, single-face detection, deterministic alignment, ONNX embedding), identification policy, evaluation session, reference CLI (`facecore.sh init`, `evaluate`, `bakeoff`, `conformance`), synthetic 500-vector capacity benchmark, and deterministic Layer-A conformance check have been delivered, verified test-first across all tasks, and validated under strict typing (mypy), linting (ruff), and dual-runner CI (macos-14 and ubuntu-latest).
 
-The Phase-1A model candidate bake-off evaluation was executed against the initial consented gallery (P1 corpus, 5 enrolled identities, 6 target probes, 4 non-target probes) using the SFace 2021dec fp32 embedder and YuNet detector:
+The Phase-1A model candidate bake-off evaluation was executed against the consented gallery (P1 corpus, 5 enrolled identities, 13 target probes, 4 non-target probes; 辨識組 renamed to `enroll-23-probe-NN`, carry-over per skeleton d-20260911174907590232-15) using the SFace 2021dec fp32 embedder and YuNet detector:
 - **Enrollment**: 5 of 5 identities successfully enrolled with single accepted photos (`enrollment refused: 0`).
-- **Target probe behavior**: 5 of 6 target probe screenshots yielded zero single faces at the frozen 0.90 detector confidence gate and were honestly refused per design (`target probes usable: 1/6`).
-- **Non-target false acceptance**: Scored 4 of 4 probes; 0 false acceptances at match threshold >= 0.85 (`0/4`).
-- **Model selection gate**: With exactly 1 usable target probe in the initial capture conditions, statistical margins and cross-identity confusion are undecidable. In strict conformance with spec §14 and Task 10 non-extrapolation rules, the **model selection gate remains OPEN pending operator review and decision**; no artificial operating point was forced.
+- **Target probe behavior**: 5 of 13 target probes yielded zero single faces at the frozen 0.90 detector confidence gate and were honestly refused per design (`target probes usable: 8/13`).
+- **Non-target false acceptance**: Scored 4 of 4 probes; 0 false acceptances at the provisional 0.85/0.10 anchor (`FA 0/4`; anchor not selected, counts-only, N<30 never rates).
+- **Model selection gate**: With 8 usable target probes, statistical margins and cross-identity confusion remain undecidable. In strict conformance with spec §14 and Task 10 non-extrapolation rules, the **model selection gate remains OPEN (provisional, operator selection A recorded above)**; no artificial operating point was forced.
+
+## Upgrade Tracking (gaps carried from the no-weights skeleton)
+
+- Pair 2 comparison (2026may detector + int8bq embedder) unrun — no weights on disk.
+- Rename-after rerun (manifest-path confirmation) pending weights dual-gate (S1 clear + operator decision, d-20260911171253541089-12).
+- Per-probe `predicted` for 7 usable probes pending (only probe-11 measured: enroll-02, margin 0.0687).
 
 Phase 1A persists no biometric database, face crops, or embeddings; inference executes entirely offline. Phase-1B governance mechanics remain untouched.
 
@@ -83,9 +93,9 @@ No review decision remains open. The accepted choices are: no guaranteed periodi
 
 ## Next Session
 
+Phase 1A is closed pending Phase-1B standby. Next session entry:
+
 1. Read `CLAUDE.md` and this file.
-2. Review Phase-1A implementation deliverables and the bake-off operating table report (`reports/phase-1a-bakeoff.md`).
-3. Operator decisions required:
-   - Review bake-off evidence and decide whether to select a candidate model (e.g. SFace 2021dec fp32) / adjust probe capture conditions, or require additional calibration data.
-   - Record the Phase-1B governance go/no-go decision (ADR 0006).
-4. Do not begin Phase-1B implementation (persistent identity CLI, confirmation-gated learning, chronological adaptive replay, encrypted storage, rollback, deletion) until the operator records the Phase-1B go/no-go decision.
+2. Selection evidence: no-weights skeleton `docs/2026-09-12-model-selection-report-skeleton.md` (gate OPEN, provisional).
+3. Phase-1B starts only with a separate operator instruction (implementation plan + go/no-go decision, ADR 0006) — **not** opened by this PR.
+4. Do not begin Phase-1B implementation (persistent identity CLI, confirmation-gated learning, chronological adaptive replay, encrypted storage, rollback, deletion) until that instruction lands.
