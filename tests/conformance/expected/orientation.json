@@ -1,0 +1,15 @@
+{
+  "case": "orientation",
+  "orientations": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+  ],
+  "all_upright": true,
+  "upright_sha256": "b987185f0f5bc39be3e7dcbf51b41e5e0d106755b4c7ec23d92b98abb14e67fa"
+}
