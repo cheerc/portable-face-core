@@ -144,6 +144,8 @@ def _governed_template() -> FaceTemplate:
         model_version="sface-2021dec-fp32",
         embedding_dim=128,
         revision=_revision(),
+        generation_id="G1",
+        encrypted_embedding=_blob(),
         encrypted_exemplar=_blob(),
         exemplar_crop_box=(10.0, 20.0, 100.0, 100.0),
         exemplar_landmarks=((1.0, 2.0),),
@@ -340,6 +342,23 @@ def test_export_container_covers_all_candidate_statuses() -> None:
         == "onnxruntime-cpu-arm64==1.30.0"
     )
     assert len(payload["candidates"]) == 5
+    assert payload["policy"]["backup_max_count"] == 5
+    active = payload["active_templates"][0]
+    assert active["generation_id"] == "G1"
+    assert active["encrypted_embedding"]["ciphertext_hex"]
+    assert active["encrypted_exemplar"]["ciphertext_hex"]
+    assert active["exemplar_crop_box"] == [10.0, 20.0, 100.0, 100.0]
+    candidate = payload["candidates"][0]
+    assert candidate["key_id"] == "key-1"
+    assert candidate["encrypted_embedding"]["ciphertext_hex"]
+    assert candidate["encrypted_exemplar"]["ciphertext_hex"]
+    assert candidate["exemplar_crop_box"] == [10.0, 20.0, 100.0, 100.0]
+    assert candidate["exemplar_landmarks"] == [[1.0, 2.0], [3.0, 4.0]]
+    assert candidate["quality_score"] == 0.9
+    assert candidate["expires_at"] == "2026-09-19T00:00:00+08:00"
+    assert candidate["created_at"] == "2026-09-12T00:00:00+08:00"
+    restored = ExportContainer.from_json(container.to_json())
+    assert json.loads(restored.to_json()) == payload
     assert payload["envelope"]["cipher_id"] == 1
 
 
@@ -375,9 +394,11 @@ def test_key_reference_rejects_empty() -> None:
     assert KeyReference(key_id="key-1").key_id == "key-1"
 
 
-def test_storage_errors_are_exceptions() -> None:
+def test_storage_errors_are_structured_exit_4_errors() -> None:
     assert issubclass(KeyNotFoundError, Exception)
     assert issubclass(StoreCorruptionError, Exception)
+    assert KeyNotFoundError.exit_code == 4
+    assert StoreCorruptionError.exit_code == 4
 
 
 def test_manifest_identical_returns_compatible() -> None:

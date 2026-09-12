@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from facecore.contracts.crypto import KeyNotFoundError
 from facecore.errors import StoreError
 from facecore.storage.key_provider import FileKeyProvider, InMemoryKeyProvider
 
@@ -71,6 +72,29 @@ def test_file_provider_existing_store_missing_key_fails_closed(
     master.unlink()
     with pytest.raises(StoreError):
         FileKeyProvider()
+
+
+def test_file_provider_existing_database_missing_key_fails_closed(
+    tmp_path: Path,
+) -> None:
+    key_dir = tmp_path / "keys"
+    db_path = tmp_path / "facecore.db"
+    db_path.write_bytes(b"existing sqlite bytes")
+    with pytest.raises(StoreError, match="existing repository"):
+        FileKeyProvider(
+            key_dir=key_dir,
+            master_key_path=tmp_path / "master.key",
+            db_path=db_path,
+        )
+    assert not (tmp_path / "master.key").exists()
+    assert not key_dir.exists()
+
+
+def test_key_provider_missing_key_uses_structured_exit_4() -> None:
+    provider = InMemoryKeyProvider()
+    with pytest.raises(KeyNotFoundError) as caught:
+        provider.get_key("missing")
+    assert caught.value.exit_code == 4
 
 
 def test_wrap_rehoming_moves_dek_between_providers() -> None:

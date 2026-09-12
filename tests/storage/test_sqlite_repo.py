@@ -8,7 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from facecore.contracts.crypto import KeyProviderProtocol
+from facecore.contracts.crypto import (
+    KeyProviderProtocol,
+    KeyNotFoundError,
+    StoreCorruptionError,
+)
 from facecore.contracts.template import FaceTemplate, TemplateRevision
 from facecore.errors import StoreError
 from facecore.storage.key_provider import InMemoryKeyProvider
@@ -34,6 +38,13 @@ def _template(identity: str = "person-001", template: str = "t-1") -> FaceTempla
 
 def _payload(template_id: str) -> tuple[bytes, bytes, str]:
     return (b"e" * 16, b"x" * 32, template_id)
+
+
+class _DestroyFailureProvider(InMemoryKeyProvider):
+    """Real in-memory custody with an injected operational destroy failure."""
+
+    def destroy_key(self, key_id: str) -> None:
+        raise StoreError("key store unavailable")
 
 
 def test_enroll_identify_and_key_id_only_in_sqlite(tmp_path: Path) -> None:
@@ -147,8 +158,108 @@ def test_corrupt_ciphertext_raises_store_error(tmp_path: Path) -> None:
         con.commit()
     finally:
         con.close()
-    with pytest.raises(StoreError):
+    with pytest.raises(StoreCorruptionError) as caught:
         repo.read_embedding("t-1")
+    assert caught.value.exit_code == 4
+
+
+def test_destroy_failure_leaves_pending_tombstone_and_rows(
+    tmp_path: Path,
+) -> None:
+    provider = _DestroyFailureProvider()
+    repo = _open_repo(tmp_path, provider)
+    repo.initialize()
+    repo.enroll_identity("person-001", "Test Person", _template(), *_payload("t-1"))
+    with pytest.raises(StoreError, match="key store unavailable"):
+        repo.delete_identity("person-001")
+    con = repo.connection
+    assert con is not None
+    tombstone = con.execute(
+        "SELECT status FROM deletion_tombstones WHERE target_id = ?",
+        ("person-001",),
+    ).fetchone()
+    assert tombstone == ("pending_key_destruction",)
+    assert con.execute(
+        "SELECT COUNT(*) FROM face_templates WHERE identity_id = ?",
+        ("person-001",),
+    ).fetchone()[0] == 1
+    assert repo.get_identity_status("person-001") == "deleted"
+
+
+def test_deleted_identity_is_unreadable_after_step_one(tmp_path: Path) -> None:
+    repo = _open_repo(tmp_path)
+    repo.initialize()
+    repo.enroll_identity("person-001", "Test Person", _template(), *_payload("t-1"))
+    repo.begin_delete_identity("person-001")
+    assert repo.list_active_templates() == []
+    with pytest.raises(StoreError, match="deleted or tombstoned"):
+        repo.read_embedding("t-1")
+
+
+def test_failed_duplicate_enrollment_leaves_key_custody_unchanged(
+    tmp_path: Path,
+) -> None:
+    provider = InMemoryKeyProvider()
+    repo = _open_repo(tmp_path, provider)
+    repo.initialize()
+    repo.enroll_identity("person-001", "Test Person", _template(), *_payload("t-1"))
+    before = len(provider._keys)
+    with pytest.raises(sqlite3.IntegrityError):
+        repo.enroll_identity("person-001", "Duplicate", _template(), *_payload("t-2"))
+    assert len(provider._keys) == before
+
+
+def test_failed_append_and_candidate_do_not_leak_keys(tmp_path: Path) -> None:
+    provider = InMemoryKeyProvider()
+    repo = _open_repo(tmp_path, provider)
+    repo.initialize()
+    repo.enroll_identity("person-001", "Test Person", _template(), *_payload("t-1"))
+    before = len(provider._keys)
+    with pytest.raises(StoreError, match="unknown identity"):
+        repo.append_revision(
+            "person-404", _template("person-404", "t-404"), b"e", b"x"
+        )
+    assert len(provider._keys) == before
+    with pytest.raises(sqlite3.IntegrityError):
+        repo.add_candidate_record(
+            "c-1", "person-001", b"e" * 16, b"x", "2030-01-01T00:00:00Z"
+        )
+        repo.add_candidate_record(
+            "c-1", "person-001", b"e" * 16, b"x", "2030-01-01T00:00:00Z"
+        )
+    assert len(provider._keys) == before + 1
+
+
+def test_repository_hydrates_supplied_generation_geometry_and_revision(
+    tmp_path: Path,
+) -> None:
+    template = FaceTemplate(
+        template_id="t-9",
+        identity_id="person-001",
+        model_version="sface-custom-fp32",
+        embedding_dim=128,
+        revision=TemplateRevision(revision=7, template_id="t-9", supersedes="t-8"),
+        generation_id="G9",
+        exemplar_crop_box=(2.0, 3.0, 90.0, 91.0),
+        exemplar_landmarks=((1.0, 2.0), (3.0, 4.0)),
+        quality_score=0.91,
+        utility_score=0.72,
+    )
+    repo = _open_repo(tmp_path)
+    repo.initialize()
+    repo.enroll_identity(
+        "person-001", "Test Person", template, b"e" * 16, b"x" * 32, "t-9"
+    )
+    hydrated = repo.list_active_templates()[0]
+    assert hydrated.generation_id == "G9"
+    assert hydrated.model_version == "sface-custom-fp32"
+    assert hydrated.embedding_dim == 128
+    assert hydrated.revision.revision == 7
+    assert hydrated.revision.supersedes == "t-8"
+    assert hydrated.exemplar_crop_box == (2.0, 3.0, 90.0, 91.0)
+    assert hydrated.exemplar_landmarks == ((1.0, 2.0), (3.0, 4.0))
+    assert hydrated.key_id is not None
+    assert hydrated.encrypted_exemplar is not None
 
 
 def test_match_event_anonymized_on_delete(tmp_path: Path) -> None:
