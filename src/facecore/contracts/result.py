@@ -12,6 +12,12 @@ from enum import Enum
 
 from facecore import SCHEMA_VERSION
 
+# Phase-1B governance reason codes (Task 8 bounded response policy).
+# Additive string constants only; the frozen spec §11 key set/order in
+# `IdentificationResult.to_json` below is untouched.
+DRIFT_BOUNDARY_EXCEEDED = "drift_boundary_exceeded"
+IDENTITY_RE_ENROLLMENT_REQUIRED = "identity_re_enrollment_required"
+
 
 class ResultStatus(str, Enum):
     MATCHED = "matched"

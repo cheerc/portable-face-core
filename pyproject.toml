@@ -16,6 +16,7 @@ dependencies = [
     "onnxruntime==1.30.0",
     "numpy==2.5.3",
     "pillow==12.3.0",
+    "cryptography==50.0.1",
 ]
 
 [project.optional-dependencies]
