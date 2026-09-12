@@ -271,6 +271,72 @@ def test_corrupt_persisted_geometry_is_structured_exit_4(
     assert caught.value.exit_code == 4
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("embedding_dim", "not-an-int"),
+        ("revision_number", "not-an-int"),
+        ("exemplar_margin", "not-a-float"),
+        ("quality_score", "not-a-float"),
+        ("utility_score", "not-a-float"),
+    ],
+)
+def test_corrupt_persisted_scalar_is_structured_exit_4(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    repo = _open_repo(tmp_path)
+    repo.initialize()
+    repo.enroll_identity("person-001", "Test Person", _template(), *_payload("t-1"))
+    con = repo.connection
+    assert con is not None
+    con.execute(
+        f"UPDATE face_templates SET {field} = ? WHERE id = 't-1'", (value,)
+    )
+    con.commit()
+    with pytest.raises(StoreCorruptionError) as caught:
+        repo.list_active_templates()
+    assert caught.value.exit_code == 4
+
+
+def test_malformed_tombstone_json_is_structured_exit_4(
+    tmp_path: Path,
+) -> None:
+    repo = _open_repo(tmp_path)
+    repo.initialize()
+    repo.enroll_identity("person-001", "Test Person", _template(), *_payload("t-1"))
+    repo.begin_delete_identity("person-001")
+    con = repo.connection
+    assert con is not None
+    con.execute(
+        "UPDATE deletion_tombstones SET key_ids_json = 'not-json'"
+        " WHERE target_id = 'person-001'"
+    )
+    con.commit()
+    with pytest.raises(StoreCorruptionError) as caught:
+        repo.tombstone_key_ids("person-001")
+    assert caught.value.exit_code == 4
+
+
+def test_malformed_tombstone_json_recovery_is_structured_exit_4(
+    tmp_path: Path,
+) -> None:
+    repo = _open_repo(tmp_path)
+    repo.initialize()
+    repo.enroll_identity("person-001", "Test Person", _template(), *_payload("t-1"))
+    repo.begin_delete_identity("person-001")
+    con = repo.connection
+    assert con is not None
+    con.execute(
+        "UPDATE deletion_tombstones SET key_ids_json = '{bad'"
+        " WHERE target_id = 'person-001'"
+    )
+    con.commit()
+    recovered = _open_repo(tmp_path, repo.key_provider)
+    with pytest.raises(StoreCorruptionError) as caught:
+        recovered.initialize()
+    assert caught.value.exit_code == 4
+
+
 @pytest.mark.parametrize("offset", [2, 3])
 def test_nonzero_reserved_blob_header_is_structured_exit_4(
     tmp_path: Path, offset: int
