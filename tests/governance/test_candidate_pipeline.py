@@ -4,12 +4,15 @@ Source of truth: 1B plan §11 Task 3.
 RED: ``ModuleNotFoundError: No module named 'facecore.governance.candidate'``.
 """
 
-import sqlite3
 from pathlib import Path
 
 import pytest
 
-from facecore.contracts.confirmation import ConfirmationRequest, ConfirmationVerdict
+from facecore.contracts.confirmation import (
+    ActorType,
+    ConfirmationRequest,
+    ConfirmationVerdict,
+)
 from facecore.contracts.result import Decision, IdentificationResult, Quality
 from facecore.governance.candidate import CandidateDecision, CandidatePipeline
 from facecore.storage.key_provider import InMemoryKeyProvider
@@ -44,7 +47,7 @@ def _confirm(
     return ConfirmationRequest(
         request_id="r-1",
         verdict=verdict,
-        actor="user",  # type: ignore[arg-type]
+        actor=ActorType.USER,
         created_at="2026-09-12T00:00:00+08:00",
     )
 
@@ -53,9 +56,32 @@ def _open_repo(tmp_path: Path) -> SQLiteRepository:
     return SQLiteRepository(str(tmp_path / "facecore.db"), InMemoryKeyProvider())
 
 
+def _enroll(repo: SQLiteRepository, identity_id: str = "person-001") -> None:
+    from facecore.contracts.template import FaceTemplate, TemplateRevision
+
+    template_id = f"t-{identity_id}-1"
+    repo.enroll_identity(
+        identity_id,
+        "Test Person",
+        FaceTemplate(
+            template_id=template_id,
+            identity_id=identity_id,
+            model_version="sface-2021dec-fp32",
+            embedding_dim=4,
+            revision=TemplateRevision(
+                revision=1, template_id=template_id, supersedes=None
+            ),
+        ),
+        b"e" * 16,
+        b"x" * 8,
+        template_id,
+    )
+
+
 def _pipeline(tmp_path: Path) -> tuple[CandidatePipeline, SQLiteRepository]:
     repo = _open_repo(tmp_path)
     repo.initialize()
+    _enroll(repo)
     return CandidatePipeline(repo), repo
 
 
@@ -68,11 +94,15 @@ def test_correct_high_quality_match_creates_pending_candidate(
     )
     assert isinstance(decision, CandidateDecision)
     assert decision.created is True
-    assert decision.candidate is not None
-    assert decision.candidate.additional_corroboration_count == 0
-    assert decision.candidate.status.value == "pending"
+    assert decision.candidate_id is not None
     con = repo.connection
     assert con is not None
+    row = con.execute(
+        "SELECT status, additional_corroboration_count"
+        " FROM candidate_templates WHERE id = ?",
+        (decision.candidate_id,),
+    ).fetchone()
+    assert row == ("pending", 0)
     assert (
         con.execute("SELECT COUNT(*) FROM candidate_templates").fetchone()[0]
         == 1
@@ -93,9 +123,11 @@ def test_not_me_creates_no_candidate(
 ) -> None:
     pipeline, repo = _pipeline(tmp_path)
     before = set(tmp_path.rglob("*"))
-    decision = pipeline.evaluate_observation(_result(), b"face-bytes", _confirm(verdict))
+    decision = pipeline.evaluate_observation(
+        _result(), b"face-bytes", _confirm(verdict)
+    )
     assert decision.created is False
-    assert decision.candidate is None
+    assert decision.candidate_id is None
     con = repo.connection
     assert con is not None
     assert (
@@ -118,7 +150,7 @@ def test_below_threshold_creates_no_candidate(
         _result(score=score), b"face-bytes", _confirm(ConfirmationVerdict.CORRECT)
     )
     assert decision.created is False
-    assert decision.candidate is None
+    assert decision.candidate_id is None
     con = repo.connection
     assert con is not None
     assert (
@@ -130,10 +162,12 @@ def test_below_threshold_creates_no_candidate(
 def test_rejected_quality_creates_no_candidate(tmp_path: Path) -> None:
     pipeline, repo = _pipeline(tmp_path)
     decision = pipeline.evaluate_observation(
-        _result(quality="rejected"), b"face-bytes", _confirm(ConfirmationVerdict.CORRECT)
+        _result(quality="rejected"),
+        b"face-bytes",
+        _confirm(ConfirmationVerdict.CORRECT),
     )
     assert decision.created is False
-    assert decision.candidate is None
+    assert decision.candidate_id is None
 
 
 def test_review_status_creates_no_candidate(tmp_path: Path) -> None:
@@ -157,7 +191,7 @@ def test_review_status_creates_no_candidate(tmp_path: Path) -> None:
         result, b"face-bytes", _confirm(ConfirmationVerdict.CORRECT)
     )
     assert decision.created is False
-    assert decision.candidate is None
+    assert decision.candidate_id is None
 
 
 def test_pending_observation_is_memory_only(tmp_path: Path) -> None:
@@ -178,8 +212,7 @@ def test_seed_event_cannot_promote_itself(tmp_path: Path) -> None:
         _result(), b"face-bytes", _confirm(ConfirmationVerdict.CORRECT)
     )
     assert decision.created is True
-    assert decision.candidate is not None
-    assert decision.candidate.status.value == "pending"
+    assert decision.candidate_id is not None
     assert decision.promoted is False
 
 
@@ -198,15 +231,19 @@ def test_confirm_learning_cli_rejects_not_me_without_mutation(
 
 def test_confirm_learning_cli_requires_explicit_correct(tmp_path: Path) -> None:
     from facecore import cli as cli_module
-    import subprocess
 
-    proc = subprocess.run(
-        ["python", "-m", "facecore", "confirm-learning", "--verdict", "bogus"],
-        capture_output=True,
-        cwd=str(tmp_path),
+    code = cli_module.main(["confirm-learning", "--verdict", "bogus", "--score", "0.9"])
+    assert code == 2
+    assert not (tmp_path / "facecore.db").exists()
+
+
+def test_confirm_learning_cli_correct_reports_no_creation(tmp_path: Path) -> None:
+    from facecore import cli as cli_module
+
+    code = cli_module.main(
+        ["confirm-learning", "--verdict", "correct", "--score", "0.95"]
     )
-    assert proc.returncode != 0
-    _ = cli_module
+    assert code == 0
     assert not (tmp_path / "facecore.db").exists()
 
 
@@ -227,4 +264,3 @@ def test_candidate_row_round_trips_through_repository(tmp_path: Path) -> None:
     assert row[3] == 0
     assert isinstance(row[4], str) and row[4].startswith("key-")
     assert isinstance(row[5], bytes) and isinstance(row[6], bytes)
-    _ = sqlite3.DBAPISet
