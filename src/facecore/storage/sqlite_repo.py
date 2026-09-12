@@ -556,12 +556,22 @@ class SQLiteRepository:
             raw: object = json.loads(value)
             if not isinstance(raw, list) or len(raw) != 4:
                 raise ValueError("crop must contain four values")
-            return (
+            coordinates = (
                 float(str(raw[0])),
                 float(str(raw[1])),
                 float(str(raw[2])),
                 float(str(raw[3])),
             )
+            if not all(math.isfinite(value) for value in coordinates):
+                raise ValueError("crop contains a non-finite coordinate")
+            if (
+                coordinates[0] < 0.0
+                or coordinates[1] < 0.0
+                or coordinates[2] <= 0.0
+                or coordinates[3] <= 0.0
+            ):
+                raise ValueError("crop bounds must be non-negative with positive size")
+            return coordinates
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             raise StoreCorruptionError("invalid exemplar crop geometry") from exc
 
@@ -579,7 +589,10 @@ class SQLiteRepository:
             for point in raw:
                 if not isinstance(point, list) or len(point) != 2:
                     raise ValueError("landmark must contain two values")
-                result.append((float(str(point[0])), float(str(point[1]))))
+                coordinates = (float(str(point[0])), float(str(point[1])))
+                if not all(math.isfinite(value) for value in coordinates):
+                    raise ValueError("landmark contains a non-finite coordinate")
+                result.append(coordinates)
             return tuple(result)
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             raise StoreCorruptionError("invalid exemplar landmark geometry") from exc
