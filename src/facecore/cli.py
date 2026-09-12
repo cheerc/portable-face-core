@@ -13,6 +13,7 @@ from facecore.errors import FaceCoreError, StoreError
 if TYPE_CHECKING:
     from facecore.contracts.migration import ModelMigrationManifest
     from facecore.governance.lifecycle import LifecycleManager
+    from facecore.storage.sqlite_repo import SQLiteRepository
 from facecore.eval.bakeoff import TEN_CONDITIONS_NOTE, run_candidate
 from facecore.eval.corpus import CorpusFile, load_manifest
 from facecore.eval.report import write_report
@@ -599,6 +600,83 @@ def _runtime_manifest() -> "ModelMigrationManifest":
     )
 
 
+def cmd_migration_migrate_model(target_generation: str) -> int:
+    from facecore.governance.migration import ModelMigrationManager
+
+    try:
+        manager = _lifecycle_manager()
+    except FaceCoreError as exc:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "store_error"})
+        return exc.exit_code
+    try:
+        current = _current_generation(manager.repository)
+        migration = ModelMigrationManager(manager.repository, current)
+        report = migration.migrate_generation(
+            _runtime_manifest(), target_generation
+        )
+    except StoreError as exc:
+        _emit(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "status": "store_error",
+                "error": str(exc),
+            }
+        )
+        return 4
+    _emit(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "status": "ok",
+            "from_generation": report.from_generation,
+            "to_generation": report.to_generation,
+            "active_migrated": report.active_migrated,
+            "candidates_migrated": report.candidates_migrated,
+            "candidates_generation_retired": (
+                report.candidates_generation_retired
+            ),
+            "identities_needing_re_enrollment": list(
+                report.identities_needing_re_enrollment
+            ),
+        }
+    )
+    return 0
+
+
+def _current_generation(repository: SQLiteRepository) -> str:
+    """Detect the live generation marker (single-generation store)."""
+    con = repository.connection
+    assert con is not None
+    row = con.execute(
+        "SELECT generation_id FROM face_templates"
+        " GROUP BY generation_id ORDER BY COUNT(*) DESC LIMIT 1"
+    ).fetchone()
+    if row is not None:
+        return str(row[0])
+    row = con.execute(
+        "SELECT generation_id FROM candidate_templates"
+        " GROUP BY generation_id ORDER BY COUNT(*) DESC LIMIT 1"
+    ).fetchone()
+    if row is not None:
+        return str(row[0])
+    return "G1"
+
+
+def cmd_migration_status() -> int:
+    try:
+        manager = _lifecycle_manager()
+    except FaceCoreError as exc:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "store_error"})
+        return exc.exit_code
+    _emit(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "status": "ok",
+            "current_generation": _current_generation(manager.repository),
+        }
+    )
+    return 0
+
+
 def cmd_export(archive: Path, passphrase: str) -> int:
     from facecore.storage.export import export_identities
 
@@ -741,6 +819,11 @@ def main(argv: list[str] | None = None) -> int:
     im = sub.add_parser("import")
     im.add_argument("--archive", required=True, type=Path)
     im.add_argument("--passphrase", required=True)
+    mig = sub.add_parser("migration")
+    msub = mig.add_subparsers(dest="migration_command", required=True)
+    mm = msub.add_parser("migrate-model")
+    mm.add_argument("--to-generation", required=True)
+    msub.add_parser("status")
     args = parser.parse_args(argv)
     if args.command == "init":
         return cmd_init()
@@ -778,6 +861,12 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_export(args.archive, args.passphrase)
     if args.command == "import":
         return cmd_import(args.archive, args.passphrase)
+    if args.command == "migration":
+        if args.migration_command == "migrate-model":
+            return cmd_migration_migrate_model(args.to_generation)
+        if args.migration_command == "status":
+            return cmd_migration_status()
+        return 5
     return 5
 
 
