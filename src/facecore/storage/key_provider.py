@@ -95,7 +95,10 @@ class InMemoryKeyProvider:
         )
 
     def unwrap_and_store_key(
-        self, wrapped_key: WrappedKey, unwrapping_key: bytes
+        self,
+        wrapped_key: WrappedKey,
+        unwrapping_key: bytes,
+        owner_identity_id: str | None = None,
     ) -> str:
         raw = AESGCM(unwrapping_key).decrypt(
             wrapped_key.nonce,
@@ -108,7 +111,13 @@ class InMemoryKeyProvider:
             )
         )
         self._keys[key_id] = raw
-        self._owners[key_id] = wrapped_key.key_id
+        # Re-homed keys belong to the destination identity when known;
+        # otherwise retain the source key_id as the audit trail.
+        self._owners[key_id] = (
+            owner_identity_id
+            if owner_identity_id is not None
+            else wrapped_key.key_id
+        )
         return key_id
 
 
@@ -245,7 +254,10 @@ class FileKeyProvider:
         )
 
     def unwrap_and_store_key(
-        self, wrapped_key: WrappedKey, unwrapping_key: bytes
+        self,
+        wrapped_key: WrappedKey,
+        unwrapping_key: bytes,
+        owner_identity_id: str | None = None,
     ) -> str:
         raw = AESGCM(unwrapping_key).decrypt(
             wrapped_key.nonce,
@@ -258,7 +270,11 @@ class FileKeyProvider:
             nonce, raw, key_id.encode("utf-8")
         )
         entry = {
-            "identity_id": wrapped_key.key_id,
+            "identity_id": (
+                owner_identity_id
+                if owner_identity_id is not None
+                else wrapped_key.key_id
+            ),
             "nonce": nonce.hex(),
             "encrypted_dek": sealed.hex(),
         }

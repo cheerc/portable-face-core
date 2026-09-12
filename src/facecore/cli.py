@@ -1,12 +1,19 @@
-"""CLI surface: init / evaluate (Task 8) / bakeoff (Task 9)."""
+"""CLI surface: init / evaluate / bakeoff / lifecycle (Task 5) / conformance."""
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from facecore import SCHEMA_VERSION
-from facecore.errors import FaceCoreError
+from facecore.errors import FaceCoreError, StoreError
+
+if TYPE_CHECKING:
+    from facecore.contracts.migration import ModelMigrationManifest
+    from facecore.governance.lifecycle import LifecycleManager
+    from facecore.storage.sqlite_repo import SQLiteRepository
 from facecore.eval.bakeoff import TEN_CONDITIONS_NOTE, run_candidate
 from facecore.eval.corpus import CorpusFile, load_manifest
 from facecore.eval.report import write_report
@@ -334,6 +341,440 @@ def cmd_confirm_learning(verdict: str, score: float) -> int:
     return 0
 
 
+def _lifecycle_paths() -> tuple[Path, Path]:
+    """Resolve DB + key-dir from env (tests) or documented defaults."""
+    db_raw = os.environ.get("FACECORE_DB")
+    db_path = Path(db_raw).expanduser() if db_raw else (
+        Path.home() / ".facecore" / "facecore.db"
+    )
+    return db_path, db_path.parent / "keys"
+
+
+def _lifecycle_manager() -> "LifecycleManager":
+    """Open the repository + key provider for a lifecycle subcommand."""
+    from facecore.governance.lifecycle import LifecycleManager
+    from facecore.storage.key_provider import FileKeyProvider
+    from facecore.storage.sqlite_repo import SQLiteRepository
+
+    db_path, key_dir = _lifecycle_paths()
+    try:
+        provider = FileKeyProvider(key_dir=key_dir, db_path=db_path)
+    except FaceCoreError as exc:
+        print(f"facecore: key provider unavailable: {exc}", file=sys.stderr)
+        raise
+    repo = SQLiteRepository(str(db_path), provider)
+    try:
+        repo.initialize()
+    except FaceCoreError as exc:
+        print(f"facecore: store unavailable: {exc}", file=sys.stderr)
+        raise
+    return LifecycleManager(repo)
+
+
+def _emit(payload: dict[str, object]) -> None:
+    print(json.dumps(payload))
+
+
+def cmd_identity_add(identity_id: str, display_name: str, photo: Path) -> int:
+    try:
+        photo_bytes = photo.read_bytes()
+    except OSError:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "invalid_input"})
+        return 2
+    try:
+        manager = _lifecycle_manager()
+    except FaceCoreError as exc:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "store_error"})
+        return exc.exit_code
+    try:
+        result = manager.add_identity(
+            identity_id, display_name, photo_bytes, photo_bytes
+        )
+    except StoreError as exc:
+        _emit(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "status": "store_error",
+                "identity_id": identity_id,
+                "error": str(exc),
+            }
+        )
+        return 4
+    _emit(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "status": "ok",
+            "identity_id": result.identity_id,
+            "action": result.action,
+            "revision": result.revision,
+            "template_id": result.template_id,
+        }
+    )
+    return 0
+
+
+def cmd_identity_show(identity_id: str) -> int:
+    try:
+        manager = _lifecycle_manager()
+    except FaceCoreError as exc:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "store_error"})
+        return exc.exit_code
+    try:
+        snapshot = manager.show_identity(identity_id)
+    except StoreError as exc:
+        _emit(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "status": "store_error",
+                "identity_id": identity_id,
+                "error": str(exc),
+            }
+        )
+        return 4
+    _emit({"schema_version": SCHEMA_VERSION, "status": "ok", **snapshot})
+    return 0
+
+
+def cmd_identity_re_enroll(identity_id: str, photo: Path) -> int:
+    try:
+        photo_bytes = photo.read_bytes()
+    except OSError:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "invalid_input"})
+        return 2
+    try:
+        manager = _lifecycle_manager()
+    except FaceCoreError as exc:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "store_error"})
+        return exc.exit_code
+    try:
+        result = manager.re_enroll(identity_id, photo_bytes, photo_bytes)
+    except StoreError as exc:
+        _emit(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "status": "store_error",
+                "identity_id": identity_id,
+                "error": str(exc),
+            }
+        )
+        return 4
+    _emit(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "status": "ok",
+            "identity_id": result.identity_id,
+            "action": result.action,
+            "revision": result.revision,
+            "template_id": result.template_id,
+        }
+    )
+    return 0
+
+
+def cmd_identity_rollback(identity_id: str, to_revision: int) -> int:
+    try:
+        manager = _lifecycle_manager()
+    except FaceCoreError as exc:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "store_error"})
+        return exc.exit_code
+    try:
+        result = manager.rollback(identity_id, to_revision)
+    except StoreError as exc:
+        _emit(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "status": "store_error",
+                "identity_id": identity_id,
+                "error": str(exc),
+            }
+        )
+        return 4
+    _emit(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "status": "ok",
+            "identity_id": result.identity_id,
+            "action": result.action,
+            "revision": result.revision,
+        }
+    )
+    return 0
+
+
+def cmd_identity_delete(identity_id: str) -> int:
+    try:
+        manager = _lifecycle_manager()
+    except FaceCoreError as exc:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "store_error"})
+        return exc.exit_code
+    try:
+        result = manager.delete_identity(identity_id)
+    except StoreError as exc:
+        _emit(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "status": "store_error",
+                "identity_id": identity_id,
+                "error": str(exc),
+            }
+        )
+        return 4
+    _emit(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "status": "ok",
+            "identity_id": result.identity_id,
+            "action": result.action,
+        }
+    )
+    return 0
+
+
+def cmd_candidates_list(identity_id: str | None) -> int:
+    try:
+        manager = _lifecycle_manager()
+    except FaceCoreError as exc:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "store_error"})
+        return exc.exit_code
+    try:
+        candidates = manager.list_candidates(identity_id)
+    except StoreError:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "store_error"})
+        return 4
+    _emit(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "status": "ok",
+            "candidates": candidates,
+        }
+    )
+    return 0
+
+
+def cmd_candidate_reject(candidate_id: str) -> int:
+    try:
+        manager = _lifecycle_manager()
+    except FaceCoreError as exc:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "store_error"})
+        return exc.exit_code
+    try:
+        result = manager.reject_candidate(candidate_id)
+    except StoreError as exc:
+        _emit(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "status": "store_error",
+                "candidate_id": candidate_id,
+                "error": str(exc),
+            }
+        )
+        return 4
+    _emit(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "status": "ok",
+            "identity_id": result.identity_id,
+            "action": result.action,
+            "candidate_id": result.template_id,
+        }
+    )
+    return 0
+
+
+def _runtime_manifest() -> "ModelMigrationManifest":
+    """Current-runtime canonical manifest (Task 6 import gate)."""
+    from facecore.contracts.migration import ModelMigrationManifest
+
+    return ModelMigrationManifest(
+        embedder_artifact_hash=(
+            "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"
+        ),
+        detector_generation="yunet-2023mar",
+        preprocessing_generation="sface-112-rgb",
+        tensor_layout="NCHW",
+        normalization_contract="scale=1/128;mean=127.5;std=128",
+        embedding_dimension=128,
+        numerical_precision="fp32",
+        quantization_type="none",
+        execution_runtime="onnxruntime-cpu-arm64",
+    )
+
+
+def cmd_migration_migrate_model(target_generation: str) -> int:
+    from facecore.governance.migration import ModelMigrationManager
+
+    try:
+        manager = _lifecycle_manager()
+    except FaceCoreError as exc:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "store_error"})
+        return exc.exit_code
+    try:
+        current = _current_generation(manager.repository)
+        migration = ModelMigrationManager(manager.repository, current)
+        report = migration.migrate_generation(
+            _runtime_manifest(), target_generation
+        )
+    except StoreError as exc:
+        _emit(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "status": "store_error",
+                "error": str(exc),
+            }
+        )
+        return 4
+    _emit(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "status": "ok",
+            "from_generation": report.from_generation,
+            "to_generation": report.to_generation,
+            "active_migrated": report.active_migrated,
+            "candidates_migrated": report.candidates_migrated,
+            "candidates_generation_retired": (
+                report.candidates_generation_retired
+            ),
+            "identities_needing_re_enrollment": list(
+                report.identities_needing_re_enrollment
+            ),
+        }
+    )
+    return 0
+
+
+def _current_generation(repository: SQLiteRepository) -> str:
+    """Detect the live generation marker (single-generation store)."""
+    con = repository.connection
+    assert con is not None
+    row = con.execute(
+        "SELECT generation_id FROM face_templates"
+        " GROUP BY generation_id ORDER BY COUNT(*) DESC LIMIT 1"
+    ).fetchone()
+    if row is not None:
+        return str(row[0])
+    row = con.execute(
+        "SELECT generation_id FROM candidate_templates"
+        " GROUP BY generation_id ORDER BY COUNT(*) DESC LIMIT 1"
+    ).fetchone()
+    if row is not None:
+        return str(row[0])
+    return "G1"
+
+
+def cmd_migration_status() -> int:
+    try:
+        manager = _lifecycle_manager()
+    except FaceCoreError as exc:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "store_error"})
+        return exc.exit_code
+    _emit(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "status": "ok",
+            "current_generation": _current_generation(manager.repository),
+        }
+    )
+    return 0
+
+
+def cmd_export(archive: Path, passphrase: str) -> int:
+    from facecore.storage.export import export_identities
+
+    try:
+        manager_repo = _lifecycle_manager()
+    except FaceCoreError as exc:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "store_error"})
+        return exc.exit_code
+    try:
+        manifest = export_identities(
+            manager_repo.repository, _runtime_manifest(), archive, passphrase
+        )
+    except StoreError as exc:
+        _emit(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "status": "store_error",
+                "error": str(exc),
+            }
+        )
+        return 4
+    _emit(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "status": "ok",
+            "archive": manifest.archive,
+            "identities": manifest.identities,
+            "active_templates": manifest.active_templates,
+            "retired_templates": manifest.retired_templates,
+            "candidates": manifest.candidates,
+        }
+    )
+    return 0
+
+
+def cmd_import(archive: Path, passphrase: str) -> int:
+    from facecore.contracts.migration import ModelIncompatibilityError
+    from facecore.storage.export import import_identities
+
+    try:
+        manager_repo = _lifecycle_manager()
+    except FaceCoreError as exc:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "store_error"})
+        return exc.exit_code
+    try:
+        result = import_identities(
+            manager_repo.repository,
+            _runtime_manifest(),
+            archive,
+            passphrase,
+            manager_repo.repository.key_provider,
+        )
+    except ModelIncompatibilityError as exc:
+        _emit(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "status": "model_incompatible",
+                "error": str(exc),
+            }
+        )
+        return 3
+    except StoreError as exc:
+        _emit(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "status": "store_error",
+                "error": str(exc),
+            }
+        )
+        return 4
+    _emit(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "status": "ok",
+            "identities": result.identities,
+            "compatibility": result.compatibility,
+        }
+    )
+    return 0
+
+
+def cmd_lifecycle_status() -> int:
+    try:
+        manager = _lifecycle_manager()
+    except FaceCoreError as exc:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "store_error"})
+        return exc.exit_code
+    _emit(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "status": "ok",
+            "store": "ready",
+            "pending_candidates": len(manager.list_candidates()),
+        }
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="facecore")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -349,6 +790,40 @@ def main(argv: list[str] | None = None) -> int:
     cl = sub.add_parser("confirm-learning")
     cl.add_argument("--verdict", required=True)
     cl.add_argument("--score", required=True, type=float)
+    ident = sub.add_parser("identity")
+    isub = ident.add_subparsers(dest="identity_command", required=True)
+    ia = isub.add_parser("add")
+    ia.add_argument("--id", required=True)
+    ia.add_argument("--display-name", required=True)
+    ia.add_argument("--photo", required=True, type=Path)
+    ish = isub.add_parser("show")
+    ish.add_argument("--id", required=True)
+    ire = isub.add_parser("re-enroll")
+    ire.add_argument("--id", required=True)
+    ire.add_argument("--photo", required=True, type=Path)
+    irb = isub.add_parser("rollback")
+    irb.add_argument("--id", required=True)
+    irb.add_argument("--to-revision", required=True, type=int)
+    idel = isub.add_parser("delete")
+    idel.add_argument("--id", required=True)
+    cand = sub.add_parser("candidates")
+    csub = cand.add_subparsers(dest="candidates_command", required=True)
+    clist = csub.add_parser("list")
+    clist.add_argument("--id", required=False, default=None)
+    crej = csub.add_parser("reject")
+    crej.add_argument("--candidate-id", required=True)
+    sub.add_parser("status")
+    ex = sub.add_parser("export")
+    ex.add_argument("--archive", required=True, type=Path)
+    ex.add_argument("--passphrase", required=True)
+    im = sub.add_parser("import")
+    im.add_argument("--archive", required=True, type=Path)
+    im.add_argument("--passphrase", required=True)
+    mig = sub.add_parser("migration")
+    msub = mig.add_subparsers(dest="migration_command", required=True)
+    mm = msub.add_parser("migrate-model")
+    mm.add_argument("--to-generation", required=True)
+    msub.add_parser("status")
     args = parser.parse_args(argv)
     if args.command == "init":
         return cmd_init()
@@ -362,6 +837,36 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_conformance()
     if args.command == "confirm-learning":
         return cmd_confirm_learning(args.verdict, args.score)
+    if args.command == "identity":
+        if args.identity_command == "add":
+            return cmd_identity_add(args.id, args.display_name, args.photo)
+        if args.identity_command == "show":
+            return cmd_identity_show(args.id)
+        if args.identity_command == "re-enroll":
+            return cmd_identity_re_enroll(args.id, args.photo)
+        if args.identity_command == "rollback":
+            return cmd_identity_rollback(args.id, args.to_revision)
+        if args.identity_command == "delete":
+            return cmd_identity_delete(args.id)
+        return 5
+    if args.command == "candidates":
+        if args.candidates_command == "list":
+            return cmd_candidates_list(args.id)
+        if args.candidates_command == "reject":
+            return cmd_candidate_reject(args.candidate_id)
+        return 5
+    if args.command == "status":
+        return cmd_lifecycle_status()
+    if args.command == "export":
+        return cmd_export(args.archive, args.passphrase)
+    if args.command == "import":
+        return cmd_import(args.archive, args.passphrase)
+    if args.command == "migration":
+        if args.migration_command == "migrate-model":
+            return cmd_migration_migrate_model(args.to_generation)
+        if args.migration_command == "status":
+            return cmd_migration_status()
+        return 5
     return 5
 
 

@@ -47,9 +47,17 @@ class KeyProviderProtocol(Protocol):
         ...
 
     def unwrap_and_store_key(
-        self, wrapped_key: "WrappedKey", unwrapping_key: bytes
+        self,
+        wrapped_key: "WrappedKey",
+        unwrapping_key: bytes,
+        owner_identity_id: "str | None" = None,
     ) -> str:
-        """Unwrap a DEK into destination custody, return new key_id."""
+        """Unwrap a DEK into destination custody, return new key_id.
+
+        ``owner_identity_id`` records destination ownership for
+        identity-scoped destruction; omitting it keeps the source
+        key_id as the audit trail (back-compatible default).
+        """
         ...
 
 
