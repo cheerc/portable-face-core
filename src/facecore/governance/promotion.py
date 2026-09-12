@@ -12,6 +12,7 @@ generation. Persistence (status transition + row insert) belongs to the
 caller (Task 5 lifecycle) using existing repository methods.
 """
 
+import math
 from dataclasses import dataclass
 
 from facecore.contracts.candidate import CandidateStatus, CandidateTemplate
@@ -56,7 +57,7 @@ class PromotionManager:
                 candidate_status=candidate.status.value,
                 reason="insufficient_corroboration",
             )
-        if margin < self._policy.promotion_margin:
+        if not math.isfinite(margin) or margin < self._policy.promotion_margin:
             return PromotionDecision(
                 promote=False,
                 candidate_status=candidate.status.value,

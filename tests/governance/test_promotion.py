@@ -11,6 +11,8 @@ RED: ``assert candidate.status == 'pending' (got 'promoted')``.
 from facecore.contracts.candidate import CandidateStatus, CandidateTemplate
 from facecore.contracts.crypto import EncryptedBlob
 from facecore.contracts.template import FaceTemplate, TemplateRevision
+import math
+
 from facecore.governance.promotion import PromotionManager
 
 
@@ -91,6 +93,14 @@ def test_promotion_carries_exemplar_into_active_template() -> None:
     assert template.exemplar_landmarks == ((1.0, 2.0),)
     assert template.generation_id == "G1"
     assert template.key_id == "key-1"
+
+
+def test_non_finite_margin_never_promotes() -> None:
+    manager = PromotionManager(current_generation="G1")
+    for bad in (math.nan, math.inf, -math.inf):
+        decision = manager.evaluate(_candidate(count=5, generation="G1"), margin=bad)
+        assert decision.promote is False
+        assert "margin" in decision.reason
 
 
 def test_non_pending_candidate_never_promotes() -> None:

@@ -8,10 +8,16 @@ Project verification boundaries: anti-parallel (cos=-1 → Uc=1.0),
 duplicate (cos=1 → URed=1.0), empty-bank, all-penalty → clean 0.0.
 """
 
+import math
+
 import pytest
 
 from facecore.governance.eviction import EvictionManager
-from facecore.governance.utility import TemplateSignals, UtilityRescorer
+from facecore.governance.utility import (
+    TemplateSignals,
+    UtilityInputError,
+    UtilityRescorer,
+)
 
 
 def _signals(**overrides: object) -> TemplateSignals:
@@ -76,6 +82,22 @@ def test_scores_always_within_unit_interval(kwargs: object) -> None:
     assert isinstance(kwargs, dict)
     score = UtilityRescorer().score(_signals(**kwargs))
     assert 0.0 <= score <= 1.0
+
+
+def test_nan_detector_confidence_is_rejected() -> None:
+    with pytest.raises(UtilityInputError):
+        UtilityRescorer.quality(_signals(detector_confidence=math.nan))
+
+
+def test_non_finite_or_negative_signals_are_rejected() -> None:
+    with pytest.raises(UtilityInputError):
+        UtilityRescorer.score(_signals(variance_laplacian=math.inf))
+    with pytest.raises(UtilityInputError):
+        UtilityRescorer.score(_signals(age_days=-1.0))
+    with pytest.raises(UtilityInputError):
+        UtilityRescorer.score(_signals(additional_corroboration_count=-1))
+    with pytest.raises(UtilityInputError):
+        UtilityRescorer.score(_signals(cosine_to_centroid=2.0))
 
 
 def test_eviction_removes_lowest_utility_at_capacity() -> None:

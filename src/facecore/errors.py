@@ -40,6 +40,17 @@ class ConfigurationError(FaceCoreError):
     exit_code = 5
 
 
+class CorroborationInputError(FaceCoreError):
+    """Malformed corroboration observation (timestamp or sequence).
+
+    Corrupt replay input fails closed at the engine boundary with this
+    type, so callers can quarantine the event instead of mistaking it
+    for an internal bug. Carries exit code 2 (undecodable input).
+    """
+
+    exit_code = 2
+
+
 class RedactionError(Exception):
     """Report body tripped the biometric/PII guard — never written to disk.
 
