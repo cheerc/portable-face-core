@@ -47,7 +47,8 @@ docs/
 │   ├── 2026-09-09-open-source-face-stack.md
 │   ├── 2026-09-10-model-candidate-gate.md
 │   ├── 2026-09-12-face-recognition-strength-spike.md
-│   └── 2026-09-12-storage-crypto-manifest.md
+│   ├── 2026-09-12-storage-crypto-manifest.md
+│   └── 2026-09-12-weights-corpus-readiness.md
 └── specs/
     └── 2026-09-09-portable-face-core-design.md
 facecore.sh
