@@ -270,6 +270,9 @@ class SQLiteRepository:
         exemplar: bytes,
         record_id: str | None = None,
     ) -> str:
+        self.validate_exemplar_geometry(
+            template.exemplar_crop_box, template.exemplar_landmarks
+        )
         con = self._require()
         tid = record_id or template.template_id
         self._reserve_identity_create(identity_id, tid)
@@ -358,6 +361,9 @@ class SQLiteRepository:
         embedding: bytes,
         exemplar: bytes,
     ) -> str:
+        self.validate_exemplar_geometry(
+            template.exemplar_crop_box, template.exemplar_landmarks
+        )
         con = self._require()
         tid = template.template_id
         self._reserve_revision_create(identity_id, tid)
@@ -491,6 +497,7 @@ class SQLiteRepository:
             raise ValueError("evidence_log must be valid JSON") from exc
         if not isinstance(parsed_evidence, list):
             raise ValueError("evidence_log must be a JSON list")
+        self.validate_exemplar_geometry(exemplar_crop_box, exemplar_landmarks)
         con = self._require()
         self._reserve_candidate_create(identity_id, candidate_id)
         key_id: str | None = None
@@ -549,6 +556,43 @@ class SQLiteRepository:
         return candidate_id
 
     @staticmethod
+    def _check_crop(coordinates: tuple[float, float, float, float]) -> None:
+        if not all(math.isfinite(value) for value in coordinates):
+            raise ValueError("crop contains a non-finite coordinate")
+        if (
+            coordinates[0] < 0.0
+            or coordinates[1] < 0.0
+            or coordinates[2] <= 0.0
+            or coordinates[3] <= 0.0
+        ):
+            raise ValueError("crop bounds must be non-negative with positive size")
+
+    @staticmethod
+    def _check_landmarks(coordinates: tuple[tuple[float, float], ...]) -> None:
+        for point in coordinates:
+            if not all(math.isfinite(value) for value in point):
+                raise ValueError("landmark contains a non-finite coordinate")
+
+    @staticmethod
+    def validate_exemplar_geometry(
+        crop: tuple[float, float, float, float] | None,
+        landmarks: tuple[tuple[float, float], ...] | None,
+    ) -> None:
+        """Shared write-boundary validator: None is legal, anything else finite."""
+        try:
+            if crop is not None:
+                if len(crop) != 4:
+                    raise ValueError("crop must contain four values")
+                SQLiteRepository._check_crop(crop)
+            if landmarks is not None:
+                for point in landmarks:
+                    if len(point) != 2:
+                        raise ValueError("landmark must contain two values")
+                SQLiteRepository._check_landmarks(landmarks)
+        except (TypeError, ValueError) as exc:
+            raise StoreCorruptionError("invalid exemplar geometry") from exc
+
+    @staticmethod
     def _json_crop(value: str | None) -> tuple[float, float, float, float] | None:
         if value is None:
             return None
@@ -562,15 +606,7 @@ class SQLiteRepository:
                 float(str(raw[2])),
                 float(str(raw[3])),
             )
-            if not all(math.isfinite(value) for value in coordinates):
-                raise ValueError("crop contains a non-finite coordinate")
-            if (
-                coordinates[0] < 0.0
-                or coordinates[1] < 0.0
-                or coordinates[2] <= 0.0
-                or coordinates[3] <= 0.0
-            ):
-                raise ValueError("crop bounds must be non-negative with positive size")
+            SQLiteRepository._check_crop(coordinates)
             return coordinates
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             raise StoreCorruptionError("invalid exemplar crop geometry") from exc
@@ -590,10 +626,10 @@ class SQLiteRepository:
                 if not isinstance(point, list) or len(point) != 2:
                     raise ValueError("landmark must contain two values")
                 coordinates = (float(str(point[0])), float(str(point[1])))
-                if not all(math.isfinite(value) for value in coordinates):
-                    raise ValueError("landmark contains a non-finite coordinate")
                 result.append(coordinates)
-            return tuple(result)
+            parsed = tuple(result)
+            SQLiteRepository._check_landmarks(parsed)
+            return parsed
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             raise StoreCorruptionError("invalid exemplar landmark geometry") from exc
 
