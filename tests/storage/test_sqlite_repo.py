@@ -100,7 +100,17 @@ def test_crash_mid_batch_destruction_recovers(tmp_path: Path) -> None:
     repo.initialize()
     repo.enroll_identity("person-001", "Test Person", _template(), *_payload("t-1"))
     repo.add_candidate_record(
-        "c-1", "person-001", b"e" * 16, b"x" * 8, expires_at="2030-01-01T00:00:00Z"
+        "c-1",
+        "person-001",
+        b"e" * 16,
+        b"x" * 8,
+        expires_at="2030-01-01T00:00:00Z",
+        generation_id="G1",
+        exemplar_crop_box=None,
+        exemplar_landmarks=None,
+        quality_score=0.9,
+        additional_corroboration_count=0,
+        evidence_log="[]",
     )
     repo.begin_delete_identity("person-001")
     key_ids = repo.tombstone_key_ids("person-001")
@@ -291,7 +301,17 @@ def test_candidate_ciphertext_is_overwritten_before_delete(tmp_path: Path) -> No
     repo.initialize()
     repo.enroll_identity("person-001", "Test Person", _template(), *_payload("t-1"))
     repo.add_candidate_record(
-        "c-1", "person-001", b"e" * 16, b"x" * 8, "2030-01-01T00:00:00Z"
+        "c-1",
+        "person-001",
+        b"e" * 16,
+        b"x" * 8,
+        "2030-01-01T00:00:00Z",
+        generation_id="G1",
+        exemplar_crop_box=None,
+        exemplar_landmarks=None,
+        quality_score=0.9,
+        additional_corroboration_count=0,
+        evidence_log="[]",
     )
     con = repo.connection
     assert con is not None
@@ -343,10 +363,30 @@ def test_failed_append_and_candidate_do_not_leak_keys(tmp_path: Path) -> None:
     assert len(provider._keys) == before
     with pytest.raises(sqlite3.IntegrityError):
         repo.add_candidate_record(
-            "c-1", "person-001", b"e" * 16, b"x", "2030-01-01T00:00:00Z"
+            "c-1",
+            "person-001",
+            b"e" * 16,
+            b"x",
+            "2030-01-01T00:00:00Z",
+            generation_id="G1",
+            exemplar_crop_box=None,
+            exemplar_landmarks=None,
+            quality_score=0.9,
+            additional_corroboration_count=0,
+            evidence_log="[]",
         )
         repo.add_candidate_record(
-            "c-1", "person-001", b"e" * 16, b"x", "2030-01-01T00:00:00Z"
+            "c-1",
+            "person-001",
+            b"e" * 16,
+            b"x",
+            "2030-01-01T00:00:00Z",
+            generation_id="G1",
+            exemplar_crop_box=None,
+            exemplar_landmarks=None,
+            quality_score=0.9,
+            additional_corroboration_count=0,
+            evidence_log="[]",
         )
     assert len(provider._keys) == before + 1
 

@@ -157,6 +157,10 @@ class SQLiteRepository:
                 f"ciphertext too short for {table}:{record}"
             )
         version, cipher_id = sealed[0], sealed[1]
+        if sealed[2:4] != b"\x00\x00":
+            raise StoreCorruptionError(
+                "non-zero reserved bytes in encrypted blob header"
+            )
         try:
             return EncryptedBlob(
                 format_version=version,
@@ -445,7 +449,47 @@ class SQLiteRepository:
         embedding: bytes,
         exemplar: bytes,
         expires_at: str,
+        *,
+        generation_id: str | None = None,
+        exemplar_crop_box: tuple[float, float, float, float] | None = None,
+        exemplar_landmarks: tuple[tuple[float, float], ...] | None = None,
+        quality_score: float | None = None,
+        additional_corroboration_count: int | None = None,
+        evidence_log: str | None = None,
+        created_at: str | None = None,
     ) -> str:
+        """Persist a candidate's complete governance contract.
+
+        The keyword metadata is required for new candidate writes. Keeping the
+        parameters explicit makes the storage boundary auditable while allowing
+        callers to retain their raw observation bytes for this repository to
+        encrypt under its newly-created record DEK.
+        """
+        required = {
+            "generation_id": generation_id,
+            "quality_score": quality_score,
+            "additional_corroboration_count": additional_corroboration_count,
+            "evidence_log": evidence_log,
+        }
+        missing = [name for name, value in required.items() if value is None]
+        if missing:
+            raise ValueError(
+                "candidate governance metadata required: " + ", ".join(missing)
+            )
+        assert generation_id is not None
+        assert quality_score is not None
+        assert additional_corroboration_count is not None
+        assert evidence_log is not None
+        if not generation_id:
+            raise ValueError("generation_id must be non-empty")
+        if additional_corroboration_count < 0:
+            raise ValueError("additional_corroboration_count must be >= 0")
+        try:
+            parsed_evidence: object = json.loads(evidence_log)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ValueError("evidence_log must be valid JSON") from exc
+        if not isinstance(parsed_evidence, list):
+            raise ValueError("evidence_log must be a JSON list")
         con = self._require()
         self._reserve_candidate_create(identity_id, candidate_id)
         key_id: str | None = None
@@ -458,7 +502,7 @@ class SQLiteRepository:
             enc_exe, exe_nonce = self._seal(
                 dek, exemplar, "candidate_templates", candidate_id, identity_id
             )
-            now = _utcnow()
+            now = created_at or _utcnow()
             con.execute("BEGIN IMMEDIATE")
             identity = con.execute(
                 "SELECT status FROM identities WHERE id = ?", (identity_id,)
@@ -472,16 +516,25 @@ class SQLiteRepository:
                 " exemplar_crop_box, exemplar_landmarks, quality_score,"
                 " additional_corroboration_count, evidence_log,"
                 " expires_at, created_at)"
-                " VALUES (?, ?, 'G1', 'pending', ?, ?, ?, ?, ?,"
-                " NULL, NULL, 0.9, 0, '[]', ?, ?)",
+                " VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     candidate_id,
                     identity_id,
+                    generation_id,
                     key_id,
                     enc_emb,
                     emb_nonce,
                     enc_exe,
                     exe_nonce,
+                    json.dumps(exemplar_crop_box)
+                    if exemplar_crop_box is not None
+                    else None,
+                    json.dumps(exemplar_landmarks)
+                    if exemplar_landmarks is not None
+                    else None,
+                    quality_score,
+                    additional_corroboration_count,
+                    evidence_log,
                     expires_at,
                     now,
                 ),
@@ -498,15 +551,18 @@ class SQLiteRepository:
     def _json_crop(value: str | None) -> tuple[float, float, float, float] | None:
         if value is None:
             return None
-        raw: object = json.loads(value)
-        if not isinstance(raw, list) or len(raw) != 4:
-            raise StoreCorruptionError("invalid exemplar crop geometry")
-        return (
-            float(str(raw[0])),
-            float(str(raw[1])),
-            float(str(raw[2])),
-            float(str(raw[3])),
-        )
+        try:
+            raw: object = json.loads(value)
+            if not isinstance(raw, list) or len(raw) != 4:
+                raise ValueError("crop must contain four values")
+            return (
+                float(str(raw[0])),
+                float(str(raw[1])),
+                float(str(raw[2])),
+                float(str(raw[3])),
+            )
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise StoreCorruptionError("invalid exemplar crop geometry") from exc
 
     @staticmethod
     def _json_landmarks(
@@ -514,15 +570,18 @@ class SQLiteRepository:
     ) -> tuple[tuple[float, float], ...] | None:
         if value is None:
             return None
-        raw: object = json.loads(value)
-        if not isinstance(raw, list):
-            raise StoreCorruptionError("invalid exemplar landmark geometry")
-        result: list[tuple[float, float]] = []
-        for point in raw:
-            if not isinstance(point, list) or len(point) != 2:
-                raise StoreCorruptionError("invalid exemplar landmark point")
-            result.append((float(str(point[0])), float(str(point[1]))))
-        return tuple(result)
+        try:
+            raw: object = json.loads(value)
+            if not isinstance(raw, list):
+                raise ValueError("landmarks must be a list")
+            result: list[tuple[float, float]] = []
+            for point in raw:
+                if not isinstance(point, list) or len(point) != 2:
+                    raise ValueError("landmark must contain two values")
+                result.append((float(str(point[0])), float(str(point[1]))))
+            return tuple(result)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise StoreCorruptionError("invalid exemplar landmark geometry") from exc
 
     def _hydrate_template(self, row: tuple[object, ...]) -> FaceTemplate:
         (
