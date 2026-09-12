@@ -78,6 +78,11 @@ class LifecycleManager:
         self._repo = repository
         self._policy = policy or GovernancePolicy.provisional_v1()
 
+    @property
+    def repository(self) -> SQLiteRepository:
+        """Bound repository (export/import operate on the same store)."""
+        return self._repo
+
     def add_identity(
         self,
         identity_id: str,

@@ -11,6 +11,7 @@ from facecore import SCHEMA_VERSION
 from facecore.errors import FaceCoreError, StoreError
 
 if TYPE_CHECKING:
+    from facecore.contracts.migration import ModelMigrationManifest
     from facecore.governance.lifecycle import LifecycleManager
 from facecore.eval.bakeoff import TEN_CONDITIONS_NOTE, run_candidate
 from facecore.eval.corpus import CorpusFile, load_manifest
@@ -579,6 +580,106 @@ def cmd_candidate_reject(candidate_id: str) -> int:
     return 0
 
 
+def _runtime_manifest() -> "ModelMigrationManifest":
+    """Current-runtime canonical manifest (Task 6 import gate)."""
+    from facecore.contracts.migration import ModelMigrationManifest
+
+    return ModelMigrationManifest(
+        embedder_artifact_hash=(
+            "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"
+        ),
+        detector_generation="yunet-2023mar",
+        preprocessing_generation="sface-112-rgb",
+        tensor_layout="NCHW",
+        normalization_contract="scale=1/128;mean=127.5;std=128",
+        embedding_dimension=128,
+        numerical_precision="fp32",
+        quantization_type="none",
+        execution_runtime="onnxruntime-cpu-arm64",
+    )
+
+
+def cmd_export(archive: Path, passphrase: str) -> int:
+    from facecore.storage.export import export_identities
+
+    try:
+        manager_repo = _lifecycle_manager()
+    except FaceCoreError as exc:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "store_error"})
+        return exc.exit_code
+    try:
+        manifest = export_identities(
+            manager_repo.repository, _runtime_manifest(), archive, passphrase
+        )
+    except StoreError as exc:
+        _emit(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "status": "store_error",
+                "error": str(exc),
+            }
+        )
+        return 4
+    _emit(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "status": "ok",
+            "archive": manifest.archive,
+            "identities": manifest.identities,
+            "active_templates": manifest.active_templates,
+            "retired_templates": manifest.retired_templates,
+            "candidates": manifest.candidates,
+        }
+    )
+    return 0
+
+
+def cmd_import(archive: Path, passphrase: str) -> int:
+    from facecore.contracts.migration import ModelIncompatibilityError
+    from facecore.storage.export import import_identities
+
+    try:
+        manager_repo = _lifecycle_manager()
+    except FaceCoreError as exc:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "store_error"})
+        return exc.exit_code
+    try:
+        result = import_identities(
+            manager_repo.repository,
+            _runtime_manifest(),
+            archive,
+            passphrase,
+            manager_repo.repository.key_provider,
+        )
+    except ModelIncompatibilityError as exc:
+        _emit(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "status": "model_incompatible",
+                "error": str(exc),
+            }
+        )
+        return 3
+    except StoreError as exc:
+        _emit(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "status": "store_error",
+                "error": str(exc),
+            }
+        )
+        return 4
+    _emit(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "status": "ok",
+            "identities": result.identities,
+            "compatibility": result.compatibility,
+        }
+    )
+    return 0
+
+
 def cmd_lifecycle_status() -> int:
     try:
         manager = _lifecycle_manager()
@@ -634,6 +735,12 @@ def main(argv: list[str] | None = None) -> int:
     crej = csub.add_parser("reject")
     crej.add_argument("--candidate-id", required=True)
     sub.add_parser("status")
+    ex = sub.add_parser("export")
+    ex.add_argument("--archive", required=True, type=Path)
+    ex.add_argument("--passphrase", required=True)
+    im = sub.add_parser("import")
+    im.add_argument("--archive", required=True, type=Path)
+    im.add_argument("--passphrase", required=True)
     args = parser.parse_args(argv)
     if args.command == "init":
         return cmd_init()
@@ -667,6 +774,10 @@ def main(argv: list[str] | None = None) -> int:
         return 5
     if args.command == "status":
         return cmd_lifecycle_status()
+    if args.command == "export":
+        return cmd_export(args.archive, args.passphrase)
+    if args.command == "import":
+        return cmd_import(args.archive, args.passphrase)
     return 5
 
 
