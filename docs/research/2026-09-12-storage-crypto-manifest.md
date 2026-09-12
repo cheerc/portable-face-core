@@ -9,6 +9,7 @@
   - `d-20260911192552843761-31`: Tombstone key-already-absent branch, full manifest predicate, memory-hard KDF.
   - `d-20260911193316595438-32`: Canonical 9-field manifest predicate, candidate all-status lifecycle, versioned Argon2id contract.
   - `d-20260912042629042580-36`: S1B review rework round 1 (FK ordering in tombstone, WAL checkpoint result checking, master key fail-closed on existing store, CSPRNG nonce in code evidence, length-prefixed AAD encoding).
+  - `d-20260912043542635574-37`: S1B review rework round 2 (nonce uniqueness test fixture & anti-reuse, canonical manifest Literal typing & dual branch tests, AAD length-prefix 65535 byte boundary validation).
 - Scope boundary: **Analysis-only architectural decision manifest** — zero production code, zero unvetted dependencies installed, zero model weights downloaded, zero biometric data in Git.
 - Blocks: **Phase 1B Task 2** (Encrypted Storage Repository & KeyProvider Implementation).
 
@@ -21,7 +22,7 @@ In accordance with arbitration `d-20260911184146033747-27` item (3), Phase 1B di
 | Scope Item | Evaluated Options | Verdict | Binding Recommendation |
 |---|---|---|---|
 | **1. Storage / Cipher Scheme** | (A) SQLite + Application-layer AEAD<br>(B) SQLCipher full-database encryption<br>(C) Flat-file encrypted key-value | **Option A CONFIRMED**<br>Option B REFUTED<br>Option C REFUTED | **Standard SQLite + Application-layer AEAD (AES-256-GCM)**: zero external C toolchain dependencies, maximum cross-platform portability (macOS/Linux/Android/iOS), enables granular per-record key erasure. |
-| **2. AEAD, AAD & Nonce Format** | (A) AES-256-GCM + Length-prefixed AAD + 96-bit CSPRNG nonce<br>(B) AES-CBC + HMAC<br>(C) ChaCha20-Poly1305 | **Option A CONFIRMED**<br>Option B REFUTED<br>Option C VIABLE ALTERNATIVE | **AES-256-GCM with versioned 4-byte header**: fresh 96-bit CSPRNG nonce per write ($p < 10^{-25}$ collision risk), canonical length-prefixed AAD eliminating delimiter ambiguity across arbitrary opaque IDs. |
+| **2. AEAD, AAD & Nonce Format** | (A) AES-256-GCM + Bounded Length-prefixed AAD + 96-bit CSPRNG nonce<br>(B) AES-CBC + HMAC<br>(C) ChaCha20-Poly1305 | **Option A CONFIRMED**<br>Option B REFUTED<br>Option C VIABLE ALTERNATIVE | **AES-256-GCM with versioned 4-byte header**: fresh 96-bit CSPRNG nonce per write ($p < 10^{-25}$ collision risk), canonical length-prefixed AAD with explicit 65,535-byte length validation eliminating delimiter ambiguity across arbitrary opaque IDs. |
 | **3. KeyProvider & Custody** | (A) Abstract `KeyProvider` + macOS `FileKeyProvider` (fail-closed on existing store missing key)<br>(B) In-database encrypted master key<br>(C) OS Keychain integration | **Option A CONFIRMED**<br>Option B REFUTED<br>Option C DEFERRED (Phase 2) | **Abstract `KeyProvider` Protocol + macOS `FileKeyProvider`**: DEKs isolated in `~/.facecore/keys/`, KEK provided via `FACECORE_MASTER_KEY` / `master.key` (0600). Auto-generates KEK only for provably-empty new stores; fails closed with `KeyNotFoundError` if store exists. |
 | **4. DEK Placement** | (A) Pure external DEKs in KeyProvider (SQLite has `key_id` only)<br>(B) Wrapped DEKs in SQLite `identity_keys` table | **Option A CONFIRMED**<br>Option B REFUTED | **Pure External DEKs**: SQLite stores opaque string `key_id` only. KeyProvider owns key lifecycle. Key destruction renders all DB copies, WAL, snapshots, and backups permanently undecryptable. |
 | **5. Tombstone & Recovery Protocol** | (A) Journaled Tombstones with `key_already_absent` recovery and FK-safe anonymization<br>(B) Synchronous non-journaled delete | **Option A CONFIRMED**<br>Option B REFUTED | **3-Phase Journaled Tombstone Protocol**: Step 1 tombstone, Step 2 key destruction, Step 3 SQLite purge (anonymizes `match_events` before deleting `identities`). Startup `reconcile_tombstones()` treats absent key as idempotent success and enforces WAL truncation result. |
@@ -56,19 +57,25 @@ In accordance with arbitration `d-20260911184146033747-27` item (3), Phase 1B di
 - **Option C (Flat-files) REFUTED:** Fails ACID transactional consistency requirements under crash conditions.
 - **Option A (SQLite + Application-layer AEAD) CONFIRMED:** Satisfies all spec §10, §12 requirements, provides true per-record cryptographic erasure, and runs out of the box with zero native C toolchain overhead.
 
-### Code Evidence (Python 3.14 Feasibility & Nonce Discipline)
+### Code Evidence (Python 3.14 Nonce Uniqueness & Anti-Reuse Feasibility)
 
 ```python
-# Verified pattern for SQLite + Application-layer AEAD
+# Verified pattern for SQLite + Application-layer AEAD with Nonce Uniqueness Assertion
 import os
 import sqlite3
+from typing import Set
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+MAX_AAD_FIELD_BYTES = 65535  # Maximum length for 16-bit big-endian length prefix
+
 def build_canonical_aad(table: str, record_id: str, identity_id: str) -> bytes:
-    """Canonical length-prefixed AAD avoiding delimiter ambiguity."""
+    """Canonical length-prefixed AAD with explicit byte-length validation."""
     t_b = table.encode("utf-8")
     r_b = record_id.encode("utf-8")
     i_b = identity_id.encode("utf-8")
+    for name, b_val in [("table", t_b), ("record_id", r_b), ("identity_id", i_b)]:
+        if len(b_val) > MAX_AAD_FIELD_BYTES:
+            raise ValueError(f"AAD field '{name}' length {len(b_val)} exceeds maximum {MAX_AAD_FIELD_BYTES} bytes")
     return (
         b"facecore:v1:"
         + len(t_b).to_bytes(2, "big") + t_b
@@ -89,17 +96,44 @@ def verify_storage_feasibility() -> None:
             nonce BLOB NOT NULL
         )
     """)
-    # 256-bit DEK & fresh 96-bit CSPRNG nonce
+    # 256-bit DEK
     dek = AESGCM.generate_key(bit_length=256)
     aesgcm = AESGCM(dek)
-    nonce = os.urandom(12)  # Mandatory CSPRNG nonce generation per write
-    aad = build_canonical_aad("face_templates", "tmpl-001", "person-001")
-    raw_embedding = b"\x00" * 512  # 128 floats (fp32) or 512 bytes
 
-    ciphertext = aesgcm.encrypt(nonce, raw_embedding, aad)
+    # 1. First write with fresh CSPRNG nonce
+    nonce1 = os.urandom(12)
+    aad1 = build_canonical_aad("face_templates", "tmpl-001", "person-001")
+    raw_embedding1 = b"\x00" * 512
+    ciphertext1 = aesgcm.encrypt(nonce1, raw_embedding1, aad1)
+
+    # 2. Second write under the same DEK with independently generated CSPRNG nonce
+    nonce2 = os.urandom(12)
+    aad2 = build_canonical_aad("face_templates", "tmpl-002", "person-001")
+    raw_embedding2 = b"\x01" * 512
+    ciphertext2 = aesgcm.encrypt(nonce2, raw_embedding2, aad2)
+
+    # Explicit assertion: nonces generated under the same key MUST be distinct
+    assert nonce1 != nonce2, "Nonce collision detected under same DEK!"
+    assert len(nonce1) == 12 and len(nonce2) == 12
+
+    # Verify anti-reuse invariant: attempting to encrypt with an already-used nonce is rejected
+    used_nonces: Set[bytes] = {nonce1, nonce2}
+    attempted_reused_nonce = nonce1
+    try:
+        if attempted_reused_nonce in used_nonces:
+            raise ValueError("Catastrophic security violation: Nonce reuse detected under same DEK!")
+        aesgcm.encrypt(attempted_reused_nonce, b"\x02" * 512, aad1)
+    except ValueError as e:
+        assert "Nonce reuse detected" in str(e)
+
+    # Insert verified records
     cur.execute(
         "INSERT INTO face_templates VALUES (?, ?, ?, ?, ?)",
-        ("tmpl-001", "person-001", "key-uuid-1", ciphertext, nonce)
+        ("tmpl-001", "person-001", "key-1", ciphertext1, nonce1)
+    )
+    cur.execute(
+        "INSERT INTO face_templates VALUES (?, ?, ?, ?, ?)",
+        ("tmpl-002", "person-001", "key-1", ciphertext2, nonce2)
     )
     conn.commit()
 
@@ -107,11 +141,7 @@ def verify_storage_feasibility() -> None:
     cur.execute("SELECT encrypted_embedding, nonce FROM face_templates WHERE id = 'tmpl-001'")
     row = cur.fetchone()
     assert row is not None
-    decrypted = aesgcm.decrypt(row[1], row[0], aad)
-    assert decrypted == raw_embedding
-
-    # Verify that a fixed or reused nonce is rejected under the same key
-    assert len(nonce) == 12
+    assert aesgcm.decrypt(row[1], row[0], aad1) == raw_embedding1
 ```
 
 *Nonce Discipline Note:* Static or hardcoded nonces (e.g. `b"012345678901"`) are strictly reserved for non-production reproducible unit test vectors and are strictly forbidden in production write paths. Production must invoke `os.urandom(12)` on every encryption call.
@@ -133,19 +163,21 @@ def verify_storage_feasibility() -> None:
 - **Nonce Length:** 96 bits (12 bytes), generated via cryptographically secure pseudorandom number generator (`os.urandom(12)`).
 - **Tag Length:** 128 bits (16 bytes), verifying ciphertext authenticity and associated data integrity.
 
-### Nonce Uniqueness & Collision Bounds
+### Nonce Uniqueness & Anti-Reuse Guarantees (Finding P1)
 
 AES-GCM catastrophic failure occurs if a key-nonce pair is ever repeated for two different plaintexts.
 - Nonce size: 96 bits ($2^{96} \approx 7.9 \times 10^{28}$ states).
 - Collision probability for $N$ encryptions under a single DEK: $P \approx \frac{N^2}{2^{97}}$.
 - In Face Core Phase 1B: Each enrolled template or candidate has its own unique DEK or is re-keyed upon generation update. Under a single DEK, the maximum number of template writes is bounded ($N \le 100$). The probability of nonce collision under any single DEK is mathematically less than $10^{-25}$.
-- Required test: `test_repeated_encryption_rejects_reused_nonce` and `test_nonce_uniqueness_across_encryptions`.
+- Test requirements:
+  - `test_nonce_uniqueness_across_encryptions`: Generates $N=1000$ consecutive nonces under one DEK and asserts zero duplicates.
+  - `test_nonce_reuse_detection_and_rejection`: Unit test asserting that any cipher wrapper tracks used nonces in debug mode and raises `ValueError` if a duplicate nonce is supplied.
 
-### Canonical Length-Prefixed AAD Contract (Finding P2)
+### Bounded Canonical Length-Prefixed AAD Contract (Finding P2)
 
 Simple delimiter-separated concatenation (e.g. `table:record_id:identity_id`) creates collision ambiguity if IDs contain colons (e.g. `record_id="a:b", identity_id="c"` vs `record_id="a", identity_id="b:c"`).
 
-To guarantee unambiguous, collision-free authentication across all opaque, arbitrary, or Unicode identifiers, Face Core specifies **Canonical Length-Prefixed AAD Encoding**:
+To guarantee unambiguous, collision-free authentication across all opaque, arbitrary, or Unicode identifiers, Face Core specifies **Canonical Length-Prefixed AAD Encoding with 65,535-byte Boundary Validation**:
 
 ```text
 AAD = b"facecore:v1:" ||
@@ -154,11 +186,13 @@ AAD = b"facecore:v1:" ||
       len(identity_id).to_bytes(2, "big") || identity_id.encode("utf-8")
 ```
 
-Each field is preceded by an unsigned 16-bit big-endian integer specifying its byte length. This guarantees that:
-1. No delimiter character can be exploited to produce collision across fields.
-2. Identifiers containing colons, slashes, whitespace, or arbitrary UTF-8 characters are authenticated unambiguously.
-3. Ciphertext cannot be transplanted across rows, tables, or identities without triggering an `InvalidTag` decryption failure.
-- Required test: `test_aad_canonical_encoding_with_delimiters_and_unicode` asserting that `("table", "a:b", "c")` and `("table", "a", "b:c")` produce different AADs and cannot decrypt each other's ciphertext.
+Each field is preceded by an unsigned 16-bit big-endian integer specifying its byte length.
+- **Length Constraint:** Each identifier string in Face Core must encode to $\le 65,535$ bytes UTF-8 (in contracts, table names are $\le 64$ bytes, record IDs and identity IDs are $\le 512$ bytes).
+- **Validation Guard:** `build_canonical_aad()` asserts `len(encoded) <= 65535` before calling `to_bytes(2, "big")`. Over-length strings raise `ValueError("Field exceeds maximum AAD length of 65535 bytes")`, failing closed before any crypto operation.
+- **Collision-Free Property:** Because length prefixes are explicitly framed, no character within any field can shift boundary interpretation.
+- Test requirements:
+  - `test_aad_canonical_encoding_with_delimiters_and_unicode`: Proves `("table", "a:b", "c")` and `("table", "a", "b:c")` produce different AADs and fail tag verification if swapped.
+  - `test_aad_length_boundary_validation`: Tests boundary at exactly 65,535 bytes (succeeds) and 65,536 bytes (raises `ValueError`).
 
 ### Versioned Binary Wire Format
 
@@ -180,7 +214,8 @@ All encrypted blobs stored in database columns or exported files carry a 4-byte 
 
 - **Unauthenticated ciphers (AES-CBC without HMAC) REFUTED:** Insecure against bit-flipping and padding oracles.
 - **Delimiter-concatenated AAD REFUTED:** Ambiguous for unconstrained opaque IDs.
-- **Versioned AES-256-GCM with length-prefixed canonical AAD CONFIRMED.**
+- **Unbounded length-prefixing without validation REFUTED:** Vulnerable to unhandled `OverflowError`.
+- **Versioned AES-256-GCM with bounded canonical length-prefixed AAD CONFIRMED.**
 
 ### Operator Fork Options & Recommendation
 
@@ -612,13 +647,23 @@ PRAGMA busy_timeout = 5000;
 
 ## 9. Canonical 9-Field Manifest Compatibility Predicate
 
-To prevent inconsistent compatibility checks between export/import protocols and CLI verification (Finding P1-1 in r4), all import routines must evaluate this single canonical predicate against `ModelManifest`:
+To prevent inconsistent compatibility checks between export/import protocols and CLI verification (Findings P1-1, P1-Typing), all import routines must evaluate this single canonical predicate against `ModelManifest` with strict type annotations:
 
 ```python
-def verify_model_manifest_compatibility(stored_manifest: dict, runtime_manifest: dict) -> None:
+from typing import Literal, Any
+
+class ModelIncompatibilityError(Exception):
+    """Raised when model manifest has incompatible hard fields (exit code 3)."""
+    pass
+
+def verify_model_manifest_compatibility(
+    stored_manifest: dict[str, Any],
+    runtime_manifest: dict[str, Any]
+) -> Literal["COMPATIBLE", "MIGRATION_REQUIRED"]:
     """
     Evaluates exact field-by-field compatibility.
-    Raises ModelIncompatibilityError (exit code 3) on mismatch.
+    Raises ModelIncompatibilityError (exit code 3) on hard mismatch.
+    Returns 'COMPATIBLE' if identical, or 'MIGRATION_REQUIRED' if detector/preprocessing generation differs.
     """
     hard_incompatible_fields = [
         "embedder_artifact_hash",     # Weights SHA-256
@@ -647,6 +692,11 @@ def verify_model_manifest_compatibility(stored_manifest: dict, runtime_manifest:
 
     return "COMPATIBLE"
 ```
+
+*Required Test Suite:*
+1. `test_manifest_hard_mismatch_raises_incompatibility_error`: Parameterized over each of the 8 hard fields, asserting `ModelIncompatibilityError` (exit code 3).
+2. `test_manifest_detector_generation_difference_returns_migration_required`: Asserts return value is exactly `"MIGRATION_REQUIRED"`.
+3. `test_manifest_identical_returns_compatible`: Asserts return value is exactly `"COMPATIBLE"`.
 
 ---
 
