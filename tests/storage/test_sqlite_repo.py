@@ -4,6 +4,7 @@ RED: ``ModuleNotFoundError: No module named 'facecore.storage.sqlite_repo'``.
 """
 
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
@@ -192,6 +193,37 @@ def test_deleted_identity_is_unreadable_after_step_one(tmp_path: Path) -> None:
         repo.read_embedding("t-1")
 
 
+def test_candidate_ciphertext_is_overwritten_before_delete(tmp_path: Path) -> None:
+    repo = _open_repo(tmp_path)
+    repo.initialize()
+    repo.enroll_identity("person-001", "Test Person", _template(), *_payload("t-1"))
+    repo.add_candidate_record(
+        "c-1", "person-001", b"e" * 16, b"x" * 8, "2030-01-01T00:00:00Z"
+    )
+    con = repo.connection
+    assert con is not None
+    original = con.execute(
+        "SELECT embedding_blob, exemplar_blob FROM candidate_templates WHERE id = 'c-1'"
+    ).fetchone()
+    assert original is not None
+    con.execute(
+        "CREATE TABLE candidate_delete_observed "
+        "(embedding_blob BLOB NOT NULL, exemplar_blob BLOB NOT NULL)"
+    )
+    con.execute(
+        "CREATE TRIGGER observe_candidate_delete BEFORE DELETE ON candidate_templates "
+        "BEGIN INSERT INTO candidate_delete_observed VALUES "
+        "(OLD.embedding_blob, OLD.exemplar_blob); END"
+    )
+    repo.delete_identity("person-001")
+    observed = con.execute(
+        "SELECT embedding_blob, exemplar_blob FROM candidate_delete_observed"
+    ).fetchone()
+    assert observed is not None
+    assert observed[0] != original[0]
+    assert observed[1] != original[1]
+
+
 def test_failed_duplicate_enrollment_leaves_key_custody_unchanged(
     tmp_path: Path,
 ) -> None:
@@ -224,6 +256,81 @@ def test_failed_append_and_candidate_do_not_leak_keys(tmp_path: Path) -> None:
             "c-1", "person-001", b"e" * 16, b"x", "2030-01-01T00:00:00Z"
         )
     assert len(provider._keys) == before + 1
+
+
+def test_deletion_serializes_against_inflight_append_without_key_leak(
+    tmp_path: Path,
+) -> None:
+    provider = InMemoryKeyProvider()
+    delete_repo = _open_repo(tmp_path, provider)
+    delete_repo.initialize()
+    delete_repo.enroll_identity(
+        "person-001", "Test Person", _template(), *_payload("t-1")
+    )
+    seal_reached = threading.Event()
+    step_one_done = threading.Event()
+    append_done = threading.Event()
+    append_result: list[str] = []
+    append_error: list[BaseException] = []
+
+    def append_worker() -> None:
+        append_repo = _open_repo(tmp_path, provider)
+        append_repo.initialize()
+        original_seal = append_repo._seal
+        first_call = True
+
+        def hooked_seal(
+            dek: bytes,
+            plaintext: bytes,
+            table: str,
+            record: str,
+            identity: str,
+        ) -> tuple[bytes, bytes]:
+            nonlocal first_call
+            result = original_seal(dek, plaintext, table, record, identity)
+            if first_call:
+                first_call = False
+                seal_reached.set()
+                assert step_one_done.wait(timeout=5)
+            return result
+
+        append_repo._seal = hooked_seal
+        try:
+            append_result.append(
+                append_repo.append_revision(
+                    "person-001",
+                    _template("person-001", "t-2"),
+                    b"e" * 16,
+                    b"x" * 16,
+                )
+            )
+        except BaseException as exc:
+            append_error.append(exc)
+        finally:
+            append_done.set()
+
+    worker = threading.Thread(target=append_worker)
+    worker.start()
+    assert seal_reached.wait(timeout=5)
+    delete_repo.begin_delete_identity("person-001")
+    step_one_done.set()
+    assert append_done.wait(timeout=5)
+    worker.join(timeout=5)
+    key_ids = delete_repo.tombstone_key_ids("person-001")
+    delete_repo._destroy_keys_best_effort(key_ids)
+    delete_repo.mark_tombstone_key_destroyed("person-001")
+    con = delete_repo.connection
+    assert con is not None
+    con.execute("BEGIN IMMEDIATE")
+    delete_repo._purge_identity_rows(con, "person-001")
+    con.execute(
+        "DELETE FROM deletion_tombstones WHERE target_id = ?", ("person-001",)
+    )
+    con.commit()
+    assert append_result == []
+    assert len(append_error) == 1
+    assert isinstance(append_error[0], StoreError)
+    assert provider._keys == {}
 
 
 def test_repository_hydrates_supplied_generation_geometry_and_revision(

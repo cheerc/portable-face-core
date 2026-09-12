@@ -82,3 +82,34 @@ def test_event_revision_backup_ceilings(tmp_path: Path) -> None:
         assert con2.execute("SELECT COUNT(*) FROM face_templates").fetchone()[0] >= 1
     finally:
         con2.close()
+
+
+def test_retention_helpers_use_immediate_write_transactions(tmp_path: Path) -> None:
+    repo = _open_repo(tmp_path)
+    repo.initialize()
+    repo.enroll_identity(
+        "person-001",
+        "Test Person",
+        _template("person-001", 1),
+        b"e" * 16,
+        b"x" * 8,
+        "t-person-001-1",
+    )
+    repo.record_match_event(
+        "evt-1", "2026-09-12T00:00:00+08:00", 1, "unknown", 0.1, None
+    )
+    repo.record_match_event(
+        "evt-2", "2026-09-12T00:00:01+08:00", 2, "unknown", 0.1, None
+    )
+    assert repo.connection is not None
+    statements: list[str] = []
+    repo.connection.set_trace_callback(statements.append)
+    trim_match_events(repo.connection, 1)
+    assert any(statement.strip().upper() == "BEGIN IMMEDIATE" for statement in statements)
+
+    repo.append_revision(
+        "person-001", _template("person-001", 2), b"e" * 16, b"x" * 8
+    )
+    statements.clear()
+    trim_revisions(repo.connection, "person-001", 1)
+    assert any(statement.strip().upper() == "BEGIN IMMEDIATE" for statement in statements)

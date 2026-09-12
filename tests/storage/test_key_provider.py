@@ -97,6 +97,22 @@ def test_key_provider_missing_key_uses_structured_exit_4() -> None:
     assert caught.value.exit_code == 4
 
 
+def test_file_provider_honors_key_dir_environment_override_and_explicit_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_dir = tmp_path / "env-keys"
+    explicit_dir = tmp_path / "explicit-keys"
+    master = tmp_path / "master.key"
+    monkeypatch.setenv("FACECORE_KEY_DIR", str(env_dir))
+    provider = FileKeyProvider(master_key_path=master)
+    env_key = provider.create_key("person-env")
+    assert (env_dir / f"{env_key}.key").exists()
+    explicit = FileKeyProvider(key_dir=explicit_dir, master_key_path=master)
+    explicit_key = explicit.create_key("person-explicit")
+    assert (explicit_dir / f"{explicit_key}.key").exists()
+    assert not (env_dir / f"{explicit_key}.key").exists()
+
+
 def test_wrap_rehoming_moves_dek_between_providers() -> None:
     source = InMemoryKeyProvider()
     dest = InMemoryKeyProvider()

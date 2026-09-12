@@ -289,6 +289,13 @@ def test_face_template_governance_ready_passes_with_full_fields() -> None:
     _governed_template().assert_governance_ready()
 
 
+def test_cross_generation_comparison_refused() -> None:
+    g1 = dataclasses.replace(_governed_template(), generation_id="G1")
+    g2 = dataclasses.replace(_governed_template(), generation_id="G2")
+    with pytest.raises(ValueError, match="generation"):
+        g1.assert_comparable(g2)
+
+
 def test_governance_policy_provisional_values_match_plan_section_6() -> None:
     policy = GovernancePolicy.provisional_v1()
     assert policy.governance_policy_version == 1
