@@ -239,7 +239,16 @@ def test_add_candidate_persists_governance_metadata(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.parametrize("geometry", ["not-json", "[1, 2, \"bad\", 4]", "[1, 2, 3]"])
+@pytest.mark.parametrize(
+    "geometry",
+    [
+        "not-json",
+        "[1, 2, \"bad\", 4]",
+        "[1, 2, 3]",
+        "[1, 2, NaN, 4]",
+        "[1, 2, Infinity, 4]",
+    ],
+)
 def test_corrupt_persisted_geometry_is_structured_exit_4(
     tmp_path: Path, geometry: str
 ) -> None:
@@ -264,6 +273,38 @@ def test_corrupt_persisted_geometry_is_structured_exit_4(
     con.execute(
         "UPDATE face_templates SET exemplar_crop_box = ? WHERE id = ?",
         (geometry, "t-geometry"),
+    )
+    con.commit()
+    with pytest.raises(StoreCorruptionError) as caught:
+        repo.list_active_templates()
+    assert caught.value.exit_code == 4
+
+
+@pytest.mark.parametrize("landmarks", ["[[NaN, 2]]", "[[1, Infinity]]"])
+def test_nonfinite_persisted_landmark_is_structured_exit_4(
+    tmp_path: Path, landmarks: str
+) -> None:
+    repo = _open_repo(tmp_path)
+    repo.initialize()
+    template = FaceTemplate(
+        template_id="t-landmarks",
+        identity_id="person-001",
+        model_version="sface-2021dec-fp32",
+        embedding_dim=4,
+        revision=TemplateRevision(
+            revision=1, template_id="t-landmarks", supersedes=None
+        ),
+        exemplar_crop_box=(1.0, 2.0, 3.0, 4.0),
+        exemplar_landmarks=((1.0, 2.0),),
+    )
+    repo.enroll_identity(
+        "person-001", "Test Person", template, b"e" * 16, b"x" * 8, "t-landmarks"
+    )
+    con = repo.connection
+    assert con is not None
+    con.execute(
+        "UPDATE face_templates SET exemplar_landmarks = ? WHERE id = ?",
+        (landmarks, "t-landmarks"),
     )
     con.commit()
     with pytest.raises(StoreCorruptionError) as caught:
