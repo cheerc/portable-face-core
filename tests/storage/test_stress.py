@@ -5,7 +5,9 @@ RED: ``ModuleNotFoundError: No module named 'facecore.storage.sqlite_repo'``
 """
 
 import sqlite3
+from pathlib import Path
 
+from facecore.contracts.crypto import KeyProviderProtocol
 from facecore.contracts.template import FaceTemplate, TemplateRevision
 from facecore.storage.key_provider import InMemoryKeyProvider
 from facecore.storage.sqlite_repo import (
@@ -16,8 +18,9 @@ from facecore.storage.sqlite_repo import (
 )
 
 
-def _open_repo(tmp_path):  # type: ignore[no-untyped-def]
-    return SQLiteRepository(str(tmp_path / "facecore.db"), InMemoryKeyProvider())
+def _open_repo(tmp_path: Path) -> SQLiteRepository:
+    provider: KeyProviderProtocol = InMemoryKeyProvider()
+    return SQLiteRepository(str(tmp_path / "facecore.db"), provider)
 
 
 def _template(identity: str, revision: int) -> FaceTemplate:
@@ -33,11 +36,16 @@ def _template(identity: str, revision: int) -> FaceTemplate:
     )
 
 
-def test_event_revision_backup_ceilings(tmp_path) -> None:
+def test_event_revision_backup_ceilings(tmp_path: Path) -> None:
     repo = _open_repo(tmp_path)
     repo.initialize()
     repo.enroll_identity(
-        "person-001", "Test Person", _template("person-001", 1), b"e" * 16, b"x" * 8, "t-person-001-1"
+        "person-001",
+        "Test Person",
+        _template("person-001", 1),
+        b"e" * 16,
+        b"x" * 8,
+        "t-person-001-1",
     )
     for n in range(10050):
         repo.record_match_event(
@@ -48,9 +56,11 @@ def test_event_revision_backup_ceilings(tmp_path) -> None:
             0.1,
             None,
         )
+    assert repo.connection is not None
     assert trim_match_events(repo.connection, 10000) == 50
     con = repo.connection
-    assert con.execute("SELECT COUNT(*) FROM match_events").fetchone()[0] == 10000
+    count_row = con.execute("SELECT COUNT(*) FROM match_events").fetchone()
+    assert count_row is not None and int(count_row[0]) == 10000
 
     for revision in range(2, 26):
         repo.append_revision(

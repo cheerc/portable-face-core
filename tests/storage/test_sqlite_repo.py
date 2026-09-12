@@ -3,20 +3,23 @@
 RED: ``ModuleNotFoundError: No module named 'facecore.storage.sqlite_repo'``.
 """
 
-import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 
+from facecore.contracts.crypto import KeyProviderProtocol
 from facecore.contracts.template import FaceTemplate, TemplateRevision
 from facecore.errors import StoreError
 from facecore.storage.key_provider import InMemoryKeyProvider
 from facecore.storage.sqlite_repo import SQLiteRepository
 
 
-def _open_repo(tmp_path, provider=None):  # type: ignore[no-untyped-def]
-    provider = provider or InMemoryKeyProvider()
-    return SQLiteRepository(str(tmp_path / "facecore.db"), provider)
+def _open_repo(
+    tmp_path: Path, provider: KeyProviderProtocol | None = None
+) -> SQLiteRepository:
+    resolved: KeyProviderProtocol = provider or InMemoryKeyProvider()
+    return SQLiteRepository(str(tmp_path / "facecore.db"), resolved)
 
 
 def _template(identity: str = "person-001", template: str = "t-1") -> FaceTemplate:
@@ -33,7 +36,7 @@ def _payload(template_id: str) -> tuple[bytes, bytes, str]:
     return (b"e" * 16, b"x" * 32, template_id)
 
 
-def test_enroll_identify_and_key_id_only_in_sqlite(tmp_path) -> None:
+def test_enroll_identify_and_key_id_only_in_sqlite(tmp_path: Path) -> None:
     repo = _open_repo(tmp_path)
     repo.initialize()
     repo.enroll_identity("person-001", "Test Person", _template(), *_payload("t-1"))
@@ -53,7 +56,7 @@ def test_enroll_identify_and_key_id_only_in_sqlite(tmp_path) -> None:
         con.close()
 
 
-def test_tombstone_reconciliation_after_crash(tmp_path) -> None:
+def test_tombstone_reconciliation_after_crash(tmp_path: Path) -> None:
     """Plan RED case: crash after key destruction leaves orphaned rows."""
     repo = _open_repo(tmp_path)
     repo.initialize()
@@ -71,7 +74,7 @@ def test_tombstone_reconciliation_after_crash(tmp_path) -> None:
         crashed.key_provider.get_key(key_ids[0])
 
 
-def test_crash_before_key_destruction_recovers(tmp_path) -> None:
+def test_crash_before_key_destruction_recovers(tmp_path: Path) -> None:
     repo = _open_repo(tmp_path)
     repo.initialize()
     repo.enroll_identity("person-001", "Test Person", _template(), *_payload("t-1"))
@@ -84,7 +87,7 @@ def test_crash_before_key_destruction_recovers(tmp_path) -> None:
         recovered.key_provider.get_key(key_ids[0])
 
 
-def test_crash_mid_batch_destruction_recovers(tmp_path) -> None:
+def test_crash_mid_batch_destruction_recovers(tmp_path: Path) -> None:
     repo = _open_repo(tmp_path)
     repo.initialize()
     repo.enroll_identity("person-001", "Test Person", _template(), *_payload("t-1"))
@@ -103,7 +106,7 @@ def test_crash_mid_batch_destruction_recovers(tmp_path) -> None:
             recovered.key_provider.get_key(key_id)
 
 
-def test_crash_after_tombstone_key_destroyed_purges(tmp_path) -> None:
+def test_crash_after_tombstone_key_destroyed_purges(tmp_path: Path) -> None:
     repo = _open_repo(tmp_path)
     repo.initialize()
     repo.enroll_identity("person-001", "Test Person", _template(), *_payload("t-1"))
@@ -118,10 +121,14 @@ def test_crash_after_tombstone_key_destroyed_purges(tmp_path) -> None:
     assert recovered.list_active_templates() == []
 
 
-def test_checkpoint_failure_fails_closed(tmp_path, monkeypatch) -> None:
+def test_checkpoint_failure_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repo = _open_repo(tmp_path)
     repo.initialize()
-    repo.enroll_identity("person-001", "Test Person", _template(), *_payload("t-1"))
+    repo.enroll_identity(
+        "person-001", "Test Person", _template(), *_payload("t-1")
+    )
     monkeypatch.setattr(
         "facecore.storage.sqlite_repo.checkpoint_truncate",
         lambda con: (_ for _ in ()).throw(StoreError("busy")),
@@ -130,7 +137,7 @@ def test_checkpoint_failure_fails_closed(tmp_path, monkeypatch) -> None:
         repo.delete_identity("person-001")
 
 
-def test_corrupt_ciphertext_raises_store_error(tmp_path) -> None:
+def test_corrupt_ciphertext_raises_store_error(tmp_path: Path) -> None:
     repo = _open_repo(tmp_path)
     repo.initialize()
     repo.enroll_identity("person-001", "Test Person", _template(), *_payload("t-1"))
@@ -144,7 +151,7 @@ def test_corrupt_ciphertext_raises_store_error(tmp_path) -> None:
         repo.read_embedding("t-1")
 
 
-def test_match_event_anonymized_on_delete(tmp_path) -> None:
+def test_match_event_anonymized_on_delete(tmp_path: Path) -> None:
     repo = _open_repo(tmp_path)
     repo.initialize()
     repo.enroll_identity("person-001", "Test Person", _template(), *_payload("t-1"))
@@ -167,7 +174,7 @@ def test_match_event_anonymized_on_delete(tmp_path) -> None:
         con.close()
 
 
-def test_schema_has_no_key_material_columns(tmp_path) -> None:
+def test_schema_has_no_key_material_columns(tmp_path: Path) -> None:
     repo = _open_repo(tmp_path)
     repo.initialize()
     con = sqlite3.connect(str(tmp_path / "facecore.db"))
@@ -177,9 +184,5 @@ def test_schema_has_no_key_material_columns(tmp_path) -> None:
             assert "encrypted_dek" not in cols
             assert "encrypted_embedding" not in cols
             assert "key_id" in cols
-        payload = json.loads(
-            (tmp_path / "facecore.db").read_bytes()[:0].decode() or "{}"
-        ) if False else {}
-        assert payload == {}
     finally:
         con.close()

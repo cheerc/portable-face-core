@@ -5,6 +5,7 @@ RED: ``ModuleNotFoundError: No module named 'facecore.storage.key_provider'``.
 
 import os
 import stat
+from pathlib import Path
 
 import pytest
 
@@ -30,7 +31,7 @@ def test_in_memory_destroy_identity_keys_idempotent() -> None:
 
 
 def test_file_provider_new_store_auto_generates_master_key(
-    tmp_path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("FACECORE_MASTER_KEY", raising=False)
     key_dir = tmp_path / "keys"
@@ -51,7 +52,7 @@ def test_file_provider_new_store_auto_generates_master_key(
 
 
 def test_file_provider_existing_store_missing_key_fails_closed(
-    tmp_path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("FACECORE_MASTER_KEY", raising=False)
     key_dir = tmp_path / "keys"
