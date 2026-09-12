@@ -25,10 +25,15 @@ class FaceTemplate:
     model_version: str
     embedding_dim: int
     revision: TemplateRevision
+    generation_id: str = "G1"
+    encrypted_embedding: EncryptedBlob | None = None
     encrypted_exemplar: EncryptedBlob | None = None
     exemplar_crop_box: tuple[float, float, float, float] | None = None
     exemplar_landmarks: tuple[tuple[float, float], ...] | None = None
     key_id: str | None = None
+    quality_score: float = 0.0
+    utility_score: float = 0.0
+    exemplar_margin: float = 0.0
 
     def assert_governance_ready(self) -> None:
         """Phase-1B gate: exemplar + crop + landmarks + key_id all present."""

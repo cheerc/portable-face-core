@@ -18,8 +18,13 @@ from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
 
-from facecore.contracts.crypto import EncryptedBlob, KeyProviderProtocol
-from facecore.contracts.template import FaceTemplate
+from facecore.contracts.crypto import (
+    EncryptedBlob,
+    KeyNotFoundError,
+    KeyProviderProtocol,
+    StoreCorruptionError,
+)
+from facecore.contracts.template import FaceTemplate, TemplateRevision
 from facecore.errors import StoreError
 from facecore.storage.cipher import AeadCipher, build_canonical_aad
 
@@ -38,7 +43,7 @@ def checkpoint_truncate(con: sqlite3.Connection) -> None:
     if res is None or res[0] != 0 or res[1] != 0:
         busy = res[0] if res else None
         log = res[1] if res else None
-        raise StoreError(
+        raise StoreCorruptionError(
             "WAL checkpoint failed to truncate: "
             f"busy={busy}, log={log}; store is fail-closed"
         )
@@ -135,25 +140,111 @@ class SQLiteRepository:
         ) + blob.nonce
         return header + blob.ciphertext, blob.nonce
 
-    def _open(
-        self, dek: bytes, sealed: bytes, table: str, record: str, identity: str
-    ) -> bytes:
+    @staticmethod
+    def _parse_blob(sealed: bytes, table: str, record: str) -> EncryptedBlob:
         if len(sealed) < 4 + EncryptedBlob.NONCE_BYTES + 16:
-            raise StoreError(f"ciphertext too short for {table}:{record}")
+            raise StoreCorruptionError(
+                f"ciphertext too short for {table}:{record}"
+            )
         version, cipher_id = sealed[0], sealed[1]
-        nonce = sealed[4 : 4 + EncryptedBlob.NONCE_BYTES]
         try:
-            blob = EncryptedBlob(
+            return EncryptedBlob(
                 format_version=version,
                 cipher_id=cipher_id,
-                nonce=nonce,
+                nonce=sealed[4 : 4 + EncryptedBlob.NONCE_BYTES],
                 ciphertext=sealed[4 + EncryptedBlob.NONCE_BYTES :],
             )
         except ValueError as exc:
-            raise StoreError(f"blob header rejected: {exc}") from exc
+            raise StoreCorruptionError(f"blob header rejected: {exc}") from exc
+
+    def _open(
+        self, dek: bytes, sealed: bytes, table: str, record: str, identity: str
+    ) -> bytes:
+        blob = self._parse_blob(sealed, table, record)
         return AeadCipher(dek).decrypt(
             blob, build_canonical_aad(table, record, identity)
         )
+
+    def _reserve_identity_create(self, identity_id: str, template_id: str) -> None:
+        """Reserve uniqueness before custody mutation; rollback is deliberate."""
+        con = self._require()
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            identity = con.execute(
+                "SELECT 1 FROM identities WHERE id = ?", (identity_id,)
+            ).fetchone()
+            if identity is not None:
+                raise sqlite3.IntegrityError(f"identity already exists: {identity_id}")
+            template = con.execute(
+                "SELECT 1 FROM face_templates WHERE id = ?", (template_id,)
+            ).fetchone()
+            if template is not None:
+                raise sqlite3.IntegrityError(
+                    f"template already exists: {template_id}"
+                )
+        except Exception:
+            con.rollback()
+            raise
+        con.rollback()
+
+    def _reserve_revision_create(self, identity_id: str, template_id: str) -> None:
+        """Validate append targets before creating a new external DEK."""
+        con = self._require()
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            identity = con.execute(
+                "SELECT status FROM identities WHERE id = ?", (identity_id,)
+            ).fetchone()
+            if identity is None or identity[0] != "active":
+                raise StoreError(f"unknown identity: {identity_id}")
+            template = con.execute(
+                "SELECT 1 FROM face_templates WHERE id = ?", (template_id,)
+            ).fetchone()
+            if template is not None:
+                raise sqlite3.IntegrityError(
+                    f"template already exists: {template_id}"
+                )
+        except Exception:
+            con.rollback()
+            raise
+        con.rollback()
+
+    def _reserve_candidate_create(self, identity_id: str, candidate_id: str) -> None:
+        """Validate candidate uniqueness before creating a new external DEK."""
+        con = self._require()
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            identity = con.execute(
+                "SELECT status FROM identities WHERE id = ?", (identity_id,)
+            ).fetchone()
+            if identity is None or identity[0] != "active":
+                raise StoreError(f"unknown identity: {identity_id}")
+            candidate = con.execute(
+                "SELECT 1 FROM candidate_templates WHERE id = ?", (candidate_id,)
+            ).fetchone()
+            if candidate is not None:
+                raise sqlite3.IntegrityError(
+                    f"candidate already exists: {candidate_id}"
+                )
+        except Exception:
+            con.rollback()
+            raise
+        con.rollback()
+
+    def _cleanup_created_key(self, key_id: str) -> None:
+        """Compensate every failed pre-commit write; absent is idempotent."""
+        try:
+            self.key_provider.destroy_key(key_id)
+        except KeyNotFoundError:
+            return
+
+    def _get_dek(self, key_id: str) -> bytes:
+        try:
+            return self.key_provider.get_key(key_id)
+        except StoreError:
+            raise
+        except Exception as exc:
+            raise StoreCorruptionError(f"key retrieval failed: {key_id}") from exc
 
     def enroll_identity(
         self,
@@ -166,20 +257,19 @@ class SQLiteRepository:
     ) -> str:
         con = self._require()
         tid = record_id or template.template_id
-        key_id = self.key_provider.create_key(identity_id)
+        self._reserve_identity_create(identity_id, tid)
+        key_id: str | None = None
         try:
-            dek = self.key_provider.get_key(key_id)
-        except Exception as exc:
-            raise StoreError(f"key unavailable after create: {key_id}") from exc
-        enc_emb, emb_nonce = self._seal(
-            dek, embedding, "face_templates", tid, identity_id
-        )
-        enc_exe, exe_nonce = self._seal(
-            dek, exemplar, "face_templates", tid, identity_id
-        )
-        now = _utcnow()
-        con.execute("BEGIN IMMEDIATE")
-        try:
+            key_id = self.key_provider.create_key(identity_id)
+            dek = self._get_dek(key_id)
+            enc_emb, emb_nonce = self._seal(
+                dek, embedding, "face_templates", tid, identity_id
+            )
+            enc_exe, exe_nonce = self._seal(
+                dek, exemplar, "face_templates", tid, identity_id
+            )
+            now = _utcnow()
+            con.execute("BEGIN IMMEDIATE")
             con.execute(
                 "INSERT INTO identities "
                 "(id, display_name, status, current_revision,"
@@ -189,23 +279,36 @@ class SQLiteRepository:
             )
             con.execute(
                 "INSERT INTO face_templates "
-                "(id, identity_id, generation_id, status, key_id,"
+                "(id, identity_id, generation_id, model_version, embedding_dim,"
+                " revision_number, revision_supersedes, status, key_id,"
                 " embedding_blob, embedding_nonce, exemplar_blob, exemplar_nonce,"
                 " exemplar_crop_box, exemplar_landmarks, exemplar_margin,"
                 " quality_score, utility_score, additional_corroboration_count,"
                 " created_at, retired_at)"
-                " VALUES (?, ?, 'G1', 'active', ?, ?, ?, ?, ?, ?, ?,"
-                " 0.0, 0.0, 0.0, 0, ?, NULL)",
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?,"
+                " ?, ?, 0, ?, NULL)",
                 (
                     tid,
                     identity_id,
+                    template.generation_id,
+                    template.model_version,
+                    template.embedding_dim,
+                    template.revision.revision,
+                    template.revision.supersedes,
                     key_id,
                     enc_emb,
                     emb_nonce,
                     enc_exe,
                     exe_nonce,
-                    "[0, 0, 112, 112]",
-                    "[[0, 0]]",
+                    json.dumps(template.exemplar_crop_box)
+                    if template.exemplar_crop_box is not None
+                    else None,
+                    json.dumps(template.exemplar_landmarks)
+                    if template.exemplar_landmarks is not None
+                    else None,
+                    template.exemplar_margin,
+                    template.quality_score,
+                    template.utility_score,
                     now,
                 ),
             )
@@ -213,12 +316,23 @@ class SQLiteRepository:
                 "INSERT INTO template_revisions "
                 "(identity_id, revision, active_template_ids, retired_template_ids,"
                 " policy_version, created_at, actor)"
-                " VALUES (?, 1, ?, '[]', 1, ?, 'user')",
-                (identity_id, json.dumps([tid]), now),
+                " VALUES (?, ?, ?, '[]', 1, ?, 'user')",
+                (
+                    identity_id,
+                    template.revision.revision,
+                    json.dumps([tid]),
+                    now,
+                ),
+            )
+            con.execute(
+                "UPDATE identities SET current_revision = ? WHERE id = ?",
+                (template.revision.revision, identity_id),
             )
             con.commit()
         except Exception:
             con.rollback()
+            if key_id is not None:
+                self._cleanup_created_key(key_id)
             raise
         return tid
 
@@ -231,43 +345,58 @@ class SQLiteRepository:
     ) -> str:
         con = self._require()
         tid = template.template_id
-        key_id = self.key_provider.create_key(identity_id)
-        dek = self.key_provider.get_key(key_id)
-        enc_emb, emb_nonce = self._seal(
-            dek, embedding, "face_templates", tid, identity_id
-        )
-        enc_exe, exe_nonce = self._seal(
-            dek, exemplar, "face_templates", tid, identity_id
-        )
-        now = _utcnow()
-        con.execute("BEGIN IMMEDIATE")
+        self._reserve_revision_create(identity_id, tid)
+        key_id: str | None = None
         try:
+            key_id = self.key_provider.create_key(identity_id)
+            dek = self._get_dek(key_id)
+            enc_emb, emb_nonce = self._seal(
+                dek, embedding, "face_templates", tid, identity_id
+            )
+            enc_exe, exe_nonce = self._seal(
+                dek, exemplar, "face_templates", tid, identity_id
+            )
+            now = _utcnow()
+            con.execute("BEGIN IMMEDIATE")
             row = con.execute(
                 "SELECT current_revision FROM identities WHERE id = ?",
                 (identity_id,),
             ).fetchone()
             if row is None:
                 raise StoreError(f"unknown identity: {identity_id}")
-            revision = int(row[0]) + 1
+            revision = max(int(row[0]) + 1, template.revision.revision)
             con.execute(
                 "INSERT INTO face_templates "
-                "(id, identity_id, generation_id, status, key_id,"
+                "(id, identity_id, generation_id, model_version, embedding_dim,"
+                " revision_number, revision_supersedes, status, key_id,"
                 " embedding_blob, embedding_nonce, exemplar_blob, exemplar_nonce,"
                 " exemplar_crop_box, exemplar_landmarks, exemplar_margin,"
                 " quality_score, utility_score, additional_corroboration_count,"
                 " created_at, retired_at)"
-                " VALUES (?, ?, 'G1', 'active', ?, ?, ?, ?, ?, ?, ?,"
-                " 0.0, 0.0, 0.0, 0, ?, NULL)",
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?,"
+                " ?, ?, 0, ?, NULL)",
                 (
                     tid,
                     identity_id,
+                    template.generation_id,
+                    template.model_version,
+                    template.embedding_dim,
+                    revision,
+                    template.revision.supersedes,
                     key_id,
                     enc_emb,
                     emb_nonce,
                     enc_exe,
                     exe_nonce,
-                    "[0, 0, 112, 112]",
-                    "[[0, 0]]",
+                    json.dumps(template.exemplar_crop_box)
+                    if template.exemplar_crop_box is not None
+                    else None,
+                    json.dumps(template.exemplar_landmarks)
+                    if template.exemplar_landmarks is not None
+                    else None,
+                    template.exemplar_margin,
+                    template.quality_score,
+                    template.utility_score,
                     now,
                 ),
             )
@@ -294,6 +423,8 @@ class SQLiteRepository:
             con.commit()
         except Exception:
             con.rollback()
+            if key_id is not None:
+                self._cleanup_created_key(key_id)
             raise
         return tid
 
@@ -306,17 +437,19 @@ class SQLiteRepository:
         expires_at: str,
     ) -> str:
         con = self._require()
-        key_id = self.key_provider.create_key(identity_id)
-        dek = self.key_provider.get_key(key_id)
-        enc_emb, emb_nonce = self._seal(
-            dek, embedding, "candidate_templates", candidate_id, identity_id
-        )
-        enc_exe, exe_nonce = self._seal(
-            dek, exemplar, "candidate_templates", candidate_id, identity_id
-        )
-        now = _utcnow()
-        con.execute("BEGIN IMMEDIATE")
+        self._reserve_candidate_create(identity_id, candidate_id)
+        key_id: str | None = None
         try:
+            key_id = self.key_provider.create_key(identity_id)
+            dek = self._get_dek(key_id)
+            enc_emb, emb_nonce = self._seal(
+                dek, embedding, "candidate_templates", candidate_id, identity_id
+            )
+            enc_exe, exe_nonce = self._seal(
+                dek, exemplar, "candidate_templates", candidate_id, identity_id
+            )
+            now = _utcnow()
+            con.execute("BEGIN IMMEDIATE")
             con.execute(
                 "INSERT INTO candidate_templates "
                 "(id, identity_id, generation_id, status, key_id,"
@@ -341,43 +474,137 @@ class SQLiteRepository:
             con.commit()
         except Exception:
             con.rollback()
+            if key_id is not None:
+                self._cleanup_created_key(key_id)
             raise
         return candidate_id
 
-    def list_active_templates(self) -> list[FaceTemplate]:
-        from facecore.contracts.template import TemplateRevision as Revision
+    @staticmethod
+    def _json_crop(value: str | None) -> tuple[float, float, float, float] | None:
+        if value is None:
+            return None
+        raw: object = json.loads(value)
+        if not isinstance(raw, list) or len(raw) != 4:
+            raise StoreCorruptionError("invalid exemplar crop geometry")
+        return (
+            float(str(raw[0])),
+            float(str(raw[1])),
+            float(str(raw[2])),
+            float(str(raw[3])),
+        )
 
+    @staticmethod
+    def _json_landmarks(
+        value: str | None,
+    ) -> tuple[tuple[float, float], ...] | None:
+        if value is None:
+            return None
+        raw: object = json.loads(value)
+        if not isinstance(raw, list):
+            raise StoreCorruptionError("invalid exemplar landmark geometry")
+        result: list[tuple[float, float]] = []
+        for point in raw:
+            if not isinstance(point, list) or len(point) != 2:
+                raise StoreCorruptionError("invalid exemplar landmark point")
+            result.append((float(str(point[0])), float(str(point[1]))))
+        return tuple(result)
+
+    def _hydrate_template(self, row: tuple[object, ...]) -> FaceTemplate:
+        (
+            template_id,
+            identity_id,
+            generation_id,
+            model_version,
+            embedding_dim,
+            revision_number,
+            revision_supersedes,
+            key_id,
+            embedding_blob,
+            exemplar_blob,
+            exemplar_crop_box,
+            exemplar_landmarks,
+            exemplar_margin,
+            quality_score,
+            utility_score,
+        ) = row
+        if not isinstance(embedding_blob, (bytes, bytearray)):
+            raise StoreCorruptionError("embedding payload is not bytes")
+        if not isinstance(exemplar_blob, (bytes, bytearray)):
+            raise StoreCorruptionError("exemplar payload is not bytes")
+        embedding_sealed = bytes(embedding_blob)
+        exemplar_sealed = bytes(exemplar_blob)
+        return FaceTemplate(
+            template_id=str(template_id),
+            identity_id=str(identity_id),
+            model_version=str(model_version),
+            embedding_dim=int(str(embedding_dim)),
+            generation_id=str(generation_id),
+            revision=TemplateRevision(
+                revision=int(str(revision_number)),
+                template_id=str(template_id),
+                supersedes=(
+                    str(revision_supersedes)
+                    if revision_supersedes is not None
+                    else None
+                ),
+            ),
+            key_id=str(key_id),
+            encrypted_embedding=self._parse_blob(
+                embedding_sealed, "face_templates", str(template_id)
+            ),
+            encrypted_exemplar=self._parse_blob(
+                exemplar_sealed, "face_templates", str(template_id)
+            ),
+            exemplar_crop_box=self._json_crop(
+                str(exemplar_crop_box) if exemplar_crop_box is not None else None
+            ),
+            exemplar_landmarks=self._json_landmarks(
+                str(exemplar_landmarks) if exemplar_landmarks is not None else None
+            ),
+            exemplar_margin=float(str(exemplar_margin)),
+            quality_score=float(str(quality_score)),
+            utility_score=float(str(utility_score)),
+        )
+
+    def list_active_templates(self) -> list[FaceTemplate]:
         con = self._require()
         rows = con.execute(
-            "SELECT id, identity_id FROM face_templates WHERE status = 'active'"
+            "SELECT ft.id, ft.identity_id, ft.generation_id, ft.model_version,"
+            " ft.embedding_dim, ft.revision_number, ft.revision_supersedes,"
+            " ft.key_id, ft.embedding_blob, ft.exemplar_blob,"
+            " ft.exemplar_crop_box, ft.exemplar_landmarks, ft.exemplar_margin,"
+            " ft.quality_score, ft.utility_score"
+            " FROM face_templates ft JOIN identities i ON i.id = ft.identity_id"
+            " WHERE ft.status = 'active' AND i.status = 'active'"
+            " AND NOT EXISTS (SELECT 1 FROM deletion_tombstones dt"
+            " WHERE dt.target_type = 'identity' AND dt.target_id = i.id)"
+            " ORDER BY ft.id"
         ).fetchall()
-        return [
-            FaceTemplate(
-                template_id=row[0],
-                identity_id=row[1],
-                model_version="sface-2021dec-fp32",
-                embedding_dim=0,
-                revision=Revision(revision=1, template_id=row[0], supersedes=None),
-            )
-            for row in rows
-        ]
+        return [self._hydrate_template(tuple(row)) for row in rows]
 
     def read_embedding(self, template_id: str) -> bytes:
         con = self._require()
         row = con.execute(
-            "SELECT identity_id, key_id, embedding_blob FROM face_templates"
-            " WHERE id = ?",
+            "SELECT ft.identity_id, ft.key_id, ft.embedding_blob"
+            " FROM face_templates ft JOIN identities i ON i.id = ft.identity_id"
+            " WHERE ft.id = ? AND ft.status = 'active' AND i.status = 'active'"
+            " AND NOT EXISTS (SELECT 1 FROM deletion_tombstones dt"
+            " WHERE dt.target_type = 'identity' AND dt.target_id = i.id)",
             (template_id,),
         ).fetchone()
         if row is None:
+            exists = con.execute(
+                "SELECT i.status FROM face_templates ft"
+                " JOIN identities i ON i.id = ft.identity_id WHERE ft.id = ?",
+                (template_id,),
+            ).fetchone()
+            if exists is not None and exists[0] != "active":
+                raise StoreError("identity deleted or tombstoned")
             raise StoreError(f"unknown template: {template_id}")
         identity_id, key_id, sealed = row
-        try:
-            dek = self.key_provider.get_key(key_id)
-        except Exception as exc:
-            raise StoreError(f"key unavailable: {key_id}") from exc
+        dek = self._get_dek(str(key_id))
         return self._open(
-            dek, bytes(sealed), "face_templates", template_id, identity_id
+            dek, bytes(sealed), "face_templates", template_id, str(identity_id)
         )
 
     def record_match_event(
@@ -507,10 +734,12 @@ class SQLiteRepository:
         con.execute("DELETE FROM identities WHERE id = ?", (target_id,))
 
     def _destroy_keys_best_effort(self, key_ids: list[str]) -> None:
+        """Destroy all keys; only explicit already-absent is idempotent."""
         for key_id in key_ids:
             try:
                 self.key_provider.destroy_key(key_id)
-            except StoreError:
+            except KeyNotFoundError:
+                # Crash-after-destroy is the documented idempotent branch.
                 continue
 
     def reconcile_tombstones(self) -> None:

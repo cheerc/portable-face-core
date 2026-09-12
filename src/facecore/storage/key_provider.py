@@ -16,7 +16,11 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from facecore.contracts.crypto import WrappedKey
+from facecore.contracts.crypto import (
+    KeyNotFoundError,
+    StoreCorruptionError,
+    WrappedKey,
+)
 from facecore.errors import StoreError
 
 
@@ -34,10 +38,12 @@ def _load_master_key(master_path: Path) -> bytes:
         try:
             return bytes.fromhex(env.strip())
         except ValueError as exc:
-            raise StoreError("FACECORE_MASTER_KEY is not valid hex") from exc
+            raise StoreCorruptionError(
+                "FACECORE_MASTER_KEY is not valid hex"
+            ) from exc
     if master_path.exists():
         return master_path.read_bytes()
-    raise StoreError(
+    raise KeyNotFoundError(
         "Master key missing for existing repository; store is fail-closed"
     )
 
@@ -59,7 +65,7 @@ class InMemoryKeyProvider:
         try:
             return self._keys[key_id]
         except KeyError:
-            raise StoreError(f"key not found: {key_id}") from None
+            raise KeyNotFoundError(f"key not found: {key_id}") from None
 
     def destroy_key(self, key_id: str) -> None:
         self._keys.pop(key_id, None)
@@ -107,6 +113,7 @@ class FileKeyProvider:
         self,
         key_dir: Path | None = None,
         master_key_path: Path | None = None,
+        db_path: Path | None = None,
     ) -> None:
         self._key_dir = key_dir if key_dir is not None else default_key_dir()
         self._master_path = (
@@ -114,10 +121,13 @@ class FileKeyProvider:
             if master_key_path is not None
             else default_master_key_path()
         )
+        self._db_path = (
+            db_path if db_path is not None else self._key_dir.parent / "facecore.db"
+        )
         env = os.environ.get("FACECORE_MASTER_KEY")
         if env is None and not self._master_path.exists():
             if self._store_has_state():
-                raise StoreError(
+                raise KeyNotFoundError(
                     "Master key missing for existing repository; "
                     "store is fail-closed"
                 )
@@ -140,6 +150,9 @@ class FileKeyProvider:
                 )
 
     def _store_has_state(self) -> bool:
+        """A DB file alone is existing state; missing KEK must not regenerate."""
+        if self._db_path.exists():
+            return True
         if not self._key_dir.exists():
             return False
         return any(self._key_dir.iterdir())
@@ -151,13 +164,13 @@ class FileKeyProvider:
     def _read_entry(self, key_id: str) -> dict[str, str]:
         path = self._key_path(key_id)
         if not path.exists():
-            raise StoreError(f"key not found: {key_id}")
+            raise KeyNotFoundError(f"key not found: {key_id}")
         try:
             parsed: object = json.loads(path.read_bytes().decode("utf-8"))
         except (ValueError, UnicodeDecodeError) as exc:
-            raise StoreError(f"key file corrupt: {key_id}") from exc
+            raise StoreCorruptionError(f"key file corrupt: {key_id}") from exc
         if not isinstance(parsed, dict):
-            raise StoreError(f"key file corrupt: {key_id}")
+            raise StoreCorruptionError(f"key file corrupt: {key_id}")
         entry: dict[str, str] = {str(k): str(v) for k, v in parsed.items()}
         return entry
 
@@ -184,13 +197,13 @@ class FileKeyProvider:
             nonce = bytes.fromhex(entry["nonce"])
             sealed = bytes.fromhex(entry["encrypted_dek"])
         except (KeyError, ValueError) as exc:
-            raise StoreError(f"key file corrupt: {key_id}") from exc
+            raise StoreCorruptionError(f"key file corrupt: {key_id}") from exc
         try:
             return AESGCM(self._master_key).decrypt(
                 nonce, sealed, key_id.encode("utf-8")
             )
         except Exception as exc:
-            raise StoreError(f"key unwrap failed: {key_id}") from exc
+            raise StoreCorruptionError(f"key unwrap failed: {key_id}") from exc
 
     def destroy_key(self, key_id: str) -> None:
         path = self._key_path(key_id)

@@ -9,16 +9,18 @@ per write, and the ciphertext (with its 16-byte GCM tag appended).
 
 from typing import Protocol, runtime_checkable
 
+from facecore.errors import StoreError
 
-class KeyNotFoundError(Exception):
+
+class KeyNotFoundError(StoreError):
     """Raised when a DEK is absent from KeyProvider custody (exit code 4)."""
 
 
-class StoreCorruptionError(Exception):
+class StoreCorruptionError(StoreError):
     """Raised on tampering, checkpoint failure, or auth-tag mismatch (exit 4)."""
 
 
-class UnsupportedKdfError(Exception):
+class UnsupportedKdfError(StoreError):
     """Raised when export/import meets an unknown KDF algorithm/version (exit 4)."""
 
 

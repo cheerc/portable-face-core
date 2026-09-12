@@ -8,11 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from facecore.contracts.crypto import (
-    KeyProviderProtocol,
-    KeyNotFoundError,
-    StoreCorruptionError,
-)
+from facecore.contracts.crypto import KeyProviderProtocol, StoreCorruptionError
 from facecore.contracts.template import FaceTemplate, TemplateRevision
 from facecore.errors import StoreError
 from facecore.storage.key_provider import InMemoryKeyProvider
