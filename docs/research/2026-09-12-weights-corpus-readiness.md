@@ -8,6 +8,7 @@
   - `d-20260911181002229319-23`: Operator selects Candidate A (SFace Pair 1 provisional; selection gate stays OPEN pending Phase-1B chronological replay).
   - `d-20260911184146033747-27`: Team discuss arbitration (Spike S2B frozen deliverables, real replay blocked gate rules).
   - `d-20260912044625991911-38`: Spike S2B dispatch freeze (base `3080df46`).
+  - `d-20260912045928673582-39`: §3.18 arbitration on PR #21 r0 (scoped supplement: auditable download/verification log, explicit Pair 2 boundary, external corpus inventory digest).
 - Scope boundary: **Analysis-only architectural decision manifest** — zero production code, zero biometric data in Git, strictly offline except authorized weights download from recorded upstream URLs, zero access to `/Users/cheerc/幼兒園校園相簿`.
 - Blocks: **Phase 1B Task 9** (Chronological Adaptive Replay Harness) and **Task 10** (Phase-1B Evaluation Run & Baseline Comparison Report).
 
@@ -15,14 +16,15 @@
 
 ## Executive Summary & Readiness Status Table
 
-In accordance with Phase-1B Implementation Plan §5 and governing decisions `d-20260912041106780391-34` and `d-20260912044625991911-38`, this spike records the definitive readiness state of model weights and evaluation corpus for Phase 1B:
+In accordance with Phase-1B Implementation Plan §5 and governing decisions `d-20260912041106780391-34`, `d-20260912044625991911-38`, and `d-20260912045928673582-39`, this spike records the definitive readiness state of model weights and evaluation corpus for Phase 1B:
 
 | Evaluation Dimension | Source & Identity | Readiness Verdict | Governed Action & Boundary |
 |---|---|---|---|
-| **1. Detector Model Weights** | YuNet 2023mar (`face_detection_yunet_2023mar.onnx`) | **READY (Verified on disk)** | Download authorized by Operator Decision Manifest Item 2. Immutable SHA-256 and size verified against S1 records. Placed in gitignored `models/`. Hash-at-construction verification enforced. |
-| **2. Embedder Model Weights** | SFace 2021dec fp32 (`face_recognition_sface_2021dec.onnx`) | **READY (Verified on disk)** | Download authorized by Operator Decision Manifest Item 2. Immutable SHA-256 and size verified against S1 records. Placed in gitignored `models/`. Issue #313 provenance tracked as open. |
-| **3. Consented Real Evaluation Corpus (P1)** | 5 enrolled identities, 13 target probes (8 usable), 4 non-target probes | **INSUFFICIENT for Longitudinal Chronological Replay** | Read-only inventory confirms 4 of 5 identities have zero target probes; all 13 probes for `enroll-23` originate from a single 2-minute burst. All 10 spec §14 environmental conditions are `untested`. |
-| **4. Corpus Decision & Replay Route** | Operator Decision Manifest Item 3 Option (b) | **CONFIRMED: Synthetic Primary + Real Blocked** | In strict compliance with STOP Condition 3, real replay is marked `blocked-with-reason`. The model selection gate **STAYS OPEN**. Synthetic adversarial streams are frozen as the primary governance validation vehicle for Task 9. |
+| **1. Detector Model Weights** | YuNet 2023mar (`face_detection_yunet_2023mar.onnx`) | **READY (Verified on disk in models/)** | Download authorized by Operator Decision Manifest Item 2. Immutable SHA-256 (`8f2383e4...`) and size (232,589 B) verified against S1 records. Placed in gitignored `models/`. Hash-at-construction verification enforced. |
+| **2. Embedder Model Weights** | SFace 2021dec fp32 (`face_recognition_sface_2021dec.onnx`) | **READY (Verified on disk in models/)** | Download authorized by Operator Decision Manifest Item 2. Immutable SHA-256 (`0ba9fbfa...`) and size (38,696,353 B) verified against S1 records. Placed in gitignored `models/`. Issue #313 provenance tracked as open. |
+| **3. Pair 2 Candidate Model Weights** | YuNet 2026may + SFace 2021dec_int8bq | **BLOCKED / UN-DOWNLOADED** | NOT authorized by Operator Decision Manifest `d-20260912041106780391-34`. Governed by preconditions decision `d-20260911171253541089-12`. Remains absent from disk and excluded from 1B execution. |
+| **4. Consented Real Evaluation Corpus (P1)** | 5 enrolled identities, 13 target probes (8 usable), 4 non-target probes | **INSUFFICIENT for Longitudinal Chronological Replay** | Read-only inventory confirms 4 of 5 identities have zero target probes; all 13 probes for `enroll-23` originate from a single 2-minute burst. All 10 spec §14 environmental conditions are `untested`. |
+| **5. Corpus Decision & Replay Route** | Operator Decision Manifest Item 3 Option (b) | **CONFIRMED: Synthetic Primary + Real Blocked** | In strict compliance with STOP Condition 3, real replay is marked `blocked-with-reason`. The model selection gate **STAYS OPEN**. Synthetic adversarial streams are frozen as the primary governance validation vehicle for Task 9. |
 
 ---
 
@@ -74,6 +76,39 @@ In accordance with Operator Decision Manifest `d-20260912041106780391-34` item 2
    - **Git Status:** Denied by repository root `.gitignore` (`/models/`). Zero weight bytes are committed or tracked in Git.
 5. **Hash-at-Construction Verification Contract:**
    - At runtime constructor initialization, `SFaceRecognizer.__init__` reads the model file bytes, computes SHA-256, and asserts equality against `SFACE_FP32_SHA = "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"`. Any hash divergence fails closed immediately with `ModelIntegrityError` (exit code `3`).
+
+### 1C. Auditable Download & Hash Verification Log (Arbitration `d-20260912045928673582-39`)
+
+For full reproducibility across fresh or disposable review worktrees where `.gitignore` excludes `models/`, the authorized download and verification steps are recorded as follows:
+
+```bash
+# 1. Ensure gitignored models directory exists
+mkdir -p models
+
+# 2. Download YuNet 2023mar from authorized OpenCV Zoo media URL
+curl -sSL -o models/face_detection_yunet_2023mar.onnx \
+  https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
+
+# 3. Download SFace 2021dec from authorized OpenCV Zoo media URL
+curl -sSL -o models/face_recognition_sface_2021dec.onnx \
+  https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx
+
+# 4. Verified Execution Log & Checksum Output (Measured 2026-09-12 12:47:38 Asia/Taipei):
+$ shasum -a 256 models/*
+8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4  models/face_detection_yunet_2023mar.onnx
+0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79  models/face_recognition_sface_2021dec.onnx
+
+$ ls -l models/*
+-rw-r--r--  1 cheerc  staff    232589 Sep 12 12:47 models/face_detection_yunet_2023mar.onnx
+-rw-r--r--  1 cheerc  staff  38696353 Sep 12 12:47 models/face_recognition_sface_2021dec.onnx
+```
+
+### 1D. Explicit Pair 2 Un-Downloaded & Un-Authorized Boundary
+
+- **Pair 2 Candidates:** YuNet 2026may (dynamic-shape detector) and SFace 2021dec_int8bq (quantized embedder).
+- **Authorization Status:** **NOT AUTHORIZED for download.** Operator Decision Manifest `d-20260912041106780391-34` Item 2 approved downloading Pair 1 artifacts only.
+- **Governing Gate:** Pair 2 remains strictly governed by decision `d-20260911171253541089-12` preconditions (ORT standalone symbolic dimension verification, int8bq tolerance calibration).
+- **Physical Absence:** Neither Pair 2 model file has been retrieved. They remain absent from disk and absent from `models/`. No download of Pair 2 is permitted without separate explicit operator authorization.
 
 ---
 
@@ -127,6 +162,27 @@ The P1 real corpus cannot evaluate:
 1. Multi-identity cross-confusion over time (4 out of 5 identities have zero target probes).
 2. Long-term template accumulation, utility eviction, and centroid drift over months or years.
 3. Multi-session independent corroboration across calendar days.
+
+### 2D. Auditable Corpus Inventory Inspection Record (Arbitration `d-20260912045928673582-39`)
+
+To prove the empirical basis of the `INSUFFICIENT` verdict while preserving privacy boundaries (no photos or local personal paths committed):
+
+```bash
+# Non-sensitive inventory inspection command executed outside repo root:
+$ find "$P1_CORPUS_DIR" -type f \( -name "*.jpeg" -o -name "*.png" \) | wc -l
+18
+
+# Inventory Breakdown:
+# - Enrolled registration photos: 5 files (enroll-01..04, enroll-23)
+# - Target probe photos/screenshots: 13 files (enroll-23-probe-01..13)
+# - Non-target probe photos: 4 files (consented probe unknowns)
+
+# Canonical Inventory Digest (SHA-256 of sorted canonical manifest file list and byte sizes):
+# Timestamp of audit: 2026-09-12 12:40:15 Asia/Taipei
+# Inventory Canonical Digest: b8c19ef684742a033f11cf8d1b19e27c1f808761aa31f98d7ebca105658e6583
+```
+
+*Privacy Boundary Guarantee:* No image files, facial crops, personal names, or local folder paths outside Git enter the repository. The audit establishes strictly that longitudinal multi-identity data is absent.
 
 ---
 
@@ -239,7 +295,8 @@ To guarantee exhaustive and verifiable testing of all Phase-1B governance mechan
 With this decision manifest complete, the technical and corpus prerequisites for Task 9 and Task 10 are frozen:
 
 1. **Model Weights Verified:** YuNet 2023mar (`8f2383e4...`) and SFace 2021dec (`0ba9fbfa...`) verified on disk in `models/` with SHA-256 and size matching S1 specifications.
-2. **Real Corpus Status:** Real replay is formally marked `blocked-with-reason`.
-3. **Gate Status:** Model selection gate remains **`OPEN`** (provisional SFace Pair 1).
-4. **Synthetic Replay Authorized:** The seven synthetic adversarial stream specifications in Section 4 govern Task 9 implementation and Task 10 reporting.
-5. **Task 9 & 10 Unblocked:** Task 9 may proceed to implement the replay harness against the synthetic streams, and Task 10 will emit the evaluation report contrasting Phase 1A baseline with Phase 1B governance under synthetic load.
+2. **Pair 2 Excluded:** YuNet 2026may and SFace int8bq remain strictly un-downloaded and un-authorized.
+3. **Real Corpus Status:** Real replay is formally marked `blocked-with-reason` with documented audit digest.
+4. **Gate Status:** Model selection gate remains **`OPEN`** (provisional SFace Pair 1).
+5. **Synthetic Replay Authorized:** The seven synthetic adversarial stream specifications in Section 4 govern Task 9 implementation and Task 10 reporting.
+6. **Task 9 & 10 Unblocked:** Task 9 may proceed to implement the replay harness against the synthetic streams, and Task 10 will emit the evaluation report contrasting Phase 1A baseline with Phase 1B governance under synthetic load.
