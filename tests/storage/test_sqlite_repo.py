@@ -44,6 +44,86 @@ class _DestroyFailureProvider(InMemoryKeyProvider):
         raise StoreError("key store unavailable")
 
 
+@pytest.mark.parametrize(
+    ("crop", "landmarks"),
+    [
+        ((1.0, 2.0, float("nan"), 4.0), ((1.0, 2.0),)),
+        ((1.0, 2.0, float("inf"), 4.0), ((1.0, 2.0),)),
+        ((-1.0, 2.0, 4.0, 4.0), ((1.0, 2.0),)),
+        ((1.0, 2.0, 0.0, 4.0), ((1.0, 2.0),)),
+        ((1.0, 2.0, 4.0, 4.0), ((float("nan"), 2.0),)),
+        ((1.0, 2.0, 4.0, 4.0), ((1.0, float("inf")),)),
+    ],
+)
+def test_enrollment_rejects_invalid_geometry_before_mutation(
+    tmp_path: Path,
+    crop: tuple[float, float, float, float],
+    landmarks: tuple[tuple[float, float], ...],
+) -> None:
+    provider = InMemoryKeyProvider()
+    repo = _open_repo(tmp_path, provider)
+    repo.initialize()
+    template = FaceTemplate(
+        template_id="t-bad",
+        identity_id="person-001",
+        model_version="sface-2021dec-fp32",
+        embedding_dim=4,
+        revision=TemplateRevision(revision=1, template_id="t-bad", supersedes=None),
+        exemplar_crop_box=crop,
+        exemplar_landmarks=landmarks,
+    )
+    with pytest.raises(StoreCorruptionError) as caught:
+        repo.enroll_identity(
+            "person-001", "Test Person", template, b"e" * 16, b"x" * 32, "t-bad"
+        )
+    assert caught.value.exit_code == 4
+    assert provider._keys == {}
+    assert repo.get_identity_status("person-001") is None
+
+
+@pytest.mark.parametrize(
+    ("crop", "landmarks"),
+    [
+        ((1.0, 2.0, float("nan"), 4.0), None),
+        (None, ((1.0, float("inf")),)),
+    ],
+)
+def test_candidate_write_rejects_invalid_geometry_without_key_leak(
+    tmp_path: Path,
+    crop: tuple[float, float, float, float] | None,
+    landmarks: tuple[tuple[float, float], ...] | None,
+) -> None:
+    provider = InMemoryKeyProvider()
+    repo = _open_repo(tmp_path, provider)
+    repo.initialize()
+    repo.enroll_identity("person-001", "Test Person", _template(), *_payload("t-1"))
+    before = len(provider._keys)
+    with pytest.raises(StoreCorruptionError) as caught:
+        repo.add_candidate_record(
+            "c-bad",
+            "person-001",
+            b"e" * 16,
+            b"x" * 8,
+            "2030-01-01T00:00:00Z",
+            generation_id="G1",
+            exemplar_crop_box=crop,
+            exemplar_landmarks=landmarks,
+            quality_score=0.9,
+            additional_corroboration_count=0,
+            evidence_log="[]",
+        )
+    assert caught.value.exit_code == 4
+    assert len(provider._keys) == before
+    con = repo.connection
+    assert con is not None
+    assert (
+        con.execute(
+            "SELECT COUNT(*) FROM candidate_templates WHERE id = 'c-bad'"
+        ).fetchone()[0]
+        == 0
+    )
+
+
 def test_enroll_identify_and_key_id_only_in_sqlite(tmp_path: Path) -> None:
     repo = _open_repo(tmp_path)
     repo.initialize()
