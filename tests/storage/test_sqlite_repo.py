@@ -193,6 +193,99 @@ def test_deleted_identity_is_unreadable_after_step_one(tmp_path: Path) -> None:
         repo.read_embedding("t-1")
 
 
+def test_add_candidate_persists_governance_metadata(tmp_path: Path) -> None:
+    repo = _open_repo(tmp_path)
+    repo.initialize()
+    repo.enroll_identity("person-001", "Test Person", _template(), *_payload("t-1"))
+    repo.add_candidate_record(
+        "c-governed",
+        "person-001",
+        b"e" * 16,
+        b"x" * 8,
+        "2030-01-01T00:00:00Z",
+        generation_id="G2",
+        exemplar_crop_box=(2.0, 3.0, 90.0, 91.0),
+        exemplar_landmarks=((1.0, 2.0), (3.0, 4.0)),
+        quality_score=0.77,
+        additional_corroboration_count=2,
+        evidence_log='[{"event_type":"seed","sequence_number":9}]',
+        created_at="2026-09-12T00:00:00+08:00",
+    )
+    con = repo.connection
+    assert con is not None
+    row = con.execute(
+        "SELECT generation_id, exemplar_crop_box, exemplar_landmarks,"
+        " quality_score, additional_corroboration_count, evidence_log, created_at"
+        " FROM candidate_templates WHERE id = 'c-governed'"
+    ).fetchone()
+    assert row == (
+        "G2",
+        "[2.0, 3.0, 90.0, 91.0]",
+        "[[1.0, 2.0], [3.0, 4.0]]",
+        0.77,
+        2,
+        '[{"event_type":"seed","sequence_number":9}]',
+        "2026-09-12T00:00:00+08:00",
+    )
+
+
+@pytest.mark.parametrize("geometry", ["not-json", "[1, 2, \"bad\", 4]", "[1, 2, 3]"])
+def test_corrupt_persisted_geometry_is_structured_exit_4(
+    tmp_path: Path, geometry: str
+) -> None:
+    repo = _open_repo(tmp_path)
+    repo.initialize()
+    template = FaceTemplate(
+        template_id="t-geometry",
+        identity_id="person-001",
+        model_version="sface-2021dec-fp32",
+        embedding_dim=4,
+        revision=TemplateRevision(
+            revision=1, template_id="t-geometry", supersedes=None
+        ),
+        exemplar_crop_box=(1.0, 2.0, 3.0, 4.0),
+        exemplar_landmarks=((1.0, 2.0),),
+    )
+    repo.enroll_identity(
+        "person-001", "Test Person", template, b"e" * 16, b"x" * 8, "t-geometry"
+    )
+    con = repo.connection
+    assert con is not None
+    con.execute(
+        "UPDATE face_templates SET exemplar_crop_box = ? WHERE id = ?",
+        (geometry, "t-geometry"),
+    )
+    con.commit()
+    with pytest.raises(StoreCorruptionError) as caught:
+        repo.list_active_templates()
+    assert caught.value.exit_code == 4
+
+
+@pytest.mark.parametrize("offset", [2, 3])
+def test_nonzero_reserved_blob_header_is_structured_exit_4(
+    tmp_path: Path, offset: int
+) -> None:
+    repo = _open_repo(tmp_path)
+    repo.initialize()
+    repo.enroll_identity("person-001", "Test Person", _template(), *_payload("t-1"))
+    con = repo.connection
+    assert con is not None
+    row = con.execute(
+        "SELECT embedding_blob FROM face_templates WHERE id = 't-1'"
+    ).fetchone()
+    assert row is not None
+    corrupted = bytearray(row[0])
+    corrupted[offset] = 1
+    con.execute(
+        "UPDATE face_templates SET embedding_blob = ? WHERE id = 't-1'",
+        (bytes(corrupted),),
+    )
+    con.commit()
+    with pytest.raises(StoreCorruptionError) as caught:
+        repo.read_embedding("t-1")
+    assert caught.value.exit_code == 4
+
+
 def test_candidate_ciphertext_is_overwritten_before_delete(tmp_path: Path) -> None:
     repo = _open_repo(tmp_path)
     repo.initialize()
