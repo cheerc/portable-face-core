@@ -62,8 +62,10 @@ _KDF_TIME_COST = 3
 _KDF_PARALLELISM = 1
 _SALT_BYTES = 16
 
-# Plan §8 hard subset: fields (1,4,5,6,7,8,9). Detector/preprocessing
-# drift (2,3) is Task 7's migration trigger, not an incompatibility.
+# Plan §8 hard subset: fields (1,4,5,6,7,8,9), aligned with the
+# contract helper hard list (migration.HARD_INCOMPATIBLE_FIELDS).
+# Detector/preprocessing drift (2,3) is Task 7's migration trigger,
+# not an incompatibility.
 _HARD_FIELDS: tuple[str, ...] = (
     "embedder_artifact_hash",
     "tensor_layout",
@@ -72,6 +74,7 @@ _HARD_FIELDS: tuple[str, ...] = (
     "numerical_precision",
     "quantization_type",
     "execution_runtime",
+    "score_metric",
 )
 
 
@@ -91,6 +94,7 @@ class ImportResult:
     retired_templates: int
     candidates: int
     compatibility: str
+    policy: GovernancePolicy
 
 
 def _utcnow() -> str:
@@ -175,27 +179,59 @@ def _key_owners(container: dict[str, Any]) -> dict[str, str]:
     return owners
 
 
-def _evidence_records(raw: str) -> tuple[EvidenceRecord, ...]:
+def _evidence_records(candidate_id: str, raw: str) -> tuple[EvidenceRecord, ...]:
+    """Per-entry validated evidence; garbage fails the whole export closed.
+
+    Fail-closed is preserved (no partial archive), but refusal is a
+    structured StoreError naming the offender — never an uncaught
+    float()/int() crash mid-export.
+    """
     try:
         parsed: object = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return ()
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise StoreError(
+            f"candidate {candidate_id}: evidence log is not a JSON list"
+        ) from exc
     if not isinstance(parsed, list):
-        return ()
+        raise StoreError(
+            f"candidate {candidate_id}: evidence log is not a JSON list"
+        )
     records: list[EvidenceRecord] = []
-    for event in parsed:
+    for index, event in enumerate(parsed):
         if not isinstance(event, dict):
-            continue
+            raise StoreError(
+                f"candidate {candidate_id}: evidence entry {index} not an object"
+            )
+        try:
+            sequence_number = int(event.get("sequence_number", 0))
+        except (TypeError, ValueError) as exc:
+            raise StoreError(
+                f"candidate {candidate_id}: evidence entry {index}"
+                " has non-integer sequence_number"
+            ) from exc
+        raw_score = event.get("score")
+        score: float | None = None
+        if raw_score is not None:
+            try:
+                score = float(raw_score)
+            except (TypeError, ValueError) as exc:
+                raise StoreError(
+                    f"candidate {candidate_id}: evidence entry {index}"
+                    f" has non-numeric score {raw_score!r}"
+                ) from exc
+            if not (
+                score == score and score not in (float("inf"), float("-inf"))
+            ):
+                raise StoreError(
+                    f"candidate {candidate_id}: evidence entry {index}"
+                    f" has non-finite score {raw_score!r}"
+                )
         records.append(
             EvidenceRecord(
                 event_type=str(event.get("event_type", "")),
                 timestamp=str(event.get("timestamp", "")),
-                sequence_number=int(event.get("sequence_number", 0)),
-                score=(
-                    float(event["score"])
-                    if event.get("score") is not None
-                    else None
-                ),
+                sequence_number=sequence_number,
+                score=score,
             )
         )
     return tuple(records)
@@ -204,7 +240,15 @@ def _evidence_records(raw: str) -> tuple[EvidenceRecord, ...]:
 def _collect_container(
     repo: Any, manifest: ModelMigrationManifest, policy: GovernancePolicy
 ) -> tuple[ExportContainer, list[dict[str, Any]], list[dict[str, Any]]]:
-    """Read complete governance state; sidecars ride inside the envelope."""
+    """Read complete governance state; sidecars ride inside the envelope.
+
+    Deletion-pending (non-active) identities are EXCLUDED with their full
+    closure (templates, candidates, revisions, events, tombstones): a
+    tombstone window is a deletion in flight, and exporting it would land
+    an unmanageable (deleted, tombstone-less) identity on the destination
+    whose rows/DEKs strand outside the erasure invariant. The source-side
+    deletion continues to completion; the destination never learns it.
+    """
     con: sqlite3.Connection | None = repo.connection
     if con is None:
         raise StoreError("repository not initialized")
@@ -217,9 +261,10 @@ def _collect_container(
         )
         for row in con.execute(
             "SELECT id, display_name, status, current_revision"
-            " FROM identities ORDER BY id"
+            " FROM identities WHERE status = 'active' ORDER BY id"
         ).fetchall()
     )
+    live_ids = {identity.identity_id for identity in identities}
     template_cols = (
         "ft.id, ft.identity_id, ft.generation_id, ft.model_version,"
         " ft.embedding_dim, ft.revision_number, ft.revision_supersedes,"
@@ -231,14 +276,18 @@ def _collect_container(
         repo._hydrate_template(tuple(row))
         for row in con.execute(
             f"SELECT {template_cols} FROM face_templates ft"
-            " WHERE ft.status = 'active' ORDER BY ft.id"
+            " JOIN identities i ON i.id = ft.identity_id"
+            " WHERE ft.status = 'active' AND i.status = 'active'"
+            " ORDER BY ft.id"
         ).fetchall()
     )
     retired = tuple(
         repo._hydrate_template(tuple(row))
         for row in con.execute(
             f"SELECT {template_cols} FROM face_templates ft"
-            " WHERE ft.status = 'retired' ORDER BY ft.id"
+            " JOIN identities i ON i.id = ft.identity_id"
+            " WHERE ft.status = 'retired' AND i.status = 'active'"
+            " ORDER BY ft.id"
         ).fetchall()
     )
     candidates = tuple(
@@ -264,23 +313,27 @@ def _collect_container(
             ),
             quality_score=float(row[9]),
             additional_corroboration_count=int(row[10]),
-            evidence_log=_evidence_records(str(row[11])),
+            evidence_log=_evidence_records(str(row[0]), str(row[11])),
             expires_at=str(row[12]),
             created_at=str(row[13]),
         )
         for row in con.execute(
-            "SELECT id, identity_id, generation_id, status, key_id,"
-            " embedding_blob, exemplar_blob, exemplar_crop_box,"
-            " exemplar_landmarks, quality_score,"
-            " additional_corroboration_count, evidence_log,"
-            " expires_at, created_at"
-            " FROM candidate_templates ORDER BY id"
+            "SELECT c.id, c.identity_id, c.generation_id, c.status, c.key_id,"
+            " c.embedding_blob, c.exemplar_blob, c.exemplar_crop_box,"
+            " c.exemplar_landmarks, c.quality_score,"
+            " c.additional_corroboration_count, c.evidence_log,"
+            " c.expires_at, c.created_at"
+            " FROM candidate_templates c"
+            " JOIN identities i ON i.id = c.identity_id"
+            " WHERE i.status = 'active' ORDER BY c.id"
         ).fetchall()
     )
     detail_rows = con.execute(
-        "SELECT identity_id, revision, active_template_ids,"
-        " retired_template_ids FROM template_revisions"
-        " ORDER BY identity_id, revision"
+        "SELECT r.identity_id, r.revision, r.active_template_ids,"
+        " r.retired_template_ids FROM template_revisions r"
+        " JOIN identities i ON i.id = r.identity_id"
+        " WHERE i.status = 'active'"
+        " ORDER BY r.identity_id, r.revision"
     ).fetchall()
     revisions = tuple(
         TemplateRevision(
@@ -299,6 +352,8 @@ def _collect_container(
         }
         for row in detail_rows
     ]
+    # Tombstones of live identities only; pending-tombstone rows belong
+    # to excluded identities and never cross the boundary (see above).
     tombstones = tuple(
         TombstoneRecord(
             target_type=str(row[0]),
@@ -307,9 +362,10 @@ def _collect_container(
             status=str(row[3]),
         )
         for row in con.execute(
-            "SELECT target_type, target_id, key_ids_json, status"
-            " FROM deletion_tombstones ORDER BY id"
+            "SELECT d.target_type, d.target_id, d.key_ids_json, d.status"
+            " FROM deletion_tombstones d ORDER BY d.id"
         ).fetchall()
+        if str(row[1]) in live_ids or str(row[0]) != "identity"
     )
     # Anonymized match events: identity associations never leave the
     # source store (NULL on export, NULL on insert).
@@ -438,7 +494,10 @@ def import_identities(
     dest_key_provider: KeyProviderProtocol,
 ) -> ImportResult:
     """Verify-then-insert an archive under destination custody."""
-    raw = Path(path).read_bytes()
+    try:
+        raw = Path(path).read_bytes()
+    except OSError as exc:
+        raise StoreError(f"export archive unreadable: {path}") from exc
     try:
         archive = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as exc:
@@ -528,12 +587,19 @@ def import_identities(
             owner_identity_id=key_owner.get(str(old_key_id)),
         )
     _insert_container(repo, container_dict, new_key_ids)
+    # Policy restoration: the destination store has no policy table (the
+    # runtime default is provisional_v1), so import never silently mutates
+    # runtime behavior. The archived policy is handed back explicitly; the
+    # caller adopts it by constructing its manager with it (fail-closed:
+    # no implicit overwrite, no silent keep).
+    restored_policy = GovernancePolicy(**container_dict["policy"])
     return ImportResult(
         identities=len(container_dict["identities"]),
         active_templates=len(container_dict["active_templates"]),
         retired_templates=len(container_dict["retired_templates"]),
         candidates=len(container_dict["candidates"]),
         compatibility=compatibility,
+        policy=restored_policy,
     )
 
 
@@ -559,6 +625,18 @@ def _insert_container(
     con: sqlite3.Connection | None = repo.connection
     if con is None:
         raise StoreError("repository not initialized")
+    # Duplicate import is an explicit refusal (exit 4), never a bare
+    # IntegrityError traceback: check before opening the transaction.
+    for identity in container["identities"]:
+        exists = con.execute(
+            "SELECT 1 FROM identities WHERE id = ?",
+            (identity["identity_id"],),
+        ).fetchone()
+        if exists is not None:
+            raise StoreError(
+                "identity already exists in destination: "
+                f"{identity['identity_id']}"
+            )
     con.execute("BEGIN IMMEDIATE")
     try:
         for identity in container["identities"]:

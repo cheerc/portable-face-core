@@ -200,6 +200,50 @@ def test_unsupported_kdf_version_fails_closed(tmp_path: Path) -> None:
         )
 
 
+def test_pending_tombstone_identity_never_strands_dest(
+    tmp_path: Path,
+) -> None:
+    """Reviewer r0 P1: export during a pending-tombstone window.
+
+    Deletion-pending identities are excluded from the archive, so the
+    destination never receives an unmanageable (deleted, tombstone-less)
+    identity: no stranded rows/DEKs, delete/re-enroll stay decidable.
+    """
+    from facecore.governance.lifecycle import LifecycleManager
+
+    provider_a = InMemoryKeyProvider()
+    repo_a = _open_repo(tmp_path, "a.db", provider_a)
+    manager_a = LifecycleManager(repo_a)
+    manager_a.add_identity("person-001", "Test Person", b"e" * 64, b"x" * 64)
+    manager_a.add_identity("person-002", "Second Person", b"f" * 64, b"y" * 64)
+    # Open the tombstone window without completing the purge.
+    repo_a.begin_delete_identity("person-001")
+    archive = tmp_path / "export.fce"
+    manifest = export_identities(
+        repo_a, _manifest(), archive, passphrase="correct horse 2026!"
+    )
+    assert manifest.identities == 1
+
+    provider_b = InMemoryKeyProvider()
+    repo_b = _open_repo(tmp_path, "b.db", provider_b)
+    result = import_identities(
+        repo_b,
+        _manifest(),
+        archive,
+        passphrase="correct horse 2026!",
+        dest_key_provider=provider_b,
+    )
+    assert result.identities == 1
+    # The healthy identity imports manageably; the tombstoned one is
+    # absent (never stranded).
+    assert repo_b.get_identity_status("person-002") == "active"
+    assert repo_b.get_identity_status("person-001") is None
+    manager_b = LifecycleManager(repo_b)
+    manager_b.re_enroll("person-002", b"g" * 64, b"h" * 64)
+    shown = manager_b.show_identity("person-002")
+    assert shown["status"] == "active"
+
+
 def test_round_trip_preserves_policy_statuses_and_evidence(
     tmp_path: Path,
 ) -> None:
@@ -253,8 +297,11 @@ def test_round_trip_preserves_policy_statuses_and_evidence(
         dest_key_provider=provider_b,
     )
     assert result.identities == 1
+    # Archived custom policy is handed back explicitly (import never
+    # silently mutates runtime behavior); the caller adopts it.
+    assert result.policy.promotion_margin == 0.20
     assert repo_b.get_identity_status("person-001") == "active"
-    manager_b = LifecycleManager(repo_b)
+    manager_b = LifecycleManager(repo_b, result.policy)
     statuses = {
         c["candidate_id"]: c["status"]
         for c in manager_b.list_candidates("person-001")
@@ -413,6 +460,109 @@ def test_cli_import_wrong_passphrase_exits_4(
         _json.loads(proc.stdout.strip().splitlines()[-1])["status"]
         == "store_error"
     )
+
+
+def test_score_metric_divergence_refused_like_contract_helper(
+    tmp_path: Path,
+) -> None:
+    """P2: export predicate aligned with migration.HARD_INCOMPATIBLE_FIELDS."""
+    from facecore.contracts.migration import HARD_INCOMPATIBLE_FIELDS
+    from facecore.storage.export import _HARD_FIELDS
+
+    assert set(_HARD_FIELDS) == set(HARD_INCOMPATIBLE_FIELDS)
+    provider_a = InMemoryKeyProvider()
+    repo_a = _open_repo(tmp_path, "a.db", provider_a)
+    _seed(repo_a)
+    archive = tmp_path / "export.fce"
+    export_identities(
+        repo_a, _manifest(), archive, passphrase="correct horse 2026!"
+    )
+    provider_b = InMemoryKeyProvider()
+    repo_b = _open_repo(tmp_path, "b.db", provider_b)
+    other = _manifest()
+    object.__setattr__(other, "score_metric", "euclidean")
+    with pytest.raises(ModelIncompatibilityError, match="score_metric"):
+        import_identities(
+            repo_b,
+            other,
+            archive,
+            passphrase="correct horse 2026!",
+            dest_key_provider=provider_b,
+        )
+    assert repo_b.get_identity_status("person-001") is None
+
+
+def test_missing_archive_fails_closed_with_store_error(
+    tmp_path: Path,
+) -> None:
+    from facecore.errors import StoreError
+
+    provider_b = InMemoryKeyProvider()
+    repo_b = _open_repo(tmp_path, "b.db", provider_b)
+    with pytest.raises(StoreError):
+        import_identities(
+            repo_b,
+            _manifest(),
+            tmp_path / "no-such-archive.fce",
+            passphrase="correct horse 2026!",
+            dest_key_provider=provider_b,
+        )
+
+
+def test_double_import_refused_without_traceback(tmp_path: Path) -> None:
+    from facecore.errors import StoreError
+
+    provider_a = InMemoryKeyProvider()
+    repo_a = _open_repo(tmp_path, "a.db", provider_a)
+    _seed(repo_a)
+    archive = tmp_path / "export.fce"
+    export_identities(
+        repo_a, _manifest(), archive, passphrase="correct horse 2026!"
+    )
+    provider_b = InMemoryKeyProvider()
+    repo_b = _open_repo(tmp_path, "b.db", provider_b)
+    first = import_identities(
+        repo_b,
+        _manifest(),
+        archive,
+        passphrase="correct horse 2026!",
+        dest_key_provider=provider_b,
+    )
+    assert first.identities == 1
+    with pytest.raises(StoreError, match="already exists"):
+        import_identities(
+            repo_b,
+            _manifest(),
+            archive,
+            passphrase="correct horse 2026!",
+            dest_key_provider=provider_b,
+        )
+    # First import intact; atomicity holds (no partial second copy).
+    assert repo_b.get_identity_status("person-001") == "active"
+
+
+def test_garbage_evidence_score_rejected_structured(tmp_path: Path) -> None:
+    from facecore.errors import StoreError
+
+    provider_a = InMemoryKeyProvider()
+    repo_a = _open_repo(tmp_path, "a.db", provider_a)
+    _seed(repo_a)
+    con = repo_a.connection
+    assert con is not None
+    con.execute(
+        "UPDATE candidate_templates SET evidence_log = ? WHERE id = 'c-1'",
+        (
+            '[{"event_type": "seed", "timestamp": "2026-09-12T00:00:00+08:00",'
+            ' "sequence_number": 1, "score": "not-a-number"}]',
+        ),
+    )
+    con.commit()
+    archive = tmp_path / "export.fce"
+    with pytest.raises(StoreError, match="evidence"):
+        export_identities(
+            repo_a, _manifest(), archive, passphrase="correct horse 2026!"
+        )
+    assert not archive.exists()
 
 
 def test_detector_generation_drift_reports_migration_required(
