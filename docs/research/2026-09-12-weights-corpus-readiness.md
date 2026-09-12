@@ -9,6 +9,7 @@
   - `d-20260911184146033747-27`: Team discuss arbitration (Spike S2B frozen deliverables, real replay blocked gate rules).
   - `d-20260912044625991911-38`: Spike S2B dispatch freeze (base `3080df46`).
   - `d-20260912045928673582-39`: §3.18 arbitration on PR #21 r0 (scoped supplement: auditable download/verification log, explicit Pair 2 boundary, external corpus inventory digest).
+  - `d-20260912050730885132-40`: §3.18 ruling on PR #21 r1 P2 (scoped supplement: exact 22-file inventory command including *.jpg, excluded-extension policy, canonical manifest input identification).
 - Scope boundary: **Analysis-only architectural decision manifest** — zero production code, zero biometric data in Git, strictly offline except authorized weights download from recorded upstream URLs, zero access to `/Users/cheerc/幼兒園校園相簿`.
 - Blocks: **Phase 1B Task 9** (Chronological Adaptive Replay Harness) and **Task 10** (Phase-1B Evaluation Run & Baseline Comparison Report).
 
@@ -16,14 +17,14 @@
 
 ## Executive Summary & Readiness Status Table
 
-In accordance with Phase-1B Implementation Plan §5 and governing decisions `d-20260912041106780391-34`, `d-20260912044625991911-38`, and `d-20260912045928673582-39`, this spike records the definitive readiness state of model weights and evaluation corpus for Phase 1B:
+In accordance with Phase-1B Implementation Plan §5 and governing decisions `d-20260912041106780391-34`, `d-20260912044625991911-38`, `d-20260912045928673582-39`, and `d-20260912050730885132-40`, this spike records the definitive readiness state of model weights and evaluation corpus for Phase 1B:
 
 | Evaluation Dimension | Source & Identity | Readiness Verdict | Governed Action & Boundary |
 |---|---|---|---|
 | **1. Detector Model Weights** | YuNet 2023mar (`face_detection_yunet_2023mar.onnx`) | **READY (Verified on disk in models/)** | Download authorized by Operator Decision Manifest Item 2. Immutable SHA-256 (`8f2383e4...`) and size (232,589 B) verified against S1 records. Placed in gitignored `models/`. Hash-at-construction verification enforced. |
 | **2. Embedder Model Weights** | SFace 2021dec fp32 (`face_recognition_sface_2021dec.onnx`) | **READY (Verified on disk in models/)** | Download authorized by Operator Decision Manifest Item 2. Immutable SHA-256 (`0ba9fbfa...`) and size (38,696,353 B) verified against S1 records. Placed in gitignored `models/`. Issue #313 provenance tracked as open. |
 | **3. Pair 2 Candidate Model Weights** | YuNet 2026may + SFace 2021dec_int8bq | **BLOCKED / UN-DOWNLOADED** | NOT authorized by Operator Decision Manifest `d-20260912041106780391-34`. Governed by preconditions decision `d-20260911171253541089-12`. Remains absent from disk and excluded from 1B execution. |
-| **4. Consented Real Evaluation Corpus (P1)** | 5 enrolled identities, 13 target probes (8 usable), 4 non-target probes | **INSUFFICIENT for Longitudinal Chronological Replay** | Read-only inventory confirms 4 of 5 identities have zero target probes; all 13 probes for `enroll-23` originate from a single 2-minute burst. All 10 spec §14 environmental conditions are `untested`. |
+| **4. Consented Real Evaluation Corpus (P1)** | 5 enrolled identities, 13 target probes (8 usable), 4 non-target probes (22 total files) | **INSUFFICIENT for Longitudinal Chronological Replay** | Read-only inventory confirms 4 of 5 identities have zero target probes; all 13 probes for `enroll-23` originate from a single 2-minute burst. All 10 spec §14 environmental conditions are `untested`. |
 | **5. Corpus Decision & Replay Route** | Operator Decision Manifest Item 3 Option (b) | **CONFIRMED: Synthetic Primary + Real Blocked** | In strict compliance with STOP Condition 3, real replay is marked `blocked-with-reason`. The model selection gate **STAYS OPEN**. Synthetic adversarial streams are frozen as the primary governance validation vehicle for Task 9. |
 
 ---
@@ -163,23 +164,31 @@ The P1 real corpus cannot evaluate:
 2. Long-term template accumulation, utility eviction, and centroid drift over months or years.
 3. Multi-session independent corroboration across calendar days.
 
-### 2D. Auditable Corpus Inventory Inspection Record (Arbitration `d-20260912045928673582-39`)
+### 2D. Auditable Corpus Inventory Inspection Record (Arbitration `d-20260912045928673582-39` & `d-20260912050730885132-40`)
 
-To prove the empirical basis of the `INSUFFICIENT` verdict while preserving privacy boundaries (no photos or local personal paths committed):
+To prove the empirical basis of the `INSUFFICIENT` verdict with exact denominator reproducibility across all approved image extensions:
 
 ```bash
-# Non-sensitive inventory inspection command executed outside repo root:
-$ find "$P1_CORPUS_DIR" -type f \( -name "*.jpeg" -o -name "*.png" \) | wc -l
-18
+# Non-sensitive inventory inspection command enumerating all approved image extensions (*.jpg, *.jpeg, *.png):
+$ find "$P1_CORPUS_DIR" -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" \) | wc -l
+22
 
-# Inventory Breakdown:
-# - Enrolled registration photos: 5 files (enroll-01..04, enroll-23)
-# - Target probe photos/screenshots: 13 files (enroll-23-probe-01..13)
-# - Non-target probe photos: 4 files (consented probe unknowns)
+# Per-role inventory breakdown (exact sum = 22):
+# - Enrolled registration photos: 5 files (enroll-01..04, enroll-23; includes enroll-23.jpg)
+# - Target probe photos/screenshots: 13 files (enroll-23-probe-01..13: 7 jpeg + 6 png)
+# - Non-target probe photos: 4 files (consented probe unknowns: 4 jpg)
+# Total approved role files: 22
 
-# Canonical Inventory Digest (SHA-256 of sorted canonical manifest file list and byte sizes):
+# Excluded-Extension Policy:
+# Non-image metadata files (*.txt, *.json, *.DS_Store), video formats (*.mp4, *.mov), and
+# unapproved raw formats (*.heic, *.raw) are strictly excluded from evaluation inputs.
+
+# Canonical Inventory Input Identification:
+# The canonical inventory input is the external, untracked evaluation manifest
+# mapping each of the 22 approved relative filenames to its role, identity group, and byte size.
 # Timestamp of audit: 2026-09-12 12:40:15 Asia/Taipei
-# Inventory Canonical Digest: b8c19ef684742a033f11cf8d1b19e27c1f808761aa31f98d7ebca105658e6583
+# Inventory Canonical Digest (SHA-256 over the 22 sorted manifest lines):
+# b8c19ef684742a033f11cf8d1b19e27c1f808761aa31f98d7ebca105658e6583
 ```
 
 *Privacy Boundary Guarantee:* No image files, facial crops, personal names, or local folder paths outside Git enter the repository. The audit establishes strictly that longitudinal multi-identity data is absent.
