@@ -55,13 +55,18 @@ def trim_match_events(con: sqlite3.Connection, ceiling: int) -> int:
     total = int(row[0]) if row else 0
     if total <= ceiling:
         return 0
-    con.execute(
-        "DELETE FROM match_events WHERE id IN ("
-        "SELECT id FROM match_events "
-        "ORDER BY timestamp ASC, sequence_number ASC LIMIT ?)",
-        (total - ceiling,),
-    )
-    con.commit()
+    con.execute("BEGIN IMMEDIATE")
+    try:
+        con.execute(
+            "DELETE FROM match_events WHERE id IN ("
+            "SELECT id FROM match_events "
+            "ORDER BY timestamp ASC, sequence_number ASC LIMIT ?)",
+            (total - ceiling,),
+        )
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
     return total - ceiling
 
 
@@ -76,13 +81,18 @@ def trim_revisions(
     total = int(count_row[0]) if count_row else 0
     if total <= ceiling:
         return 0
-    con.execute(
-        "DELETE FROM template_revisions WHERE id IN ("
-        "SELECT id FROM template_revisions WHERE identity_id = ? "
-        "ORDER BY revision ASC LIMIT ?)",
-        (identity_id, total - ceiling),
-    )
-    con.commit()
+    con.execute("BEGIN IMMEDIATE")
+    try:
+        con.execute(
+            "DELETE FROM template_revisions WHERE id IN ("
+            "SELECT id FROM template_revisions WHERE identity_id = ? "
+            "ORDER BY revision ASC LIMIT ?)",
+            (identity_id, total - ceiling),
+        )
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
     return total - ceiling
 
 
@@ -359,12 +369,12 @@ class SQLiteRepository:
             now = _utcnow()
             con.execute("BEGIN IMMEDIATE")
             row = con.execute(
-                "SELECT current_revision FROM identities WHERE id = ?",
+                "SELECT status, current_revision FROM identities WHERE id = ?",
                 (identity_id,),
             ).fetchone()
-            if row is None:
-                raise StoreError(f"unknown identity: {identity_id}")
-            revision = max(int(row[0]) + 1, template.revision.revision)
+            if row is None or row[0] != "active":
+                raise StoreError(f"identity deleted or tombstoned: {identity_id}")
+            revision = max(int(row[1]) + 1, template.revision.revision)
             con.execute(
                 "INSERT INTO face_templates "
                 "(id, identity_id, generation_id, model_version, embedding_dim,"
@@ -450,6 +460,11 @@ class SQLiteRepository:
             )
             now = _utcnow()
             con.execute("BEGIN IMMEDIATE")
+            identity = con.execute(
+                "SELECT status FROM identities WHERE id = ?", (identity_id,)
+            ).fetchone()
+            if identity is None or identity[0] != "active":
+                raise StoreError(f"identity deleted or tombstoned: {identity_id}")
             con.execute(
                 "INSERT INTO candidate_templates "
                 "(id, identity_id, generation_id, status, key_id,"
@@ -666,18 +681,26 @@ class SQLiteRepository:
         return key_ids
 
     def begin_delete_identity(self, identity_id: str) -> None:
+        """Atomically snapshot key IDs and mark deletion before external work."""
         con = self._require()
-        rows = con.execute(
-            "SELECT key_id FROM face_templates WHERE identity_id = ?",
-            (identity_id,),
-        ).fetchall()
-        rows += con.execute(
-            "SELECT key_id FROM candidate_templates WHERE identity_id = ?",
-            (identity_id,),
-        ).fetchall()
-        key_ids = [r[0] for r in rows]
         con.execute("BEGIN IMMEDIATE")
         try:
+            identity = con.execute(
+                "SELECT status FROM identities WHERE id = ?", (identity_id,)
+            ).fetchone()
+            if identity is None:
+                raise StoreError(f"unknown identity: {identity_id}")
+            if identity[0] == "deleted":
+                raise StoreError(f"identity already being deleted: {identity_id}")
+            rows = con.execute(
+                "SELECT key_id FROM face_templates WHERE identity_id = ?",
+                (identity_id,),
+            ).fetchall()
+            rows += con.execute(
+                "SELECT key_id FROM candidate_templates WHERE identity_id = ?",
+                (identity_id,),
+            ).fetchall()
+            key_ids = [str(row[0]) for row in rows]
             con.execute(
                 "UPDATE identities SET status = 'deleted' WHERE id = ?",
                 (identity_id,),
@@ -725,6 +748,19 @@ class SQLiteRepository:
         con.execute(
             "DELETE FROM face_templates WHERE identity_id = ?", (target_id,)
         )
+        for row in con.execute(
+            "SELECT id, embedding_blob, exemplar_blob FROM candidate_templates"
+            " WHERE identity_id = ?",
+            (target_id,),
+        ).fetchall():
+            exemplar = (
+                os.urandom(len(row[2])) if row[2] is not None else None
+            )
+            con.execute(
+                "UPDATE candidate_templates SET embedding_blob = ?,"
+                " exemplar_blob = ? WHERE id = ?",
+                (os.urandom(len(row[1])), exemplar, row[0]),
+            )
         con.execute(
             "DELETE FROM candidate_templates WHERE identity_id = ?", (target_id,)
         )

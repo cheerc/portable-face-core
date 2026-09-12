@@ -294,7 +294,7 @@ def test_deletion_serializes_against_inflight_append_without_key_leak(
                 assert step_one_done.wait(timeout=5)
             return result
 
-        append_repo._seal = hooked_seal
+        append_repo._seal = hooked_seal  # type: ignore[method-assign]
         try:
             append_result.append(
                 append_repo.append_revision(

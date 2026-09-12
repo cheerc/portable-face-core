@@ -105,11 +105,17 @@ def test_retention_helpers_use_immediate_write_transactions(tmp_path: Path) -> N
     statements: list[str] = []
     repo.connection.set_trace_callback(statements.append)
     trim_match_events(repo.connection, 1)
-    assert any(statement.strip().upper() == "BEGIN IMMEDIATE" for statement in statements)
+    assert any(
+        statement.strip().upper() == "BEGIN IMMEDIATE"
+        for statement in statements
+    )
 
     repo.append_revision(
         "person-001", _template("person-001", 2), b"e" * 16, b"x" * 8
     )
     statements.clear()
     trim_revisions(repo.connection, "person-001", 1)
-    assert any(statement.strip().upper() == "BEGIN IMMEDIATE" for statement in statements)
+    assert any(
+        statement.strip().upper() == "BEGIN IMMEDIATE"
+        for statement in statements
+    )

@@ -25,6 +25,12 @@ from facecore.errors import StoreError
 
 
 def default_key_dir() -> Path:
+    """Resolve the documented key-directory override before the default."""
+    override = os.environ.get("FACECORE_KEY_DIR")
+    if override is not None:
+        if not override.strip():
+            raise StoreError("FACECORE_KEY_DIR must not be empty")
+        return Path(override).expanduser()
     return Path.home() / ".facecore" / "keys"
 
 

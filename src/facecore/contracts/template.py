@@ -54,9 +54,14 @@ class FaceTemplate:
             )
 
     def assert_comparable(self, other: "FaceTemplate") -> None:
-        """Old and new generations never compare as if compatible (spec sec 12)."""
+        """Reject model or generation mismatches before vector comparison."""
         if self.model_version != other.model_version:
             raise ValueError(
                 "cross-model comparison refused: "
                 f"{self.model_version!r} vs {other.model_version!r}"
+            )
+        if self.generation_id != other.generation_id:
+            raise ValueError(
+                "cross-generation comparison refused: "
+                f"{self.generation_id!r} vs {other.generation_id!r}"
             )
