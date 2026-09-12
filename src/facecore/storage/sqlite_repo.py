@@ -12,6 +12,7 @@ idempotent success (crash-after-destroy recovery).
 """
 
 import json
+import math
 import os
 import sqlite3
 from datetime import datetime, timezone
@@ -583,6 +584,43 @@ class SQLiteRepository:
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             raise StoreCorruptionError("invalid exemplar landmark geometry") from exc
 
+    @staticmethod
+    def _persisted_int(value: object, field: str) -> int:
+        try:
+            if isinstance(value, bool):
+                raise ValueError("boolean is not an integer field")
+            return int(str(value))
+        except (TypeError, ValueError) as exc:
+            raise StoreCorruptionError(
+                f"invalid persisted integer {field}: {value!r}"
+            ) from exc
+
+    @staticmethod
+    def _persisted_float(value: object, field: str) -> float:
+        try:
+            parsed = float(str(value))
+            if not math.isfinite(parsed):
+                raise ValueError("non-finite value")
+            return parsed
+        except (TypeError, ValueError) as exc:
+            raise StoreCorruptionError(
+                f"invalid persisted float {field}: {value!r}"
+            ) from exc
+
+    @staticmethod
+    def _parse_key_ids_json(payload: object) -> list[str]:
+        try:
+            if not isinstance(payload, str):
+                raise ValueError("key_ids_json must be text")
+            parsed: object = json.loads(payload)
+            if not isinstance(parsed, list) or not all(
+                isinstance(key_id, str) and key_id for key_id in parsed
+            ):
+                raise ValueError("key_ids_json must be a list of non-empty strings")
+            return list(parsed)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise StoreCorruptionError("invalid persisted tombstone key IDs") from exc
+
     def _hydrate_template(self, row: tuple[object, ...]) -> FaceTemplate:
         (
             template_id,
@@ -611,10 +649,10 @@ class SQLiteRepository:
             template_id=str(template_id),
             identity_id=str(identity_id),
             model_version=str(model_version),
-            embedding_dim=int(str(embedding_dim)),
+            embedding_dim=self._persisted_int(embedding_dim, "embedding_dim"),
             generation_id=str(generation_id),
             revision=TemplateRevision(
-                revision=int(str(revision_number)),
+                revision=self._persisted_int(revision_number, "revision_number"),
                 template_id=str(template_id),
                 supersedes=(
                     str(revision_supersedes)
@@ -635,9 +673,11 @@ class SQLiteRepository:
             exemplar_landmarks=self._json_landmarks(
                 str(exemplar_landmarks) if exemplar_landmarks is not None else None
             ),
-            exemplar_margin=float(str(exemplar_margin)),
-            quality_score=float(str(quality_score)),
-            utility_score=float(str(utility_score)),
+            exemplar_margin=self._persisted_float(
+                exemplar_margin, "exemplar_margin"
+            ),
+            quality_score=self._persisted_float(quality_score, "quality_score"),
+            utility_score=self._persisted_float(utility_score, "utility_score"),
         )
 
     def list_active_templates(self) -> list[FaceTemplate]:
@@ -736,7 +776,7 @@ class SQLiteRepository:
         ).fetchall()
         key_ids: list[str] = []
         for (payload,) in rows:
-            key_ids.extend(json.loads(payload))
+            key_ids.extend(self._parse_key_ids_json(payload))
         return key_ids
 
     def begin_delete_identity(self, identity_id: str) -> None:
@@ -844,7 +884,17 @@ class SQLiteRepository:
             " FROM deletion_tombstones"
         ).fetchall()
         for t_id, target_type, target_id, payload, status in rows:
-            key_ids = list(json.loads(payload))
+            if target_type not in ("identity", "record"):
+                raise StoreCorruptionError(
+                    f"invalid persisted tombstone target type: {target_type!r}"
+                )
+            if not isinstance(target_id, str) or not target_id:
+                raise StoreCorruptionError("invalid persisted tombstone target ID")
+            if status not in (_TOMBSTONE_PENDING, _TOMBSTONE_DESTROYED):
+                raise StoreCorruptionError(
+                    f"invalid persisted tombstone status: {status!r}"
+                )
+            key_ids = self._parse_key_ids_json(payload)
             if status == _TOMBSTONE_PENDING:
                 self._destroy_keys_best_effort(key_ids)
                 con.execute("BEGIN IMMEDIATE")
