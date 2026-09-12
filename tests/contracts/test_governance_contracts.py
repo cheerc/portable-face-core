@@ -66,7 +66,9 @@ def _revision() -> TemplateRevision:
     return TemplateRevision(revision=1, template_id="t-1", supersedes=None)
 
 
-def _manifest(**overrides: object) -> ModelMigrationManifest:
+def _manifest(
+    field: str | None = None, mutant: str | int | None = None
+) -> ModelMigrationManifest:
     base = ModelMigrationManifest(
         embedder_artifact_hash="aa" * 32,
         detector_generation="yunet-2023mar",
@@ -78,9 +80,34 @@ def _manifest(**overrides: object) -> ModelMigrationManifest:
         quantization_type="none",
         execution_runtime="onnxruntime-cpu-arm64==1.30.0",
     )
-    if overrides:
-        base = dataclasses.replace(base, **overrides)
-    return base
+    if field is None:
+        return base
+    if field == "embedding_dimension":
+        assert isinstance(mutant, int)
+        return dataclasses.replace(base, embedding_dimension=mutant)
+    assert isinstance(mutant, str)
+    str_fields: dict[str, str] = {
+        "embedder_artifact_hash": base.embedder_artifact_hash,
+        "detector_generation": base.detector_generation,
+        "preprocessing_generation": base.preprocessing_generation,
+        "tensor_layout": base.tensor_layout,
+        "normalization_contract": base.normalization_contract,
+        "numerical_precision": base.numerical_precision,
+        "quantization_type": base.quantization_type,
+        "execution_runtime": base.execution_runtime,
+    }
+    str_fields[field] = mutant
+    return ModelMigrationManifest(
+        embedder_artifact_hash=str_fields["embedder_artifact_hash"],
+        detector_generation=str_fields["detector_generation"],
+        preprocessing_generation=str_fields["preprocessing_generation"],
+        tensor_layout=str_fields["tensor_layout"],
+        normalization_contract=str_fields["normalization_contract"],
+        embedding_dimension=base.embedding_dimension,
+        numerical_precision=str_fields["numerical_precision"],
+        quantization_type=str_fields["quantization_type"],
+        execution_runtime=str_fields["execution_runtime"],
+    )
 
 
 def _candidate(
@@ -257,7 +284,7 @@ def test_face_template_governance_ready_requires_exemplar_fields() -> None:
 
 
 def test_face_template_governance_ready_passes_with_full_fields() -> None:
-    assert _governed_template().assert_governance_ready() is None
+    _governed_template().assert_governance_ready()
 
 
 def test_governance_policy_provisional_values_match_plan_section_6() -> None:
@@ -360,13 +387,13 @@ def test_manifest_identical_returns_compatible() -> None:
 def test_manifest_generation_difference_returns_migration_required() -> None:
     assert (
         _manifest().check_compatibility(
-            _manifest(detector_generation="yunet-2026may")
+            _manifest("detector_generation", "yunet-2026may")
         )
         == "MIGRATION_REQUIRED"
     )
     assert (
         _manifest().check_compatibility(
-            _manifest(preprocessing_generation="sface-align-v2")
+            _manifest("preprocessing_generation", "sface-align-v2")
         )
         == "MIGRATION_REQUIRED"
     )
@@ -388,7 +415,7 @@ def test_manifest_hard_mismatch_raises(
     field: str, mutant: str | int
 ) -> None:
     with pytest.raises(ModelIncompatibilityError):
-        _manifest().check_compatibility(_manifest(**{field: mutant}))
+        _manifest().check_compatibility(_manifest(field, mutant))
 
 
 def test_migration_result_defaults_and_generation_status() -> None:
