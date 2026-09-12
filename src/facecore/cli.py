@@ -308,6 +308,32 @@ def cmd_conformance() -> int:
     return check_conformance_cli()
 
 
+def cmd_confirm_learning(verdict: str, score: float) -> int:
+    """Handle `--confirm-learning`: validate verdict, never persist here.
+
+    Task 3 boundary: the CLI admits only the closed verdict taxonomy and
+    holds the observation in memory. Candidate persistence happens only
+    through `CandidatePipeline.evaluate_observation` with an explicit
+    `correct` confirmation; every other verdict exits 0 with zero disk
+    mutation (spec §9 line 179).
+    """
+    from facecore.contracts.confirmation import ConfirmationVerdict
+
+    try:
+        parsed = ConfirmationVerdict(verdict)
+    except ValueError:
+        print(f"facecore confirm-learning: unknown verdict {verdict!r}")
+        return 2
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "verdict": parsed.value,
+        "score": score,
+        "candidate_created": False,
+    }
+    print(json.dumps(payload))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="facecore")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -320,6 +346,9 @@ def main(argv: list[str] | None = None) -> int:
     bo.add_argument("--models", required=True, type=Path)
     bo.add_argument("--out", required=True, type=Path)
     sub.add_parser("conformance")
+    cl = sub.add_parser("confirm-learning")
+    cl.add_argument("--verdict", required=True)
+    cl.add_argument("--score", required=True, type=float)
     args = parser.parse_args(argv)
     if args.command == "init":
         return cmd_init()
@@ -331,6 +360,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_bakeoff(args.corpus, args.models, args.out)
     if args.command == "conformance":
         return cmd_conformance()
+    if args.command == "confirm-learning":
+        return cmd_confirm_learning(args.verdict, args.score)
     return 5
 
 
