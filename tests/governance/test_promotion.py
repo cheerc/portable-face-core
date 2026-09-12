@@ -80,8 +80,12 @@ def test_promotion_carries_exemplar_into_active_template() -> None:
         revision=TemplateRevision(
             revision=2, template_id="t-promoted-1", supersedes="t-1"
         ),
+        model_version="sface-2021dec-fp32",
+        embedding_dim=128,
     )
     assert isinstance(template, FaceTemplate)
+    assert template.model_version == "sface-2021dec-fp32"
+    assert template.embedding_dim == 128
     assert template.encrypted_exemplar is candidate.encrypted_exemplar
     assert template.exemplar_crop_box == (10.0, 20.0, 100.0, 100.0)
     assert template.exemplar_landmarks == ((1.0, 2.0),)

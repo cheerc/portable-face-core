@@ -20,7 +20,7 @@ def _signals(**overrides: object) -> TemplateSignals:
         "detector_confidence": 1.0,
         "additional_corroboration_count": 3,
         "age_days": 0.0,
-        "cosine_to_centroid": 0.0,
+        "cosine_to_centroid": -1.0,
         "max_peer_cosine": -1.0,
         "runner_up_similarity": None,
         "bank_size": 5,
@@ -30,6 +30,7 @@ def _signals(**overrides: object) -> TemplateSignals:
 
 
 def test_perfect_template_scores_one() -> None:
+    # Anti-parallel coverage (cos=-1 → Uc=1.0) makes every component 1.0.
     assert UtilityRescorer().score(_signals()) == pytest.approx(1.0)
 
 
@@ -103,11 +104,16 @@ def test_tie_break_timestamp_then_template_id() -> None:
         ("t-b", 0.5, "2026-09-02T00:00:00+08:00"),
         ("t-a", 0.5, "2026-09-02T00:00:00+08:00"),
         ("t-early", 0.5, "2026-09-01T00:00:00+08:00"),
+        ("t-high-1", 0.9, "2026-09-03T00:00:00+08:00"),
+        ("t-high-2", 0.9, "2026-09-04T00:00:00+08:00"),
     ]
     assert manager.choose_victim(scored) == "t-early"
     tied = [
         ("t-b", 0.5, "2026-09-02T00:00:00+08:00"),
         ("t-a", 0.5, "2026-09-02T00:00:00+08:00"),
+        ("t-high-1", 0.9, "2026-09-03T00:00:00+08:00"),
+        ("t-high-2", 0.9, "2026-09-04T00:00:00+08:00"),
+        ("t-high-3", 0.9, "2026-09-05T00:00:00+08:00"),
     ]
     assert manager.choose_victim(tied) == "t-a"
 
