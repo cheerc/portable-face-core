@@ -28,6 +28,7 @@
 *.mov
 
 # Python and tooling
+.agend-managed
 .venv/
 *.egg-info/
 __pycache__/

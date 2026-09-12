@@ -94,7 +94,9 @@ def test_wal_and_free_pages_hold_no_decryptable_residue(
 
 
 def test_delete_unknown_identity_fails_closed(tmp_path: Path) -> None:
+    from facecore.errors import StoreError
+
     repo, _ = _open_repo(tmp_path)
     manager = LifecycleManager(repo)
-    with pytest.raises(Exception):
+    with pytest.raises(StoreError):
         manager.delete_identity("ghost-001")

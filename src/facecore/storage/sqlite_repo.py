@@ -385,7 +385,18 @@ class SQLiteRepository:
             ).fetchone()
             if row is None or row[0] != "active":
                 raise StoreError(f"identity deleted or tombstoned: {identity_id}")
-            revision = max(int(row[1]) + 1, template.revision.revision)
+            # Revision numbers are monotonically unique per identity:
+            # rollback moves the current pointer back to an old generation,
+            # so a later append MUST take max(existing)+1, never
+            # current+1 (duplicate revision rows + unordered lookup would
+            # resurrect the wrong generation). The caller-supplied
+            # revision is advisory only.
+            peak = con.execute(
+                "SELECT MAX(revision) FROM template_revisions"
+                " WHERE identity_id = ?",
+                (identity_id,),
+            ).fetchone()[0]
+            revision = max(int(row[1]) + 1, int(peak) + 1 if peak else 1)
             con.execute(
                 "INSERT INTO face_templates "
                 "(id, identity_id, generation_id, model_version, embedding_dim,"

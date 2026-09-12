@@ -135,10 +135,21 @@ class LifecycleManager:
                     (identity_id,),
                 ).fetchone()[0]
             )
+            # The revision row written by append_revision snapshots the
+            # pre-retirement active set (old + new). Rewrite BOTH sides so
+            # the generation snapshot is exact: only the new template is
+            # active, the retired ones are retired. Otherwise a later
+            # rollback to this revision would resurrect the old templates.
             con.execute(
-                "UPDATE template_revisions SET retired_template_ids = ?"
+                "UPDATE template_revisions"
+                " SET active_template_ids = ?, retired_template_ids = ?"
                 " WHERE identity_id = ? AND revision = ?",
-                (json.dumps(active_ids), identity_id, revision),
+                (
+                    json.dumps([new_tid]),
+                    json.dumps(active_ids),
+                    identity_id,
+                    revision,
+                ),
             )
             con.commit()
         except Exception:
@@ -152,7 +163,14 @@ class LifecycleManager:
         )
 
     def rollback(self, identity_id: str, to_revision: int) -> LifecycleResult:
-        """Restore revision *n*, retiring newer templates."""
+        """Restore generation *n* as the exact recorded snapshot.
+
+        Non-destructive switching: every recorded generation stays
+        addressable. The active set becomes exactly the target snapshot —
+        outsiders retire regardless of revision number. The depth gate
+        bounds backward travel only; forward/lateral switches are gated
+        by snapshot existence (fail-closed `revision not found`).
+        """
         con = self._connection()
         row = con.execute(
             "SELECT status, current_revision FROM identities WHERE id = ?",
@@ -161,40 +179,53 @@ class LifecycleManager:
         if row is None or row[0] != "active":
             raise StoreError(f"unknown identity: {identity_id}")
         current = int(row[1])
-        if to_revision < 1 or to_revision > current:
+        if to_revision < 1:
             raise StoreError(f"revision out of range: {to_revision}")
-        if current - to_revision > self._policy.rollback_max_depth:
-            raise StoreError(
-                f"revision {to_revision} exceeds rollback_max_depth"
-                f" {self._policy.rollback_max_depth}"
-            )
+        # Rollback is non-destructive generation switching: any recorded
+        # generation stays addressable even when the current pointer sits
+        # below it (e.g. rollback(1) then rollback(2)). The depth gate
+        # only bounds backward travel; forward switches need no gate.
+        if to_revision < current:
+            if current - to_revision > self._policy.rollback_max_depth:
+                raise StoreError(
+                    f"revision {to_revision} exceeds rollback_max_depth"
+                    f" {self._policy.rollback_max_depth}"
+                )
         if to_revision == current:
             return LifecycleResult(
                 identity_id=identity_id,
                 action="rolled_back",
                 revision=current,
             )
-        target = con.execute(
+        targets = con.execute(
             "SELECT revision, active_template_ids FROM template_revisions"
-            " WHERE identity_id = ? AND revision = ?",
+            " WHERE identity_id = ? AND revision = ? ORDER BY id",
             (identity_id, to_revision),
-        ).fetchone()
-        if target is None:
+        ).fetchall()
+        if not targets:
             raise StoreError(f"revision not found: {to_revision}")
+        if len(targets) > 1:
+            raise StoreError(
+                f"ambiguous revision snapshot: {to_revision}"
+            )
+        target = targets[0]
         keep_ids: set[str] = set(json.loads(str(target[1])))
-        newer_ids = [
+        # Exact-snapshot restore: EVERY active template outside the
+        # target snapshot retires, regardless of its revision number.
+        # (A stale active from an older generation would otherwise
+        # survive alongside the restored set.)
+        outsiders = [
             row[0]
             for row in con.execute(
                 "SELECT id FROM face_templates WHERE identity_id = ?"
-                " AND status = 'active' AND revision_number > ?",
-                (identity_id, to_revision),
+                " AND status = 'active'",
+                (identity_id,),
             ).fetchall()
+            if row[0] not in keep_ids
         ]
         con.execute("BEGIN IMMEDIATE")
         try:
-            for tid in newer_ids:
-                if tid in keep_ids:
-                    continue
+            for tid in outsiders:
                 con.execute(
                     "UPDATE face_templates SET status = 'retired',"
                     " retired_at = datetime('now') WHERE id = ?",

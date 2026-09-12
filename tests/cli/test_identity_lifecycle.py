@@ -134,6 +134,67 @@ def test_rollback_unknown_revision_fails_closed(tmp_path: Path) -> None:
         manager.rollback("person-001", 99)
 
 
+def test_rollback_then_reenroll_restores_exact_generations(
+    tmp_path: Path,
+) -> None:
+    """Reviewer r0 P1 closure: rollback strictly restores generation n.
+
+    Revision numbers are monotonically unique (never reused), so after
+    add → re_enroll(bad) → rollback(1) → re_enroll(good), the good
+    generation owns a NEW number. Rolling back to an address restores
+    exactly that generation's snapshot — no ambiguity, no pollution
+    from retired templates of other generations.
+    """
+    manager, repo = _manager(tmp_path)
+    first = manager.add_identity(
+        "person-001", "Test Person", b"e" * 64, b"x" * 64
+    )
+    assert first.template_id is not None
+    assert first.revision == 1
+    bad = manager.re_enroll("person-001", b"bad" * 21 + b"!", b"bad-ex" * 10)
+    assert bad.template_id is not None
+    assert bad.revision == 2
+    manager.rollback("person-001", 1)
+    good = manager.re_enroll("person-001", b"g" * 64, b"h" * 64)
+    assert good.template_id is not None
+    assert good.template_id != bad.template_id
+    # Fresh generation owns a fresh number (reuse is the r0 bug).
+    assert good.revision is not None and good.revision > bad.revision
+    assert good.revision == 3
+    # Rollback to the good address restores exactly the good template.
+    manager.rollback("person-001", good.revision)
+    active = repo.list_active_templates()
+    assert [t.template_id for t in active] == [good.template_id]
+    # Rollback to generation 1 restores exactly the seed template.
+    manager.rollback("person-001", 1)
+    active = repo.list_active_templates()
+    assert [t.template_id for t in active] == [first.template_id]
+    # Old snapshots stay addressable: rollback(2) restores exactly the
+    # bad generation (single deterministic hit, no ambiguity error) —
+    # the other half of "rollback strictly restores generation n".
+    manager.rollback("person-001", 2)
+    active = repo.list_active_templates()
+    assert [t.template_id for t in active] == [bad.template_id]
+
+
+def test_revision_numbers_stay_unique_across_rollback_cycles(
+    tmp_path: Path,
+) -> None:
+    manager, repo = _manager(tmp_path)
+    manager.add_identity("person-001", "Test Person", b"e" * 64, b"x" * 64)
+    manager.re_enroll("person-001", b"n" * 64, b"m" * 64)
+    manager.rollback("person-001", 1)
+    manager.re_enroll("person-001", b"p" * 64, b"q" * 64)
+    con = repo.connection
+    assert con is not None
+    rows = con.execute(
+        "SELECT revision, COUNT(*) FROM template_revisions"
+        " WHERE identity_id = ? GROUP BY revision HAVING COUNT(*) > 1",
+        ("person-001",),
+    ).fetchall()
+    assert rows == []
+
+
 def test_reject_candidate_and_list(tmp_path: Path) -> None:
     manager, repo = _manager(tmp_path)
     manager.add_identity("person-001", "Test Person", b"e" * 64, b"x" * 64)
