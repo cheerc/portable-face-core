@@ -101,12 +101,15 @@ lifecycle CLI, encrypted export/import with key re-homing, generation
 migration, drift policy, chronological replay harness, replay report,
 and capacity benchmark — all on synthetic streams only.
 
-Real SFace Pair-1 weights and multi-timestamp probes remain
-operator-dual-gated: real replay is `blocked-with-reason`, the model
-selection gate remains **OPEN** pending weights/corpus, and this
-closeout is `partial governance validation`, NOT Phase-1B completion.
-Completion requires real replay plus an operator review requesting ADR
-0006 closure.
+Real SFace Pair-1 weights are released and the 13-probe filename time
+order is ratified (chronology B); the governed replay path
+(creation→corroboration→promotion→rejection→retirement→rollback) is
+GREEN on synthetic streams (`src/facecore/eval/real_replay.py`, §6-3).
+Commander true-photo rerun in /tmp/face-accept is pending: the model
+selection gate remains **OPEN**, and this closeout stays `partial
+governance validation`, NOT Phase-1B completion. Completion requires
+the commander rerun plus an operator review requesting ADR 0006
+closure.
 
 ## Next Session
 
