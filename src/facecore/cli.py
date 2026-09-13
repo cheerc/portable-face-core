@@ -521,10 +521,31 @@ def cmd_identity_show(identity_id: str) -> int:
     return 0
 
 
-def cmd_identity_re_enroll(identity_id: str, photo: Path) -> int:
+def cmd_identity_re_enroll(
+    identity_id: str,
+    photo: Path,
+    models: Path | None,
+    *,
+    detector: object = None,
+    embedder: object = None,
+) -> int:
     try:
         photo_bytes = photo.read_bytes()
     except OSError:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "invalid_input"})
+        return 2
+    try:
+        outcome, vector, exemplar, _version = _enroll_photo(
+            photo_bytes, models, detector=detector, embedder=embedder
+        )
+    except FaceCoreError as exc:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "invalid_input"})
+        return exc.exit_code
+    except OSError:
+        # Missing model artifacts: no pipeline, no partial revision.
+        _emit({"schema_version": SCHEMA_VERSION, "status": "invalid_input"})
+        return 2
+    if outcome != "enrolled" or vector is None or exemplar is None:
         _emit({"schema_version": SCHEMA_VERSION, "status": "invalid_input"})
         return 2
     try:
@@ -533,7 +554,11 @@ def cmd_identity_re_enroll(identity_id: str, photo: Path) -> int:
         _emit({"schema_version": SCHEMA_VERSION, "status": "store_error"})
         return exc.exit_code
     try:
-        result = manager.re_enroll(identity_id, photo_bytes, photo_bytes)
+        result = manager.re_enroll(
+            identity_id,
+            vector.tobytes(),
+            exemplar,
+        )
     except StoreError as exc:
         _emit(
             {
@@ -958,6 +983,7 @@ def main(argv: list[str] | None = None) -> int:
     ire = isub.add_parser("re-enroll")
     ire.add_argument("--id", required=True)
     ire.add_argument("--photo", required=True, type=Path)
+    ire.add_argument("--models", required=False, default=None, type=Path)
     irb = isub.add_parser("rollback")
     irb.add_argument("--id", required=True)
     irb.add_argument("--to-revision", required=True, type=int)
@@ -1007,7 +1033,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.identity_command == "show":
             return cmd_identity_show(args.id)
         if args.identity_command == "re-enroll":
-            return cmd_identity_re_enroll(args.id, args.photo)
+            return cmd_identity_re_enroll(args.id, args.photo, args.models)
         if args.identity_command == "rollback":
             return cmd_identity_rollback(args.id, args.to_revision)
         if args.identity_command == "delete":
