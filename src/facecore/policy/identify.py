@@ -11,8 +11,10 @@ the Repository guards identity existence, revision, and model_version.
 
 import numpy as np
 
+from facecore.contracts.drift import DriftStatus
 from facecore.contracts.policy import PolicyProfile
 from facecore.contracts.result import (
+    DRIFT_BOUNDARY_EXCEEDED,
     Decision,
     IdentificationResult,
     Quality,
@@ -36,8 +38,15 @@ def identify(
     gallery: dict[str, np.ndarray],
     model_version: str,
     quality: Quality | None = None,
+    drift_status: DriftStatus | None = None,
 ) -> IdentificationResult:
-    """Assign matched / review / unknown over one probe against the gallery."""
+    """Assign matched / review / unknown over one probe against the gallery.
+
+    Task 8 bounded response: a breached ``drift_status`` downgrades an
+    otherwise-matched outcome to ``review`` with
+    ``drift_boundary_exceeded`` (identity stays null per the frozen
+    review contract). Default ``None`` preserves legacy behavior.
+    """
     match_t = policy.match_threshold
     review_t = policy.review_threshold
     margin_t = policy.margin_threshold
@@ -80,9 +89,14 @@ def identify(
         runner_up = scored[1][2]
         margin = top_score - runner_up
         extra = []
+    breached = drift_status is DriftStatus.BOUNDARY_EXCEEDED
     if top_score >= match_t and (margin is None or margin >= margin_t):
-        status = ResultStatus.MATCHED
-        codes = ["match_threshold_met", *extra]
+        if breached:
+            status = ResultStatus.REVIEW
+            codes = ["match_threshold_met", DRIFT_BOUNDARY_EXCEEDED, *extra]
+        else:
+            status = ResultStatus.MATCHED
+            codes = ["match_threshold_met", *extra]
     elif top_score >= match_t:
         status = ResultStatus.REVIEW
         codes = ["insufficient_margin"]
