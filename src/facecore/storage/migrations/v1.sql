@@ -96,3 +96,12 @@ CREATE TABLE IF NOT EXISTS deletion_tombstones (
 CREATE INDEX IF NOT EXISTS idx_face_templates_identity ON face_templates(identity_id, status);
 CREATE INDEX IF NOT EXISTS idx_candidate_templates_identity ON candidate_templates(identity_id, status);
 CREATE INDEX IF NOT EXISTS idx_match_events_timestamp ON match_events(timestamp, sequence_number);
+
+-- Carry-forward 4: store-wide current model generation marker. Written by
+-- ModelMigrationManager inside the migration transaction (atomic with the
+-- row updates); read by LifecycleManager/CandidatePipeline for stamping
+-- new writes. Absent row means the pre-migration default "G1".
+CREATE TABLE IF NOT EXISTS store_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);

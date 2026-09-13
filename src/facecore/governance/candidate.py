@@ -45,12 +45,21 @@ class CandidatePipeline:
         self,
         repository: SQLiteRepository,
         policy: GovernancePolicy | None = None,
-        generation_id: str = "G1",
+        generation_id: str | None = None,
     ) -> None:
         self._repository = repository
         self._policy = policy or GovernancePolicy.provisional_v1()
+        if generation_id is not None and not generation_id:
+            raise ValueError("generation_id must be non-empty")
         self._generation_id = generation_id
         self._pending_lengths: list[int] = []
+
+    @property
+    def generation_id(self) -> str:
+        """Generation stamped on new candidates (store marker by default)."""
+        if self._generation_id is not None:
+            return self._generation_id
+        return self._repository.get_current_generation()
 
     def hold_pending(self, observation: bytes) -> None:
         """Hold a pending observation in memory (length only, never the bytes)."""
@@ -103,7 +112,7 @@ class CandidatePipeline:
             decoded_face,
             decoded_face,
             (now + timedelta(days=CANDIDATE_EXPIRY_DAYS)).isoformat(),
-            generation_id=self._generation_id,
+            generation_id=self.generation_id,
             exemplar_crop_box=None,
             exemplar_landmarks=None,
             quality_score=score,
