@@ -18,7 +18,11 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from facecore.cli import _enroll_photo, cmd_identity_add
+from facecore.cli import (
+    _enroll_photo,
+    cmd_identity_add,
+    cmd_identity_re_enroll,
+)
 from facecore.pipeline.align import AlignedCrop
 from facecore.pipeline.decode import DecodedImage
 from facecore.pipeline.detect import DetectedFace
@@ -254,3 +258,104 @@ def test_zero_face_cmd_add_no_residue(
     )
     assert rc == 2
     assert not db.exists()
+
+
+def _seed_add(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from facecore.governance.lifecycle import LifecycleManager
+    from facecore.storage.key_provider import InMemoryKeyProvider
+    from facecore.storage.sqlite_repo import SQLiteRepository
+
+    db = tmp_path / "facecore.db"
+    monkeypatch.setenv("FACECORE_DB", str(db))
+    repo = SQLiteRepository(str(db), InMemoryKeyProvider())
+    repo.initialize()
+    LifecycleManager(repo).add_identity(
+        "person-01", "Test", b"e" * 64, b"x" * 64
+    )
+
+
+def test_reenroll_stores_true_embedding_not_photo_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: object
+) -> None:
+    """Carry-forward 2: re-enroll persists the pipeline embedding."""
+    import json
+
+    from facecore.storage.key_provider import FileKeyProvider
+    from facecore.storage.sqlite_repo import SQLiteRepository
+
+    _seed_add(tmp_path, monkeypatch)
+    db = tmp_path / "facecore.db"
+    photo = tmp_path / "p.png"
+    photo.write_bytes(_checkerboard())
+    rc = cmd_identity_re_enroll(
+        "person-01",
+        photo,
+        None,
+        detector=_StubDetector([_good_face()]),  # type: ignore[arg-type]
+        embedder=_StubEmbedder(),  # type: ignore[arg-type]
+    )
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])  # type: ignore[attr-defined]
+    assert out["status"] == "ok"
+    assert out["revision"] == 2
+    repo = SQLiteRepository(
+        str(db), FileKeyProvider(key_dir=db.parent / "keys", db_path=db)
+    )
+    repo.initialize()
+    assert repo.read_embedding(out["template_id"]) == _STUB_VECTOR.tobytes()
+
+
+def test_reenroll_zero_face_no_residue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_add(tmp_path, monkeypatch)
+    db = tmp_path / "facecore.db"
+    before = db.stat().st_size
+    photo = tmp_path / "p.png"
+    photo.write_bytes(_checkerboard())
+    rc = cmd_identity_re_enroll(
+        "person-01",
+        photo,
+        None,
+        detector=_StubDetector([]),  # type: ignore[arg-type]
+        embedder=_StubEmbedder(),  # type: ignore[arg-type]
+    )
+    assert rc == 2
+    assert db.stat().st_size == before
+    con = sqlite3.connect(str(db))
+    try:
+        count = con.execute(
+            "SELECT COUNT(*) FROM face_templates WHERE identity_id = ?",
+            ("person-01",),
+        ).fetchone()[0]
+    finally:
+        con.close()
+    assert count == 1
+
+
+def test_reenroll_without_models_is_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_add(tmp_path, monkeypatch)
+    photo = tmp_path / "p.png"
+    photo.write_bytes(_checkerboard())
+    rc = cmd_identity_re_enroll("person-01", photo, None)
+    assert rc == 2
+
+
+def test_reenroll_unknown_identity_exits_4(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _db_env(tmp_path, monkeypatch)
+    photo = tmp_path / "p.png"
+    photo.write_bytes(_checkerboard())
+    rc = cmd_identity_re_enroll(
+        "ghost-001",
+        photo,
+        None,
+        detector=_StubDetector([_good_face()]),  # type: ignore[arg-type]
+        embedder=_StubEmbedder(),  # type: ignore[arg-type]
+    )
+    assert rc == 4

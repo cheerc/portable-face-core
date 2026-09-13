@@ -337,6 +337,8 @@ def test_cli_re_enroll_and_rollback(
 ) -> None:
     env = _cli_env(tmp_path, monkeypatch)
     _seed_identity_in_process(tmp_path)
+    # Model-less re-enroll is invalid_input with no partial revision;
+    # the seeded revision 1 stays intact underneath.
     photo_b = tmp_path / "b.bin"
     photo_b.write_bytes(b"b" * 128)
     proc = _run_cli(
@@ -344,7 +346,14 @@ def test_cli_re_enroll_and_rollback(
          "--photo", str(photo_b)],
         env,
     )
+    assert proc.returncode == 2, proc.stderr
+    proc = _run_cli(
+        ["identity", "show", "--id", "person-001"],
+        env,
+    )
     assert proc.returncode == 0, proc.stderr
+    snapshot = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert snapshot["current_revision"] == 1
     proc = _run_cli(
         ["identity", "rollback", "--id", "person-001", "--to-revision", "1"],
         env,
