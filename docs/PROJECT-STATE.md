@@ -93,6 +93,21 @@ No review decision remains open. The accepted choices are: no guaranteed periodi
 5. Optional mobile capture adapter that saves a still image plus up to five seconds immediately preceding the shutter action. Video-based recognition remains a separate research decision.
 6. Separate multi-face-in-one-photo search work after single-face identification is stable.
 
+## Phase-1B Status (Conditional Closeout, PR-G)
+
+Phase-1B Governance Engine delivered (provisional): confirmation-gated
+shadow candidates, corroboration/promotion/utility/eviction, identity
+lifecycle CLI, encrypted export/import with key re-homing, generation
+migration, drift policy, chronological replay harness, replay report,
+and capacity benchmark — all on synthetic streams only.
+
+Real SFace Pair-1 weights and multi-timestamp probes remain
+operator-dual-gated: real replay is `blocked-with-reason`, the model
+selection gate remains **OPEN** pending weights/corpus, and this
+closeout is `partial governance validation`, NOT Phase-1B completion.
+Completion requires real replay plus an operator review requesting ADR
+0006 closure.
+
 ## Next Session
 
 Phase 1A is closed. Phase-1B implementation plan (`docs/plans/2026-09-12-phase-1b-implementation-plan.md`) is drafted and pending operator review. Next session entry:
