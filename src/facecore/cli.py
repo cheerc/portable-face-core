@@ -4,8 +4,9 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 
@@ -13,6 +14,7 @@ from facecore import SCHEMA_VERSION
 from facecore.errors import FaceCoreError, StoreError
 
 if TYPE_CHECKING:
+    from facecore.contracts.manifest import ModelManifest
     from facecore.contracts.migration import ModelMigrationManifest
     from facecore.governance.lifecycle import LifecycleManager
     from facecore.storage.sqlite_repo import SQLiteRepository
@@ -80,6 +82,49 @@ def cmd_evaluate(enrollment: Path, probe: Path) -> int:
 
 SFACE_FP32_SHA = "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"
 YUNET_SHA = "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
+
+
+@dataclass(frozen=True)
+class PairArtifacts:
+    """Detector + embedder artifact selection for one bake-off pair.
+
+    pair1 is the frozen Phase-1A wiring (YuNet 2023mar fixed-640 + SFace
+    fp32). pair2 is the M2 comparison point (YuNet 2026may native dynamic
+    shape + SFace int8bq). manifest_factory is the ModelManifest
+    constructor so the integrity gate (Embedder) checks the recorded
+    weight SHA-256 before any inference.
+    """
+
+    detector_filename: str
+    detector_sha256: str
+    detector_input_size: int | None
+    embedder_filename: str
+    manifest_factory: Callable[[], "ModelManifest"]
+
+
+def _resolve_pair_artifacts(pair: str) -> PairArtifacts:
+    from facecore.contracts.manifest import (
+        YUNET_2026MAY_SHA,
+        ModelManifest,
+    )
+
+    if pair == "pair1":
+        return PairArtifacts(
+            detector_filename="face_detection_yunet_2023mar.onnx",
+            detector_sha256=YUNET_SHA,
+            detector_input_size=640,
+            embedder_filename="face_recognition_sface_2021dec.onnx",
+            manifest_factory=ModelManifest.sface_2021dec_fp32,
+        )
+    if pair == "pair2":
+        return PairArtifacts(
+            detector_filename="face_detection_yunet_2026may.onnx",
+            detector_sha256=YUNET_2026MAY_SHA,
+            detector_input_size=None,
+            embedder_filename="face_recognition_sface_2021dec_int8bq.onnx",
+            manifest_factory=ModelManifest.sface_2021dec_int8bq,
+        )
+    raise ValueError(f"unknown pair {pair!r}; expected 'pair1' or 'pair2'")
 MATCH_GRID = [round(v, 2) for v in [x * 0.05 for x in range(0, 21)]]
 MARGIN_GRID = [round(v, 2) for v in [x * 0.05 for x in range(0, 11)]]
 REVIEW_THRESHOLD = 0.5
@@ -125,13 +170,23 @@ def render_per_probe_detail(
 
 
 def cmd_bakeoff(
-    corpus: Path, models: Path, out: Path, detector_gate: float = 0.9
+    corpus: Path,
+    models: Path,
+    out: Path,
+    detector_gate: float = 0.9,
+    pair: str = "pair1",
+    detector_input_size: int | None = None,
 ) -> int:
-    from facecore.contracts.manifest import ModelManifest
     from facecore.contracts.policy import PolicyProfile
     from facecore.pipeline.embed import Embedder
     from facecore.pipeline.yunet import YuNetDetector
 
+    try:
+        selected = _resolve_pair_artifacts(pair)
+    except ValueError as exc:
+        print(f"bakeoff: {exc}", file=sys.stderr)
+        print(json.dumps(_result_payload("invalid_input")))
+        return 5
     try:
         policy = PolicyProfile.frozen_v1().with_detector_gate(
             detector_confidence_min=detector_gate
@@ -158,9 +213,22 @@ def cmd_bakeoff(
                 file=sys.stderr,
             )
             return 5
-    detector = YuNetDetector(models / "face_detection_yunet_2023mar.onnx", YUNET_SHA)
-    manifest = ModelManifest.sface_2021dec_fp32()
-    embedder = Embedder(manifest, models / "face_recognition_sface_2021dec.onnx")
+    # --detector-input-size overrides the pair default (M2 method note:
+    # pair2 native dynamic builds almost no gallery on this corpus, so a
+    # fixed-640 rerun isolates the embedder (fp32 vs int8bq) difference.
+    # pair1 default untouched.)
+    input_size = (
+        detector_input_size
+        if detector_input_size is not None
+        else selected.detector_input_size
+    )
+    detector = YuNetDetector(
+        models / selected.detector_filename,
+        selected.detector_sha256,
+        input_size=input_size,
+    )
+    manifest = selected.manifest_factory()
+    embedder = Embedder(manifest, models / selected.embedder_filename)
     session = EvaluationSession(
         detector=detector,
         embedder=embedder,
@@ -264,7 +332,9 @@ def cmd_bakeoff(
     lines = [
         "# Phase-1A bake-off operating table",
         "",
-        f"candidate: {manifest.model_id} (provenance_unresolved)",
+        f"candidate: {pair} / {manifest.model_id} (provenance_unresolved)",
+        f"detector: {selected.detector_filename} "
+        f"input_size={input_size if input_size is not None else 'native'}",
         f"gallery: {sorted(gallery)} | enrollment refused: {enrollment_refused} "
         f"| probe refused (no single face): {probe_refused}",
         f"target probes usable: {len(usable_targets)}/{len(target_files)}",
@@ -967,6 +1037,13 @@ def main(argv: list[str] | None = None) -> int:
     bo.add_argument("--models", required=True, type=Path)
     bo.add_argument("--out", required=True, type=Path)
     bo.add_argument("--detector-gate", required=False, type=float, default=0.9)
+    bo.add_argument(
+        "--pair", required=False, type=str, default="pair1",
+        choices=("pair1", "pair2"),
+    )
+    bo.add_argument(
+        "--detector-input-size", required=False, type=int, default=None,
+    )
     sub.add_parser("conformance")
     cl = sub.add_parser("confirm-learning")
     cl.add_argument("--verdict", required=True)
@@ -1019,7 +1096,12 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_evaluate(args.enrollment, args.probe)
     if args.command == "bakeoff":
         return cmd_bakeoff(
-            args.corpus, args.models, args.out, args.detector_gate
+            args.corpus,
+            args.models,
+            args.out,
+            args.detector_gate,
+            args.pair,
+            args.detector_input_size,
         )
     if args.command == "conformance":
         return cmd_conformance()
