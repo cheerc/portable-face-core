@@ -122,11 +122,22 @@ def render_per_probe_detail(
     return lines
 
 
-def cmd_bakeoff(corpus: Path, models: Path, out: Path) -> int:
+def cmd_bakeoff(
+    corpus: Path, models: Path, out: Path, detector_gate: float = 0.9
+) -> int:
     from facecore.contracts.manifest import ModelManifest
     from facecore.contracts.policy import PolicyProfile
     from facecore.pipeline.embed import Embedder
     from facecore.pipeline.yunet import YuNetDetector
+
+    try:
+        policy = PolicyProfile.frozen_v1().with_detector_gate(
+            detector_confidence_min=detector_gate
+        )
+    except ValueError as exc:
+        print(f"bakeoff: invalid --detector-gate: {exc}", file=sys.stderr)
+        print(json.dumps(_result_payload("invalid_input")))
+        return 2
 
     repo_root = Path(__file__).resolve().parents[2]
     try:
@@ -148,8 +159,12 @@ def cmd_bakeoff(corpus: Path, models: Path, out: Path) -> int:
     detector = YuNetDetector(models / "face_detection_yunet_2023mar.onnx", YUNET_SHA)
     manifest = ModelManifest.sface_2021dec_fp32()
     embedder = Embedder(manifest, models / "face_recognition_sface_2021dec.onnx")
-    policy = PolicyProfile.frozen_v1()
-    session = EvaluationSession(detector=detector, embedder=embedder, policy=policy)
+    session = EvaluationSession(
+        detector=detector,
+        embedder=embedder,
+        policy=policy,
+        detector_gate=detector_gate,
+    )
     enrollment_refused = 0
     for identity, entries in sorted(by_identity.items()):
         data = Path(entries[0].path).read_bytes()
@@ -170,7 +185,7 @@ def cmd_bakeoff(corpus: Path, models: Path, out: Path) -> int:
             decoded = decode_image(raw)
         except FaceCoreError:
             return None
-        faces = detector.detect(decoded)
+        faces = detector.detect(decoded, score_threshold=detector_gate)
         if len(faces) != 1:
             return None
         from facecore.pipeline.align import align_crop
@@ -253,6 +268,8 @@ def cmd_bakeoff(corpus: Path, models: Path, out: Path) -> int:
         f"| probe refused (no single face): {probe_refused}",
         f"target probes usable: {len(usable_targets)}/{len(target_files)}",
         f"non-target probes scored: {len(nontarget_scores)}/{len(nontarget_files)}",
+        f"policy: quality_policy_version={policy.quality_policy_version}, "
+        f"detector_confidence_min={policy.detector_confidence_min:.2f}",
         "",
         TEN_CONDITIONS_NOTE,
         "",
@@ -855,6 +872,7 @@ def main(argv: list[str] | None = None) -> int:
     bo.add_argument("--corpus", required=True, type=Path)
     bo.add_argument("--models", required=True, type=Path)
     bo.add_argument("--out", required=True, type=Path)
+    bo.add_argument("--detector-gate", required=False, type=float, default=0.9)
     sub.add_parser("conformance")
     cl = sub.add_parser("confirm-learning")
     cl.add_argument("--verdict", required=True)
@@ -904,7 +922,9 @@ def main(argv: list[str] | None = None) -> int:
         # no dead except here (Task 5.5 cleanup).
         return cmd_evaluate(args.enrollment, args.probe)
     if args.command == "bakeoff":
-        return cmd_bakeoff(args.corpus, args.models, args.out)
+        return cmd_bakeoff(
+            args.corpus, args.models, args.out, args.detector_gate
+        )
     if args.command == "conformance":
         return cmd_conformance()
     if args.command == "confirm-learning":

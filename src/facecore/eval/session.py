@@ -26,11 +26,16 @@ class EvaluationSession:
         detector: YuNetDetector | None = None,
         embedder: Embedder | None = None,
         policy: PolicyProfile | None = None,
+        detector_gate: float | None = None,
     ) -> None:
         self._repository = InMemoryRepository()
         self._detector = detector
         self._embedder = embedder
         self._policy = policy or PolicyProfile.frozen_v1()
+        # Explicit decode-time gate; None preserves the detector default
+        # (0.9). Set alongside a with_detector_gate policy so both gates
+        # agree; mismatched pairing is a caller error, not silently fixed.
+        self._detector_gate = detector_gate
         self._vectors: dict[str, np.ndarray] = {}
         self.last_quality_codes: list[str] = []
 
@@ -67,8 +72,12 @@ class EvaluationSession:
         faces: list[DetectedFace]
         if self._detector is None:
             faces = []
-        else:
+        elif self._detector_gate is None:
             faces = self._detector.detect(decoded)
+        else:
+            faces = self._detector.detect(
+                decoded, score_threshold=self._detector_gate
+            )
         status, _code, face = enforce_single_face(faces)
         if status != "ok" or face is None:
             return "invalid_input"

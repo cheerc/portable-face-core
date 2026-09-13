@@ -70,6 +70,47 @@ class PolicyProfile:
             margin_threshold=margin_threshold,
         )
 
+    def with_detector_gate(
+        self, *, detector_confidence_min: float,
+    ) -> "PolicyProfile":
+        """Return a copy with an explicit detector confidence gate.
+
+        §6-1 configurability: same frozen-dataclass shape as
+        `with_thresholds`; `frozen_v1` itself is never mutated. Only the
+        gate value travels; changing the operating point still requires
+        an operator decision — this builder is the mechanism, not the
+        approval.
+        """
+        import math
+
+        if not isinstance(detector_confidence_min, (int, float)):
+            raise ValueError(
+                "detector_confidence_min must be a number, "
+                f"got {detector_confidence_min!r}"
+            )
+        gate = float(detector_confidence_min)
+        if not math.isfinite(gate) or not 0.0 < gate <= 1.0:
+            raise ValueError(
+                "detector_confidence_min must satisfy 0 < gate <= 1, "
+                f"got {detector_confidence_min!r}"
+            )
+        return PolicyProfile(
+            quality_policy_version=self.quality_policy_version,
+            detector_confidence_min=gate,
+            face_min_shorter_side_px=self.face_min_shorter_side_px,
+            sharpness_min=self.sharpness_min,
+            exposure_luma_range=self.exposure_luma_range,
+            exposure_clipped_fraction_max=self.exposure_clipped_fraction_max,
+            yaw_max_deg=self.yaw_max_deg,
+            pitch_max_deg=self.pitch_max_deg,
+            occluded_landmarks_max=self.occluded_landmarks_max,
+            occluded_landmark_confidence_min=self.occluded_landmark_confidence_min,
+            aggregation_strategy=self.aggregation_strategy,
+            match_threshold=self.match_threshold,
+            review_threshold=self.review_threshold,
+            margin_threshold=self.margin_threshold,
+        )
+
 
 @dataclass(frozen=True)
 class GovernancePolicy:
