@@ -80,6 +80,7 @@ src/
     │   ├── benchmark_1b.py
     │   ├── capacity.py
     │   ├── corpus.py
+    │   ├── fa_matrix.py
     │   ├── replay.py
     │   ├── replay_report.py
     │   ├── report.py
@@ -158,6 +159,7 @@ tests/
 │   ├── test_benchmark_1b.py
 │   ├── test_capacity.py
 │   ├── test_corpus.py
+│   ├── test_fa_matrix.py
 │   ├── test_guard_expected_identity.py
 │   ├── test_per_probe_detail.py
 │   ├── test_replay.py
