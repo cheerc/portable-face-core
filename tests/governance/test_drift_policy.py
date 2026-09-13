@@ -8,6 +8,7 @@ calculator (``AttributeError: 'NoneType' object has no attribute
 """
 
 import numpy as np
+import pytest
 
 from facecore.contracts.drift import DriftReferenceKind, DriftStatus
 from facecore.governance.drift import DriftDetector
@@ -144,6 +145,31 @@ def test_within_bounds_no_breach(tmp_path) -> None:  # type: ignore[no-untyped-d
     assert status == DriftStatus.WITHIN_BOUNDS
     assert repo.get_identity_status("person-001") == "active"
     assert detector.is_suspended("person-001") is False
+
+
+def test_non_finite_shift_rejected_structured(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """P2 (r0 note materialized): NaN/inf never reads as WITHIN_BOUNDS."""
+    from facecore.governance.drift import (
+        NonFiniteDriftInputError,
+        _centroid,
+        _cosine_distance,
+    )
+
+    bad = np.full(8, np.nan)
+    good = _vector(1)
+    with pytest.raises(NonFiniteDriftInputError):
+        _cosine_distance(good, bad)
+    with pytest.raises(NonFiniteDriftInputError):
+        _cosine_distance(good, np.full(8, np.inf))
+    with pytest.raises(NonFiniteDriftInputError):
+        _centroid([good, bad])
+    repo, manager = _open(tmp_path)
+    detector, vectors = _detector(repo)
+    created = _enroll_with_vectors(manager, vectors, "person-001", 1)
+    assert created.template_id is not None
+    vectors[created.template_id] = bad
+    with pytest.raises(NonFiniteDriftInputError):
+        detector.measure_identity_drift("person-001")
 
 
 def test_anchor_expires_after_90_days(tmp_path) -> None:  # type: ignore[no-untyped-def]

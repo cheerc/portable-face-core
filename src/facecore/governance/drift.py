@@ -41,20 +41,42 @@ from facecore.errors import StoreError
 from facecore.storage.sqlite_repo import SQLiteRepository
 
 
+class NonFiniteDriftInputError(ValueError):
+    """Non-finite drift vector or shift rejected at the boundary."""
+
+
+def _require_finite_vector(name: str, vector: np.ndarray) -> np.ndarray:
+    values = np.asarray(vector, dtype=np.float64)
+    if not np.all(np.isfinite(values)):
+        raise NonFiniteDriftInputError(
+            f"{name} contains non-finite components"
+        )
+    return values
+
+
 def _cosine_distance(a: np.ndarray, b: np.ndarray) -> float:
-    denom = float(np.linalg.norm(a) * np.linalg.norm(b))
+    clean_a = _require_finite_vector("reference", a)
+    clean_b = _require_finite_vector("observed", b)
+    denom = float(np.linalg.norm(clean_a) * np.linalg.norm(clean_b))
     if denom == 0.0:
         raise ValueError("zero-norm embedding cannot be scored")
-    return float(1.0 - np.dot(a, b) / denom)
+    shift = float(1.0 - np.dot(clean_a, clean_b) / denom)
+    if not math.isfinite(shift):
+        raise NonFiniteDriftInputError("cosine shift is non-finite")
+    return shift
 
 
 def _centroid(vectors: list[np.ndarray]) -> np.ndarray:
-    stacked = np.stack(vectors)
+    clean = [_require_finite_vector(f"vector[{i}]", v) for i, v in enumerate(vectors)]
+    stacked = np.stack(clean)
     mean = np.mean(stacked, axis=0)
     norm = float(np.linalg.norm(mean))
     if norm == 0.0:
         raise ValueError("degenerate centroid has zero norm")
-    return mean / norm
+    result = mean / norm
+    if not np.all(np.isfinite(result)):
+        raise NonFiniteDriftInputError("centroid is non-finite")
+    return result
 
 
 def _utcnow() -> str:
