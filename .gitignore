@@ -30,6 +30,7 @@
 # Python and tooling
 .agend-managed
 .venv/
+uv.lock
 *.egg-info/
 __pycache__/
 *.py[cod]
