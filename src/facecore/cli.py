@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from facecore import SCHEMA_VERSION
 from facecore.errors import FaceCoreError, StoreError
 
@@ -175,7 +177,6 @@ def cmd_bakeoff(
     model_version = session.model_version()
     target_files = [f for f in loaded.files if f.role == "target_probe"]
     nontarget_files = [f for f in loaded.files if f.role == "non_target_probe"]
-    import numpy as np
 
     from facecore.pipeline.decode import decode_image
 
@@ -392,10 +393,75 @@ def _emit(payload: dict[str, object]) -> None:
     print(json.dumps(payload))
 
 
-def cmd_identity_add(identity_id: str, display_name: str, photo: Path) -> int:
+def _enroll_photo(
+    photo_bytes: bytes,
+    models: Path | None,
+    *,
+    detector: object = None,
+    embedder: object = None,
+    detector_gate: float = 0.9,
+) -> tuple[str, np.ndarray | None, bytes | None, str]:
+    """Run the one-shot enrollment pipeline (§6-4, spec §7).
+
+    With an injected detector/embedder pair (tests, commander harness)
+    the pair is used directly. Otherwise a ``--models`` directory resolves
+    the frozen YuNet + SFace artifacts (bakeoff mode); without either,
+    there is no true pipeline and enrollment is ``invalid_input``.
+    Returns ``(outcome, vector, exemplar_pixels, model_version)`` with
+    ``None`` payloads unless enrolled.
+    """
+    from facecore.eval.session import EvaluationSession
+
+    resolved_detector = detector
+    resolved_embedder = embedder
+    if resolved_detector is None or resolved_embedder is None:
+        if models is None:
+            return ("invalid_input", None, None, "unevaluated")
+        from facecore.contracts.manifest import ModelManifest
+        from facecore.pipeline.embed import Embedder
+        from facecore.pipeline.yunet import YuNetDetector
+
+        resolved_detector = YuNetDetector(
+            models / "face_detection_yunet_2023mar.onnx", YUNET_SHA
+        )
+        manifest = ModelManifest.sface_2021dec_fp32()
+        resolved_embedder = Embedder(
+            manifest, models / "face_recognition_sface_2021dec.onnx"
+        )
+    session = EvaluationSession(
+        detector=resolved_detector,  # type: ignore[arg-type]
+        embedder=resolved_embedder,  # type: ignore[arg-type]
+        detector_gate=detector_gate,
+    )
+    return session.enroll_details(photo_bytes, "enroll")
+
+
+def cmd_identity_add(
+    identity_id: str,
+    display_name: str,
+    photo: Path,
+    models: Path | None,
+    *,
+    detector: object = None,
+    embedder: object = None,
+) -> int:
     try:
         photo_bytes = photo.read_bytes()
     except OSError:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "invalid_input"})
+        return 2
+    try:
+        outcome, vector, exemplar, _version = _enroll_photo(
+            photo_bytes, models, detector=detector, embedder=embedder
+        )
+    except FaceCoreError as exc:
+        _emit({"schema_version": SCHEMA_VERSION, "status": "invalid_input"})
+        return exc.exit_code
+    except OSError:
+        # Missing model artifacts: no pipeline, no partial identity.
+        _emit({"schema_version": SCHEMA_VERSION, "status": "invalid_input"})
+        return 2
+    if outcome != "enrolled" or vector is None or exemplar is None:
         _emit({"schema_version": SCHEMA_VERSION, "status": "invalid_input"})
         return 2
     try:
@@ -405,7 +471,10 @@ def cmd_identity_add(identity_id: str, display_name: str, photo: Path) -> int:
         return exc.exit_code
     try:
         result = manager.add_identity(
-            identity_id, display_name, photo_bytes, photo_bytes
+            identity_id,
+            display_name,
+            vector.tobytes(),
+            exemplar,
         )
     except StoreError as exc:
         _emit(
@@ -883,6 +952,7 @@ def main(argv: list[str] | None = None) -> int:
     ia.add_argument("--id", required=True)
     ia.add_argument("--display-name", required=True)
     ia.add_argument("--photo", required=True, type=Path)
+    ia.add_argument("--models", required=False, default=None, type=Path)
     ish = isub.add_parser("show")
     ish.add_argument("--id", required=True)
     ire = isub.add_parser("re-enroll")
@@ -931,7 +1001,9 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_confirm_learning(args.verdict, args.score)
     if args.command == "identity":
         if args.identity_command == "add":
-            return cmd_identity_add(args.id, args.display_name, args.photo)
+            return cmd_identity_add(
+                args.id, args.display_name, args.photo, args.models
+            )
         if args.identity_command == "show":
             return cmd_identity_show(args.id)
         if args.identity_command == "re-enroll":

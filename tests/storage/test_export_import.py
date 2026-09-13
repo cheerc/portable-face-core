@@ -362,6 +362,25 @@ def test_each_hard_field_refused_individually(tmp_path: Path) -> None:
             )
 
 
+def _seed_cli_identity(tmp_path: Path, db_name: str) -> None:
+    """Seed one identity for subprocess CLI tests (§6-4: add needs a model).
+
+    CLI `identity add` now requires the true one-shot pipeline, so tests
+    targeting export/import seed at the storage level with FileKeyProvider
+    (same on-disk layout the CLI resolves from FACECORE_DB).
+    """
+    from facecore.governance.lifecycle import LifecycleManager
+    from facecore.storage.key_provider import FileKeyProvider
+
+    db = tmp_path / db_name
+    provider = FileKeyProvider(key_dir=db.parent / "keys", db_path=db)
+    repo = SQLiteRepository(str(db), provider)
+    repo.initialize()
+    LifecycleManager(repo).add_identity(
+        "person-001", "Test", b"e" * 64, b"x" * 64
+    )
+
+
 def test_cli_export_import_round_trip_with_exit_codes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -377,8 +396,7 @@ def test_cli_export_import_round_trip_with_exit_codes(
         "FACECORE_DB": str(tmp_path / "cli.db"),
     }
     monkeypatch.delenv("FACECORE_MASTER_KEY", raising=False)
-    photo = tmp_path / "photo.bin"
-    photo.write_bytes(bytes(range(128)))
+    _seed_cli_identity(tmp_path, "cli.db")
     archive = tmp_path / "cli.fce"
 
     def _run(*args: str) -> _subprocess.CompletedProcess[str]:
@@ -390,10 +408,6 @@ def test_cli_export_import_round_trip_with_exit_codes(
             env=env,
         )
 
-    assert _run(
-        "identity", "add", "--id", "person-001",
-        "--display-name", "Test", "--photo", str(photo),
-    ).returncode == 0
     proc = _run(
         "export", "--archive", str(archive),
         "--passphrase", "correct horse 2026!",
@@ -430,8 +444,7 @@ def test_cli_import_wrong_passphrase_exits_4(
         "FACECORE_DB": str(tmp_path / "cli2.db"),
     }
     monkeypatch.delenv("FACECORE_MASTER_KEY", raising=False)
-    photo = tmp_path / "photo.bin"
-    photo.write_bytes(bytes(range(128)))
+    _seed_cli_identity(tmp_path, "cli2.db")
     archive = tmp_path / "cli2.fce"
 
     def _run(*args: str) -> _subprocess.CompletedProcess[str]:
@@ -443,10 +456,6 @@ def test_cli_import_wrong_passphrase_exits_4(
             env=env,
         )
 
-    assert _run(
-        "identity", "add", "--id", "person-001",
-        "--display-name", "Test", "--photo", str(photo),
-    ).returncode == 0
     assert _run(
         "export", "--archive", str(archive),
         "--passphrase", "correct horse 2026!",
