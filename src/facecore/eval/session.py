@@ -59,14 +59,16 @@ class EvaluationSession:
             return self._embedder.model_version
         return "unevaluated"
 
-    def enroll(self, data: bytes, identity_id: str) -> str:
-        """Enroll one identity from image bytes; invalid input changes nothing.
+    def enroll_details(
+        self, data: bytes, identity_id: str
+    ) -> tuple[str, np.ndarray | None, bytes | None, str]:
+        """Run the one-shot pipeline; return (outcome, vector, exemplar, v).
 
-        Undecodable bytes raise InputDecodeError (exit-2 type, never
-        invalid_input — Task 3 contract); the CLI maps it to exit 2.
-        Without detector+embedder, any decodable image is no usable face
-        (Task 5 gate); with them, the full pipeline runs with measured
-        quality gates (frozen v1).
+        ``enrolled`` carries the L2-normalized embedding vector, the
+        bounded face-region exemplar pixels (``AlignedCrop.pixels``, RGB
+        bytes for ``crop.height × crop.width × 3``), and the embedder
+        model version. Anything else carries ``None`` payloads and leaves
+        no session state. Undecodable bytes raise InputDecodeError.
         """
         decoded = decode_image(data)
         faces: list[DetectedFace]
@@ -80,7 +82,7 @@ class EvaluationSession:
             )
         status, _code, face = enforce_single_face(faces)
         if status != "ok" or face is None:
-            return "invalid_input"
+            return ("invalid_input", None, None, self.model_version())
         if self._detector is not None and self._embedder is not None:
             box = face.box
             shorter = int(min(box[2], box[3]))
@@ -100,12 +102,31 @@ class EvaluationSession:
             )
             self.last_quality_codes = list(verdict.reason_codes)
             if verdict.status != "accepted":
-                return "invalid_input"
+                return ("invalid_input", None, None, self.model_version())
             vector, model_version = self._embedder.embed(crop)
-        else:
-            self.last_quality_codes = []
-            vector = np.zeros(4)
-            model_version = "unevaluated"
+            return ("enrolled", vector, crop.pixels, model_version)
+        # No detector/embedder: Phase-1A unevaluated acceptance (zero vector,
+        # no exemplar). enroll() preserves the legacy accepted identity;
+        # persistent CLI paths require a real pipeline and must treat a
+        # None exemplar as invalid_input.
+        self.last_quality_codes = []
+        return ("enrolled", np.zeros(4), None, "unevaluated")
+
+    def enroll(self, data: bytes, identity_id: str) -> str:
+        """Enroll one identity from image bytes; invalid input changes nothing.
+
+        Undecodable bytes raise InputDecodeError (exit-2 type, never
+        invalid_input — Task 3 contract); the CLI maps it to exit 2.
+        Without detector+embedder, any decodable image is no usable face
+        (Task 5 gate); with them, the full pipeline runs with measured
+        quality gates (frozen v1).
+        """
+        outcome, vector, _exemplar, model_version = self.enroll_details(
+            data, identity_id
+        )
+        if outcome != "enrolled":
+            return outcome
+        assert vector is not None  # outcome enrolled always carries a vector
         template = FaceTemplate(
             template_id=f"t-{identity_id}-1",
             identity_id=identity_id,

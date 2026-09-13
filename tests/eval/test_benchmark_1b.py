@@ -110,12 +110,17 @@ def test_cli_fail_closed_tampered_store(tmp_path: Path) -> None:
             env=env,
         )
 
-    photo = tmp_path / "photo.bin"
-    photo.write_bytes(bytes(range(128)))
-    assert _run(
-        "identity", "add", "--id", "person-001",
-        "--display-name", "Test", "--photo", str(photo),
-    ).returncode == 0
+    # §6-4: CLI add requires the true pipeline; seed at storage level.
+    from facecore.governance.lifecycle import LifecycleManager
+    from facecore.storage.key_provider import FileKeyProvider
+    from facecore.storage.sqlite_repo import SQLiteRepository
+
+    provider = FileKeyProvider(key_dir=db_path.parent / "keys", db_path=db_path)
+    repo = SQLiteRepository(str(db_path), provider)
+    repo.initialize()
+    LifecycleManager(repo).add_identity(
+        "person-001", "Test", b"e" * 64, b"x" * 64
+    )
     # Tamper: corrupt the record DEK; export (which unwraps it) must
     # fail closed instead of shipping undecryptable ciphertext.
     master = tmp_path / "tamp" / "keys"

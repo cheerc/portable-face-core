@@ -197,6 +197,8 @@ def test_unreproducible_geometry_requires_re_enrollment(
 
 
 def test_cli_migrate_model_round_trip(tmp_path: Path) -> None:
+    from facecore.storage.key_provider import FileKeyProvider
+
     repo_root = Path(__file__).resolve().parents[2]
     env = {
         **os.environ,
@@ -213,12 +215,14 @@ def test_cli_migrate_model_round_trip(tmp_path: Path) -> None:
             env=env,
         )
 
-    photo = tmp_path / "photo.bin"
-    photo.write_bytes(bytes(range(128)))
-    assert _run(
-        "identity", "add", "--id", "person-001",
-        "--display-name", "Test", "--photo", str(photo),
-    ).returncode == 0
+    # §6-4: CLI add requires the true pipeline; seed at storage level.
+    db = tmp_path / "cli.db"
+    provider = FileKeyProvider(key_dir=db.parent / "keys", db_path=db)
+    repo = SQLiteRepository(str(db), provider)
+    repo.initialize()
+    LifecycleManager(repo).add_identity(
+        "person-001", "Test", b"e" * 64, b"x" * 64
+    )
     proc = _run("migration", "status")
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout.strip().splitlines()[-1])[

@@ -240,19 +240,29 @@ def _run_cli(args: list[str], env: dict[str, str]) -> subprocess.CompletedProces
     )
 
 
+def _seed_identity_in_process(tmp_path: Path) -> None:
+    """Seed one identity at the storage level (§6-4: CLI add needs a model).
+
+    CLI `identity add` now requires the true one-shot pipeline (a models
+    dir or injected detector/embedder), so subprocess CLI tests that
+    target show/delete/re-enroll/rollback seed here instead of via add.
+    """
+    from facecore.storage.key_provider import FileKeyProvider
+
+    db = tmp_path / "facecore.db"
+    provider = FileKeyProvider(key_dir=db.parent / "keys", db_path=db)
+    repo = SQLiteRepository(str(db), provider)
+    repo.initialize()
+    LifecycleManager(repo).add_identity(
+        "person-001", "Test", b"e" * 64, b"x" * 64
+    )
+
+
 def test_cli_add_show_delete_round_trip(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     env = _cli_env(tmp_path, monkeypatch)
-    photo = tmp_path / "photo.bin"
-    photo.write_bytes(bytes(range(256)))
-    proc = _run_cli(
-        ["identity", "add", "--id", "person-001",
-         "--display-name", "Test", "--photo", str(photo)],
-        env,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert json.loads(proc.stdout.strip().splitlines()[-1])["status"] == "ok"
+    _seed_identity_in_process(tmp_path)
     proc = _run_cli(["identity", "show", "--id", "person-001"], env)
     assert proc.returncode == 0, proc.stderr
     snapshot = json.loads(proc.stdout.strip().splitlines()[-1])
@@ -270,27 +280,44 @@ def test_cli_add_show_delete_round_trip(
     )
 
 
-def test_cli_duplicate_add_exits_4(
+def test_cli_add_missing_models_dir_exits_2(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     env = _cli_env(tmp_path, monkeypatch)
+    _seed_identity_in_process(tmp_path)
     photo = tmp_path / "photo.bin"
     photo.write_bytes(bytes(range(128)))
-    assert _run_cli(
+    proc = _run_cli(
+        ["identity", "add", "--id", "person-001",
+         "--display-name", "Other", "--photo", str(photo),
+         "--models", str(tmp_path / "no-such-models")],
+        env,
+    )
+    assert proc.returncode == 2, proc.stderr
+    assert (
+        json.loads(proc.stdout.strip().splitlines()[-1])["status"]
+        == "invalid_input"
+    )
+
+
+def test_cli_add_without_models_exits_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§6-4 contract: model-less add is invalid_input with zero residue."""
+    env = _cli_env(tmp_path, monkeypatch)
+    photo = tmp_path / "photo.bin"
+    photo.write_bytes(bytes(range(128)))
+    proc = _run_cli(
         ["identity", "add", "--id", "person-001",
          "--display-name", "Test", "--photo", str(photo)],
         env,
-    ).returncode == 0
-    proc = _run_cli(
-        ["identity", "add", "--id", "person-001",
-         "--display-name", "Other", "--photo", str(photo)],
-        env,
     )
-    assert proc.returncode == 4, proc.stderr
+    assert proc.returncode == 2, proc.stderr
     assert (
         json.loads(proc.stdout.strip().splitlines()[-1])["status"]
-        == "store_error"
+        == "invalid_input"
     )
+    assert not (tmp_path / "facecore.db").exists()
 
 
 def test_cli_bad_photo_exits_2(
@@ -309,15 +336,9 @@ def test_cli_re_enroll_and_rollback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     env = _cli_env(tmp_path, monkeypatch)
-    photo_a = tmp_path / "a.bin"
-    photo_a.write_bytes(b"a" * 128)
+    _seed_identity_in_process(tmp_path)
     photo_b = tmp_path / "b.bin"
     photo_b.write_bytes(b"b" * 128)
-    assert _run_cli(
-        ["identity", "add", "--id", "person-001",
-         "--display-name", "Test", "--photo", str(photo_a)],
-        env,
-    ).returncode == 0
     proc = _run_cli(
         ["identity", "re-enroll", "--id", "person-001",
          "--photo", str(photo_b)],
