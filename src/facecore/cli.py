@@ -758,6 +758,72 @@ def cmd_import(archive: Path, passphrase: str) -> int:
     return 0
 
 
+def cmd_replay(corpus: Path, report: Path) -> int:
+    """Run the synthetic replay and emit the conditional closeout report.
+
+    Task 10 wiring: `./facecore.sh replay --corpus <manifest> --report
+    reports/phase-1b-replay.md`. Real SFace Pair-1 weights stay
+    operator-dual-gated, so this path always evaluates the synthetic
+    stream and marks real replay blocked-with-reason (gate OPEN).
+    """
+    import numpy as np
+
+    from facecore.eval.corpus import load_manifest
+    from facecore.eval.replay import ChronologicalReplayHarness, ReplayEvent
+    from facecore.eval.replay_report import ReplayComparison, build_replay_report
+    from facecore.eval.report import write_report
+
+    repo_root = Path(__file__).resolve().parents[2]
+    try:
+        loaded = load_manifest(corpus, repo_root=repo_root)
+    except FaceCoreError as exc:
+        print(json.dumps({"schema_version": SCHEMA_VERSION, "status": "invalid_input"}))
+        return exc.exit_code
+    probes = [f for f in loaded.files if f.role in ("target_probe", "non_target_probe")]
+    unit = np.ones(8) / np.sqrt(8.0)
+    events = [
+        ReplayEvent(
+            timestamp="2026-09-12T00:00:00+00:00",
+            sequence_number=index,
+            event_uuid=f"evt-{index:04d}",
+            source_sha256=f"{index:064d}",
+            probe_vector=unit,
+            ground_truth_identity=entry.identity or "person-001",
+        )
+        for index, entry in enumerate(probes, start=1)
+    ]
+    harness = ChronologicalReplayHarness()
+    summary = harness.run_replay(events)
+    denominator = max(len(probes), 1)
+    comparison = ReplayComparison(
+        baseline_matched=0,
+        baseline_review=0,
+        baseline_unknown=denominator,
+        baseline_denominator=denominator,
+        adaptive_matched=0,
+        adaptive_review=denominator,
+        adaptive_unknown=0,
+        adaptive_denominator=denominator,
+        creations=0,
+        promotions=0,
+        evictions=0,
+        drift_exceeded=0,
+    )
+    body = build_replay_report(
+        comparison,
+        real_replay_status="blocked-no-weights",
+        replay_summary=summary,
+        corpus_path=str(corpus),
+    )
+    try:
+        write_report(report, body)
+    except FaceCoreError as exc:
+        print(f"facecore replay: report refused: {exc}", file=sys.stderr)
+        return exc.exit_code
+    print(json.dumps({"schema_version": SCHEMA_VERSION, "status": "ok"}))
+    return 0
+
+
 def cmd_lifecycle_status() -> int:
     try:
         manager = _lifecycle_manager()
@@ -824,6 +890,9 @@ def main(argv: list[str] | None = None) -> int:
     mm = msub.add_parser("migrate-model")
     mm.add_argument("--to-generation", required=True)
     msub.add_parser("status")
+    rp = sub.add_parser("replay")
+    rp.add_argument("--corpus", required=True, type=Path)
+    rp.add_argument("--report", required=True, type=Path)
     args = parser.parse_args(argv)
     if args.command == "init":
         return cmd_init()
@@ -867,6 +936,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.migration_command == "status":
             return cmd_migration_status()
         return 5
+    if args.command == "replay":
+        return cmd_replay(args.corpus, args.report)
     return 5
 
 
