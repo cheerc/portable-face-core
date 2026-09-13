@@ -776,6 +776,9 @@ def cmd_replay(corpus: Path, report: Path) -> int:
     repo_root = Path(__file__).resolve().parents[2]
     try:
         loaded = load_manifest(corpus, repo_root=repo_root)
+    except OSError:
+        print(json.dumps({"schema_version": SCHEMA_VERSION, "status": "invalid_input"}))
+        return 2
     except FaceCoreError as exc:
         print(json.dumps({"schema_version": SCHEMA_VERSION, "status": "invalid_input"}))
         return exc.exit_code

@@ -63,7 +63,13 @@ src/
     │   └── fixtures.py
     ├── contracts/
     │   ├── __init__.py
+    │   ├── candidate.py
+    │   ├── confirmation.py
+    │   ├── crypto.py
+    │   ├── drift.py
+    │   ├── export.py
     │   ├── manifest.py
+    │   ├── migration.py
     │   ├── policy.py
     │   ├── result.py
     │   └── template.py
@@ -71,11 +77,24 @@ src/
     ├── eval/
     │   ├── __init__.py
     │   ├── bakeoff.py
+    │   ├── benchmark_1b.py
     │   ├── capacity.py
     │   ├── corpus.py
+    │   ├── replay.py
+    │   ├── replay_report.py
     │   ├── report.py
     │   ├── session.py
     │   └── sweep.py
+    ├── governance/
+    │   ├── __init__.py
+    │   ├── candidate.py
+    │   ├── corroboration.py
+    │   ├── drift.py
+    │   ├── eviction.py
+    │   ├── lifecycle.py
+    │   ├── migration.py
+    │   ├── promotion.py
+    │   └── utility.py
     ├── pipeline/
     │   ├── __init__.py
     │   ├── align.py
@@ -88,15 +107,24 @@ src/
     ├── policy/
     │   ├── __init__.py
     │   └── identify.py
-    └── repository/
+    ├── repository/
+    │   ├── __init__.py
+    │   ├── base.py
+    │   └── memory.py
+    └── storage/
         ├── __init__.py
-        ├── base.py
-        └── memory.py
+        ├── cipher.py
+        ├── export.py
+        ├── key_provider.py
+        ├── migrations/
+        │   └── v1.sql
+        └── sqlite_repo.py
 tests/
 ├── __init__.py
 ├── cli/
 │   ├── __init__.py
-│   └── test_evaluate.py
+│   ├── test_evaluate.py
+│   └── test_identity_lifecycle.py
 ├── conformance/
 │   ├── __init__.py
 │   ├── expected/
@@ -116,6 +144,7 @@ tests/
 ├── conftest.py
 ├── contracts/
 │   ├── __init__.py
+│   ├── test_governance_contracts.py
 │   ├── test_manifest.py
 │   ├── test_policy.py
 │   ├── test_result.py
@@ -126,11 +155,26 @@ tests/
 ├── eval/
 │   ├── __init__.py
 │   ├── test_bakeoff.py
+│   ├── test_benchmark_1b.py
 │   ├── test_capacity.py
 │   ├── test_corpus.py
+│   ├── test_guard_expected_identity.py
+│   ├── test_per_probe_detail.py
+│   ├── test_replay.py
+│   ├── test_replay_report.py
 │   ├── test_report.py
 │   ├── test_session.py
-│   └── test_sweep.py
+│   ├── test_sweep.py
+│   ├── test_temporal_leakage.py
+│   └── test_verify_grade_detail.py
+├── governance/
+│   ├── __init__.py
+│   ├── test_candidate_pipeline.py
+│   ├── test_corroboration.py
+│   ├── test_drift_policy.py
+│   ├── test_model_migration.py
+│   ├── test_promotion.py
+│   └── test_utility_eviction.py
 ├── pipeline/
 │   ├── __init__.py
 │   ├── test_align.py
@@ -142,9 +186,17 @@ tests/
 ├── policy/
 │   ├── __init__.py
 │   └── test_identify.py
-└── repository/
+├── repository/
+│   ├── __init__.py
+│   └── test_memory.py
+└── storage/
     ├── __init__.py
-    └── test_memory.py
+    ├── test_cipher.py
+    ├── test_crypto_erasure.py
+    ├── test_export_import.py
+    ├── test_key_provider.py
+    ├── test_sqlite_repo.py
+    └── test_stress.py
 ```
 
 Start with `CLAUDE.md`. Phase 1A is implemented and verified on macOS arm64. The model candidate bake-off evaluation was performed against the initial P1 consented gallery; the model selection gate remains OPEN pending operator review. Next milestone is operator model selection and the Phase-1B governance go/no-go decision.

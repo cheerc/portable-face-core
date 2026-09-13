@@ -149,6 +149,32 @@ def test_cli_replay_writes_gated_report(tmp_path: Path) -> None:
     check_gate_open(body)
 
 
+def test_cli_replay_missing_corpus_exits_2(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    env = {**os.environ, "PYTHONPATH": str(repo_root / "src")}
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "facecore.cli",
+            "replay",
+            "--corpus",
+            str(tmp_path / "no-such-manifest.json"),
+            "--report",
+            str(tmp_path / "r.md"),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=repo_root,
+        env=env,
+    )
+    assert proc.returncode == 2, proc.stderr
+    assert json.loads(proc.stdout.strip().splitlines()[-1])["status"] == (
+        "invalid_input"
+    )
+    assert not (tmp_path / "r.md").exists()
+
+
 def test_synthetic_end_to_end_replay(tmp_path: Path) -> None:
     from facecore.eval.replay import ChronologicalReplayHarness, ReplayEvent
 
