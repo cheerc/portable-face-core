@@ -32,8 +32,20 @@ def _unit(seed: int, dim: int = 8) -> np.ndarray:
     return vector / np.linalg.norm(vector)
 
 
+TRUE_PROBE_FILENAMES: list[str] = [
+    f"enroll-23-probe-{n:02d}.jpeg" for n in range(1, 8)
+] + [f"enroll-23-probe-{n:02d}.png" for n in range(8, 14)]
+
+
 def _probe_filenames() -> list[str]:
-    return [f"enroll-23-probe-{n:02d}.png" for n in range(1, 14)]
+    from facecore.eval.real_replay import PROBE_FILENAMES
+
+    return list(PROBE_FILENAMES)
+
+
+def test_probe_filenames_match_true_corpus_extensions() -> None:
+    """Carry-forward fix: probes 01-07 are .jpeg, 08-13 are .png."""
+    assert _probe_filenames() == TRUE_PROBE_FILENAMES
 
 
 def _gallery(seed_base: int = 0) -> dict[str, np.ndarray]:

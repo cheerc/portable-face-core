@@ -63,8 +63,11 @@ from facecore.storage.key_provider import InMemoryKeyProvider
 from facecore.storage.sqlite_repo import SQLiteRepository
 
 #: Closed chronology-B filename set: the 13 person-23 probes in time order.
+#: True corpus extensions per commander gate ruling (carry-forward item 1):
+#: probes 01-07 are .jpeg, 08-13 are .png.
 PROBE_FILENAMES: tuple[str, ...] = tuple(
-    f"enroll-23-probe-{n:02d}.png" for n in range(1, 14)
+    [f"enroll-23-probe-{n:02d}.jpeg" for n in range(1, 8)]
+    + [f"enroll-23-probe-{n:02d}.png" for n in range(8, 14)]
 )
 
 #: Margin firewall shared with the §6-2 SSOT run.
