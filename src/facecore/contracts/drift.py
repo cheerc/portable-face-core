@@ -35,6 +35,14 @@ class DriftMetrics:
             raise ValueError(
                 f"centroid_shift must be >= 0, got {self.centroid_shift}"
             )
+        if self.reference_kind not in (
+            DriftReferenceKind.ANCHOR.value,
+            DriftReferenceKind.ROLLING.value,
+        ):
+            raise ValueError(
+                "reference_kind must be 'anchor' or 'rolling', "
+                f"got {self.reference_kind!r}"
+            )
 
 
 @dataclass(frozen=True)

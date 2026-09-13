@@ -40,6 +40,15 @@ class EvaluationSession:
     def gallery(self) -> dict[str, np.ndarray]:
         return dict(self._vectors)
 
+    def snapshot_gallery(self) -> dict[str, np.ndarray]:
+        """Deep copy of the live gallery for replay template-state digests.
+
+        Task 9 wiring: lets the replay harness compare session template
+        state across A/B runs in one shared shape. Read-only; session
+        state is never mutated through the snapshot.
+        """
+        return {key: value.copy() for key, value in self._vectors.items()}
+
     def model_version(self) -> str:
         if self._embedder is not None:
             return self._embedder.model_version
