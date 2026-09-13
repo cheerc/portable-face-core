@@ -828,6 +828,25 @@ class SQLiteRepository:
         ).fetchone()
         return str(row[0]) if row else None
 
+    def get_current_generation(self) -> str:
+        """Store-wide current model generation (pre-migration default G1)."""
+        con = self._require()
+        row = con.execute(
+            "SELECT value FROM store_meta WHERE key = 'current_generation'"
+        ).fetchone()
+        return str(row[0]) if row else "G1"
+
+    def set_current_generation(self, generation_id: str) -> None:
+        """Persist the store-wide generation marker (migration-owned)."""
+        if not generation_id:
+            raise ValueError("generation_id must be non-empty")
+        con = self._require()
+        con.execute(
+            "INSERT INTO store_meta (key, value) VALUES ('current_generation', ?)"
+            " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (generation_id,),
+        )
+
     def tombstone_key_ids(self, identity_id: str) -> list[str]:
         con = self._require()
         rows = con.execute(

@@ -80,6 +80,11 @@ class ModelMigrationManager:
             migrated, retired = self._migrate_candidates(
                 con, target_generation
             )
+            # Persist the new current generation atomically with the row
+            # updates: post-migration writes must stamp the new generation
+            # (carry-forward 4). A crash before commit leaves the old
+            # marker, matching the rolled-back rows.
+            self._repo.set_current_generation(target_generation)
             con.commit()
         except Exception:
             con.rollback()

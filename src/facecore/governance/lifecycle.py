@@ -48,7 +48,10 @@ class LifecycleResult:
 
 
 def _new_template(
-    identity_id: str, revision: int, supersedes: str | None
+    identity_id: str,
+    revision: int,
+    supersedes: str | None,
+    generation_id: str,
 ) -> FaceTemplate:
     template_id = f"t-{uuid.uuid4().hex[:8]}"
     return FaceTemplate(
@@ -56,7 +59,7 @@ def _new_template(
         identity_id=identity_id,
         model_version=_MODEL_VERSION,
         embedding_dim=_EMBEDDING_DIM,
-        generation_id="G1",
+        generation_id=generation_id,
         revision=TemplateRevision(
             revision=revision, template_id=template_id, supersedes=supersedes
         ),
@@ -74,9 +77,20 @@ class LifecycleManager:
         self,
         repository: SQLiteRepository,
         policy: GovernancePolicy | None = None,
+        generation_id: str | None = None,
     ) -> None:
         self._repo = repository
         self._policy = policy or GovernancePolicy.provisional_v1()
+        if generation_id is not None and not generation_id:
+            raise ValueError("generation_id must be non-empty")
+        self._generation_id = generation_id
+
+    @property
+    def generation_id(self) -> str:
+        """Generation stamped on new writes (store marker unless overridden)."""
+        if self._generation_id is not None:
+            return self._generation_id
+        return self._repo.get_current_generation()
 
     @property
     def repository(self) -> SQLiteRepository:
@@ -91,7 +105,9 @@ class LifecycleManager:
         exemplar: bytes,
     ) -> LifecycleResult:
         """Create-only enrollment storing the initial exemplar."""
-        template = _new_template(identity_id, 1, None)
+        template = _new_template(
+            identity_id, 1, None, self.generation_id
+        )
         try:
             self._repo.enroll_identity(
                 identity_id, display_name, template, embedding, exemplar
@@ -122,7 +138,9 @@ class LifecycleManager:
         ]
         if not active_ids:
             raise StoreError(f"no active template for: {identity_id}")
-        template = _new_template(identity_id, 1, active_ids[0])
+        template = _new_template(
+            identity_id, 1, active_ids[0], self.generation_id
+        )
         new_tid = self._repo.append_revision(
             identity_id, template, embedding, exemplar
         )
