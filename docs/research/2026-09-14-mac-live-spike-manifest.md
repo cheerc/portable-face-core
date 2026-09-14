@@ -374,3 +374,48 @@ The plan specifies 5 explicit STOP conditions for Spike S2:
 5. **Timeout**: Refuted; spike executed well within the 1-day timebox.
 
 **Result**: All S2 requirements satisfied with reproducible empirical evidence. Ready for Reviewer r0 verification.
+
+---
+
+## 11. D1 Architectural Freeze (2026-09-14, docs-only)
+
+Author: `codex-126ca8` (design author writes; impl carries, no rewrite).
+Task: `t-20260914103255568927-76424-29`. Governing: `d-20260914095558310095-3`.
+Base: main `8ef2ad5` (S1 PR #41 + S2/N2-b PR #42 merged; reviewer VERIFIED both, typed receipts).
+
+This section freezes S1/S2 recommendations into the **single binding selection** for T1–T8.
+Any deviation requires a manifest amendment through normal review/merge before the affected task starts.
+D1 is docs-only: it authorizes no T-task implementation, no camera run, no participant recording.
+
+### 11.1 Frozen selections (T1–T8 must use these)
+
+1. **Capture adapter**: `opencv-python-headless` (v5.0.0+, Apache-2.0) primary, via `cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)`; `pyobjc-framework-AVFoundation` (MIT) as native fallback for fine-grained control, Continuity switching, or explicit permission dialogs. BGR→RGB `rgb = bgr[:, :, ::-1]` lossless contract mandatory; preview mirror isolated from inference pixels (§5.3).
+2. **Desktop UI**: `pyside6` (LGPLv3, dynamic linking) primary. Minimal alternative: native Cocoa window via `pyobjc-framework-Cocoa` only if wheel size is constrained. `pyqt6` rejected (GPLv3). `tkinter` blocked as baseline (missing `_tkinter` in Homebrew Python 3.14). UI runs on main thread; capture/inference off main thread.
+3. **Threading & sampling**: `LatestSlot1Queue` mandatory in T4; no unbounded queues. Controller deadline enforced with `time.monotonic()`. Research profile frozen at timeout 5.0s / 200ms interval / max 25 frames / queue 1 (plan §3); changing these numbers is a profile version bump through design review, never a silent constant edit.
+4. **Recorder crypto**: reuse vetted `AeadCipher` (AES-256-GCM) unmodified. Research keys live in an isolated research key directory via a dedicated `ResearchKeyProvider` — never the production `~/.facecore/keys` namespace, never an identity DEK. Dual keys per session: `rk_{session_id}` (record, 30-day TTL) / `ik_{session_id}` (image, 7-day TTL). Wire format and canonical research AAD exactly as §8.3–§8.4 (prefix `facecore:research:v1:`, schema/session/kind/frame bound). Tombstone-first deletion (§8.8) with re-entrancy. Clock rollback: flag and refuse to extend `expires_at` (§8.7). Research bundle layout exactly as §8.3; no plaintext temp; no backup/sync/export in v1.
+5. **N2-b redaction confirmed in place**: device names/UUIDs in §4.3/§5.2 read `<redacted-…>`; no operator personal name or full UUID remains in repo. Evidence preserved as device-class + enumeration-success claims.
+
+### 11.2 Notes disposition (S1/S2 r0 follow-ups, all closed here)
+
+- **S1 N1 (timing-tolerant determinism)**: "100% deterministic" reads as hardware-independent reproducibility (camera-free mode), not byte-identical outputs. Millisecond figures are single-host observations, never gate thresholds. Watchpoint: CI must not assert on ms values; a `single-host` footnote may be added editorially.
+- **S1 N3 (experiments CI gate)**: frozen as option (b) — `experiments/` stays text-described current state, outside the CI ruff/mypy gate (consistent with plan S1). T4 must rewrite production capture code, not copy probe code. No new CI job for experiments in this freeze.
+- **S2 N1 (`--mode` flag)**: frozen — keep `--mode` as a documentary single-value flag (`synthetic` for recorder probe; `camera-free`/`hardware` for capture probe). Adding a mode value is a manifest amendment, not an impl-side default.
+- **S2 N2 (negative shape-only)**: D1/T5 cite the boundary rule (§8.10), not recorder-exists claims. T5 must add the one-line docstring clarification that the probe verified boundary rules, with recorder construction deferred to T5.
+- **S2 N3 (TTL virtual clock)**: virtual-clock TTL testing stands as correct method. T5 must retain injected clock **and** add real-filesystem acceptance; reviewer to block T5 otherwise.
+
+### 11.3 Explicitly unfrozen (owner + method, not placeholders)
+
+- **Continuity displacement bound**: S1 measured pump/queue behavior on non-face targets but produced no face-displacement ratio. **No numeric bound is frozen.** T3 owns proposing the bound with a named test (`tests/live/test_session.py` continuity case) and measured evidence; reviewer gates the value before T3 merges. Until then, any person-switch clears the support window and requires restart (design §3.4).
+- **ORT per-frame budget on target hardware**: single inference 16.29ms observed on one host (§5.7); 5fps end-to-end (capture+detect+embed+policy) headroom is unproven. T4 owns the measured budget test; exceeding it is a profile/scope decision, never a silent threshold relaxation.
+- **GUI final choice between pyside6 primary vs Cocoa minimal**: S1 recommends pyside6; T7 may only switch to the minimal alternative with measured wheel-size evidence through a manifest amendment.
+
+### 11.4 D1 gate checklist (T1 may start only when all hold)
+
+- [x] S1 + S2 reviewer VERIFIED (typed receipts), CI green, merged (PR #41 @ `1734bb5`, PR #42 @ `8ef2ad5`), tree equality verified.
+- [x] Selections §11.1 frozen; notes §11.2 closed; open items §11.3 have owners.
+- [x] No T-task code exists; `experiments/` probes untouched by this freeze.
+- [ ] Operator implementation go for T1–T8 (separate, after this manifest merges). **This freeze alone authorizes nothing to run.**
+
+### 11.5 Docs-check
+
+`docs-check: arch=N adr=N area=Y — update docs/research/2026-09-14-mac-live-spike-manifest.md, docs/PROJECT-STATE.md`. No new ADR (ADR 0008 direction unchanged); no architecture change (selections were spike recommendations, now frozen).

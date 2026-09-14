@@ -45,11 +45,11 @@ Baseline/adaptive 有不同規則；2/13 對 0/13 不是純粹同 operating poin
 
 研究第一版固定 one-shot gallery，以 session 為評估單位；保存採明確同意、加密、TTL／刪除，詳細契約只在研究設計中維護。未註冊者、本人認錯身份、timeout 和品質失敗都要計數；先蒐集小批 session，再封存 holdout 比較，無須先手工整理大圖庫。
 
-後續獨立研究：受控離線學習 replay（包含 unknown 與錯認事件）、更代表性圖庫、模型對比、現場效能與處理失敗。待驗項：R4 缺檔 seq/rank 對位、各臂 refused 計數／雜檔處理、ORT teardown crash（不可類比 timing flake）、runtime／資料保存機制。這些是已知限制／後續範圍，不隱含派工授權。
+後續獨立研究：受控離線學習 replay（包含 unknown 與錯認事件）、更代表性圖庫、模型對比、現場效能與處理失敗。待驗項：R4 缺檔 seq/rank 對位、各臂 refused 計數／雜檔處理、ORT teardown crash（不可類比 timing flake）、continuity 位移界線初值、ORT 端到端 5fps 餘量、pyside6／Cocoa 最終抉擇。這些是已知限制／後續範圍，不隱含派工授權。
 
 ## Next Session
 
 1. 讀本檔、母規格、ADR 0008、Mac 研究設計；查 git／task／inbox 活源。
-2. S1 capture spike（PR #41 `1734bb5`）已 merge。S2 AEAD recorder spike 與 S1 N2-b 去識別化已完成（`experiments/mac_live_recorder_probe.py`、manifest S2 段與 tests）。下一步為 D1 選型結論凍結（docs-only，產品實作前 blocking）。
+2. S1 capture spike（PR #41 `1734bb5`）、S2 AEAD recorder spike＋S1 N2-b 去識別化（PR #42 `8ef2ad5`）已 merge。D1 選型凍結見 spike manifest §11（docs-only，作者 codex 親寫，lead 走 PR；T1–T8 另需 operator 實作 go）。
 3. Plan 規範：先 S1/S2 有界 spike、D1 選型凍結，再開工 T1–T8。未完成 D1 凍結前不寫產品程式。相機錄製需個別參與者同意；文件批准不構成同意。
 4. 不重開已完成的 P0；不把歷史骨架的缺權重、未跑真圖或本機舊 main 當現況；不重新派 M1/M2/M3/M5 已完成任務。
