@@ -20,6 +20,17 @@ if TYPE_CHECKING:
     from facecore.storage.sqlite_repo import SQLiteRepository
 from facecore.eval.bakeoff import TEN_CONDITIONS_NOTE, run_candidate
 from facecore.eval.corpus import CorpusFile, load_manifest
+from facecore.eval.nontarget_fa import (
+    DEFAULT_NONTARGET_DIR,
+    REAL_MATCH_GRID,
+    ProbeTargetScore,
+    load_real_nontarget_vectors,
+    real_fa_rows,
+    real_fa_sweep_table,
+    render_real_fa_section,
+    render_real_fa_skipped,
+    stable_target_scores,
+)
 from facecore.eval.report import write_report
 from facecore.eval.session import EvaluationSession
 from facecore.eval.sweep import format_cell, sweep_thresholds
@@ -176,6 +187,7 @@ def cmd_bakeoff(
     detector_gate: float = 0.9,
     pair: str = "pair1",
     detector_input_size: int | None = None,
+    nontarget_corpus: Path | None = None,
 ) -> int:
     from facecore.contracts.policy import PolicyProfile
     from facecore.pipeline.embed import Embedder
@@ -275,11 +287,15 @@ def cmd_bakeoff(
             return "review"
         return "unknown"
 
+    from facecore.policy.identify import cosine_score
+
     target_scores: list[float] = []
     target_margins: list[float | None] = []
+    target_arm: list[ProbeTargetScore] = []
     target_vectors: list[np.ndarray | None] = [
         probe_vector(f.path) for f in target_files
     ]
+    has_person23 = "person-23" in gallery
     usable_targets = [v for v in target_vectors if v is not None]
     probe_refused += len(target_vectors) - len(usable_targets)
     nontarget_scores: list[float] = []
@@ -309,6 +325,15 @@ def cmd_bakeoff(
         score = outcome.top_score if outcome.top_score is not None else -1.0
         target_scores.append(score)
         target_margins.append(outcome.margin)
+        if has_person23:
+            top_is_23 = outcome.top_identity == "person-23"
+            target_arm.append(
+                ProbeTargetScore(
+                    person23_score=cosine_score(vector, gallery["person-23"]),
+                    top_is_person23=top_is_23,
+                    margin=outcome.margin if top_is_23 else None,
+                )
+            )
         status = band_of(score, outcome.margin)
         per_identity.setdefault(entry.identity, []).append(status)
         per_probe.append(
@@ -374,6 +399,49 @@ def cmd_bakeoff(
     ]
     for identity in sorted(per_identity):
         lines.append(f"- {identity}: {', '.join(per_identity[identity])}")
+    # R1/R2: real non-target 30 FA (M1). Same decode -> detect -> align ->
+    # embed protocol as the bakeoff probes above; real photos/embeddings
+    # never enter Git (product hard boundary). Missing corpus -> fail-clear
+    # skip; synthetic C1/C2/C3 arms elsewhere are unaffected.
+    nt_dir = nontarget_corpus if nontarget_corpus is not None else DEFAULT_NONTARGET_DIR
+    nt_outcome = load_real_nontarget_vectors(nt_dir)
+    if nt_outcome.skipped:
+        # Concrete dir goes to stderr only; the report stays path-free
+        # per the redaction guard (Task 10).
+        print(f"bakeoff: {nt_outcome.reason} [{nt_dir}]", file=sys.stderr)
+        lines += ["", render_real_fa_skipped(nt_outcome.reason).rstrip("\n"), ""]
+    else:
+        nt_vectors: list[np.ndarray] = []
+        nt_names: list[str] = []
+        nt_refused = 0
+        for path in nt_outcome.files:
+            vector = probe_vector(str(path))
+            if vector is None:
+                nt_refused += 1
+                continue
+            nt_vectors.append(vector)
+            nt_names.append(path.name)
+        real_rows = real_fa_rows(
+            gallery, nt_vectors, session._repository, model_version, names=nt_names
+        )
+        real_sweep = real_fa_sweep_table(
+            target=stable_target_scores(target_arm),
+            real_rows=real_rows,
+            match_grid=REAL_MATCH_GRID,
+        )
+        lines += [
+            "",
+            "real non-target corpus: repo-external SSOT dir "
+            f"(nontarget-01..30.jpg; refused/no single face: {nt_refused})",
+            "",
+            render_real_fa_section(
+                rows=real_rows,
+                sweep_rows=real_sweep,
+                usable=len(real_rows),
+                total=len(nt_outcome.files),
+            ).rstrip("\n"),
+            "",
+        ]
     lines += ["", "## Confusion rows (one per enrolled identity, aggregated)", ""]
     for identity in sorted(
         {f.identity for f in loaded.files if f.role == "enrollment"}
@@ -1044,6 +1112,9 @@ def main(argv: list[str] | None = None) -> int:
     bo.add_argument(
         "--detector-input-size", required=False, type=int, default=None,
     )
+    bo.add_argument(
+        "--nontarget-corpus", required=False, type=Path, default=None,
+    )
     sub.add_parser("conformance")
     cl = sub.add_parser("confirm-learning")
     cl.add_argument("--verdict", required=True)
@@ -1102,6 +1173,7 @@ def main(argv: list[str] | None = None) -> int:
             args.detector_gate,
             args.pair,
             args.detector_input_size,
+            args.nontarget_corpus,
         )
     if args.command == "conformance":
         return cmd_conformance()
