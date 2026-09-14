@@ -1,6 +1,6 @@
 # Portable Face Core Design
 
-- Status: approved by the operator on 2026-09-10; the next artifact is the Phase-1A implementation plan
+- Status: Phase-1 baseline approved on 2026-09-10; current implementation/evidence status is maintained in `../PROJECT-STATE.md`. Phase-2A research amendment: ADR 0008 and `2026-09-14-mac-live-identification-research-design.md` (docs review; implementation requires a separate plan and go).
 - Date: 2026-09-09
 - Scope: macOS reference implementation for a future offline Android/iOS open-set face-identification core
 
@@ -391,11 +391,14 @@ Phase-1A tests cover schema/reason codes, zero/one/multiple-face behavior, prepr
 
 ## 15. Future Roadmap
 
+Phase 2 is not synonymous with mobile implementation. [ADR 0008](../decisions/0008-mac-live-identification-research.md) adds a bounded **Phase 2A Mac live-identification research prototype** before the mobile prototypes below. Its [design](2026-09-14-mac-live-identification-research-design.md) is the source of truth for camera/session experiments and the separate consented research-recorder exception to full-frame retention. Phase-1 scope and learning-confirmation restrictions remain unchanged. Multi-frame similarity may be researched without an authentication claim; it does not establish liveness or anti-replay. The representative-gallery gate in §8 remains mandatory for deployment/target-capacity claims, and the real-face carrier/cross-runtime gates in §§6/14 remain mandatory before mobile evaluation. These gates do not require a large hand-curated corpus before bounded Mac research may begin. Research design approval alone authorizes neither implementation nor participant recording.
+
+
 1. **Android tablet prototype:** camera capture, offline 1:N identification, secure storage, and real 500-person device benchmarks.
 2. **iOS tablet prototype:** same ONNX artifacts, schemas, and golden vectors with iOS performance evidence.
 3. **Authentication layer:** trusted capture, liveness, anti-replay, multi-frame aggregation, and fallback methods before `authenticated` can exist.
 4. **Product integration:** identity/policy synchronization, offline event queues, APIs, attendance rules, authorization, audit, correction, and retention.
-5. **Pre-capture video adapter:** a later mobile capture feature may save one still plus up to five seconds immediately preceding the shutter action. Video recognition or template updates remain out of scope until separately researched.
+5. **Pre-capture video adapter:** a later mobile capture feature may save one still plus up to five seconds immediately preceding the shutter action. Bounded Mac video-identification research is scoped by ADR 0008; mobile video recognition and video-driven production template updates remain outside that research authorization.
 6. **Multi-face photo search:** an independent branch of work only after single-face identification is accurate and stable.
 7. **Real-face cross-platform fixtures:** before Phase 2 evaluation, choose a reproducible carrier with explicit consent, retention, deletion, and redistribution rules; do not silently turn Phase-1 samples into permanent fixtures.
 
@@ -414,6 +417,6 @@ The initial enrollment template remains governed by the same bounded utility and
 
 ## 17. Design Completion Gate
 
-The operator approved this consolidated written specification on 2026-09-10. The next artifact is a detailed Phase-1A implementation plan. Phase 1A must not begin until that plan is reviewed. It must choose model-candidate discovery tasks, the test-corpus inventory, in-memory repository shape, non-biometric report paths, accuracy and latency evidence, and verification commands without implementing Phase-1B governance.
+The operator approved the Phase-1 baseline on 2026-09-10. Its implementation plans and P0 authorization are recorded in PROJECT-STATE; these historical prerequisites must not be reinterpreted as an unfulfilled present-day implementation gate. Current model acceptance and research limitations remain explicit there. Each new research phase requires its own reviewed design, implementation plan and operator go; documentation approval alone is not execution authority.
 
 Only after the Phase-1A evidence receives an operator go/no-go decision may a separate Phase-1B implementation plan define persistent local data paths, encryption and `KeyProvider` mechanics, confirmation and revision workflows, long-horizon drift indicators and response, rollback/deletion behavior, and its own verification commands.

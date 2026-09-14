@@ -1,5 +1,7 @@
 # Phase 1B Implementation Plan
 
+> 現況註記（2026-09-14）：本檔保留原實作工作令與驗收要求，不是新 session 待派清單。P0 已由 `d-20260912041106780391-34` 放行；PR-C–G 全波段授權為 `d-20260912090115587658-42`，工程已 merge。原凍結 SHA 與 pending premise 是當時 dispatch 的歷史前提，不適用後續新階段。真圖 replay 已由 PR #38 補入；其零 creation 並不證明真實 promotion 或長期改善。最新已完成／未驗項與下一步見 [PROJECT-STATE](../PROJECT-STATE.md)。Task 11 所稱「close ADR 0006」指研究收尾審閱，不是重新要求 P0，也不自動關 selection gate 或授權 mobile。新 Mac 研究依 [ADR 0008](../decisions/0008-mac-live-identification-research.md) 另寫 plan、另取實作 go。
+
 **Source of truth:** `docs/specs/2026-09-09-portable-face-core-design.md` §§9, 10, 11, 12, 14, approved by the operator on 2026-09-10 and merged to `main` at `f2a68a83c9548d61396ddf3cafa80e9c3d951c11`.
 
 **Governing decisions:**

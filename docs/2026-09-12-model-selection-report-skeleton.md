@@ -1,5 +1,7 @@
 # Model selection report — no-weights skeleton (deliverable, gates unweakened)
 
+> 歷史證據快照：本文的 no-weights、unrun、pending 與數字描述原始小 gallery，不是最新派工入口。最新 M1–M6 交付與限制見 [PROJECT-STATE](PROJECT-STATE.md)；不得由本文重派已完成的 Pair2 或真圖 replay，也不得把舊水位當目前 production 預設。
+
 - Date: **2026-09-12**. Status: **SKELETON** — deliverable without weights; upgrades to full version if weights are lawfully obtained (per d-20260911174907590232-15).
 - Source of truth: skeleton d-20260911174907590232-15, evidence list d-20260911171231615360-11, selection plan v2 d-20260911165640512131-7, task t-20260911174759975945-63720-9.
 - Scope boundary: **docs-only** — no weight download (STOP clause holds), frozen 0.90 detector gate untouched, photos never in repo, Pair 2 comparison + rename-after rerun deferred to weights dual-gate (not in this PR).

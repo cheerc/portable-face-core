@@ -1,6 +1,6 @@
 # Agent Instructions
 
-This repository is a research-and-design initialization for a portable face-recognition core. It contains no working face-recognition implementation yet.
+本 repo 已有 Phase-1A 靜態辨識與 Phase-1B 治理實作。現況、未驗限制與下一步授權以 `docs/PROJECT-STATE.md` 為入口；不要把歷史 plan 的待開工敘述當成目前狀態。Mac 動態研究設計見 `docs/specs/2026-09-14-mac-live-identification-research-design.md` 與 ADR 0008；文件合併不代表實作或資料蒐集獲授權。
 
 ## Start Here
 

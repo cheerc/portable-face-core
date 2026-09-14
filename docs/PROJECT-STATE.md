@@ -1,123 +1,55 @@
 # Project State
 
-Last updated: 2026-09-12 Asia/Taipei
+更新：2026-09-14。證據基準：PR #38 merge `ff923a3a1bc9fdc329a306e87146279cc0290f69`。啟動 session 時仍須查 live main／board；本檔不是 daemon 工作快照。
 
-## Current Status
+## 現在在哪裡
 
-**Operator selection: A** (decision d-20260911181002229319-23) — SFace Pair 1 (YuNet 2023mar + SFace 2021dec fp32) stays **provisional**; frozen 0.90 detector gate untouched; occlusion handled via capture-condition guidance + Phase-1B confirmation-gated shadow bank. The **selection gate stays OPEN** (provisional): it closes only after Phase-1B chronological replay validates the selected point against the frozen Phase-1A baseline.
+- Phase-1A 靜態 pipeline／CLI／Layer-A conformance 已交付。
+- Phase-1B plan 的 PR-C–G（Task 1–11）及後續接線／治理修正已 merge；不是「尚未取得開工 go」。P0 已於 decision `d-20260912041106780391-34` 放行，實作全波段授權為 `d-20260912090115587658-42`。
+- 真圖 replay 已在 M3／PR #38 接入報表並重跑；不是「只有 synthetic／等待權重」。但真實 candidate creation/promotion 成效及長期 drift 尚未證明，不能宣稱治理已獲全面真實情境驗證。
+- SFace Pair 1 維持 provisional，**selection gate OPEN**。M1–M6 工作交付不等於選型條件全部滿足，更不等於安全認證或正式部署核准。
+- Operator 已同意先整理 **Phase 2A Mac 動態辨識研究原型** 設計與更新文件；[正式研究設計](specs/2026-09-14-mac-live-identification-research-design.md)／[ADR 0008](decisions/0008-mac-live-identification-research.md) 為新研究邊界。這次僅 docs-only；相機程式實作、錄製與 mobile 尚未授權。
 
-The Phase-1B implementation plan has been drafted (`docs/plans/2026-09-12-phase-1b-implementation-plan.md`) per arbitration `d-20260911184146033747-27` and is pending operator review. Implementation remains locked pending the ADR 0006 go/no-go decision.
+## 功能與 evidence 的界線
 
-## Current Status
+已有：decode/detect/align/embed/compare、單幀 policy、加密 SQLite／KeyProvider、identity lifecycle、確認候選與 corroboration/promotion/utility/eviction、rollback/delete/export/import、generation migration、drift、replay、capacity 工具。可用 CLI 語法以 `facecore.sh --help` 與目前 parser 為準；母規格的示意 `identify --confirm-learning` 不等於所有使用情境已有端到端產品 UI。
 
-Portable Face Core has **completed Phase-1A implementation**. All Phase-1A code, contracts, in-memory repository, pipeline components (decoding, orientation, quality gating, single-face detection, deterministic alignment, ONNX embedding), identification policy, evaluation session, reference CLI (`facecore.sh init`, `evaluate`, `bakeoff`, `conformance`), synthetic 500-vector capacity benchmark, and deterministic Layer-A conformance check have been delivered, verified test-first across all tasks, and validated under strict typing (mypy), linting (ruff), and dual-runner CI (macos-14 and ubuntu-latest).
+尚未有：相機 adapter、即時 session 聚合器、引導 UI、研究 session recorder；既有 replay harness 不替代它們。既有人工照片驗收及 synthetic 功能測試，不保證換造型、跨日學習、500 人辨識或相機防翻拍效果。
 
-The Phase-1A model candidate bake-off evaluation was executed against the consented gallery (P1 corpus, 5 enrolled identities, 13 target probes, 4 non-target probes; 辨識組 renamed to `enroll-23-probe-NN`, carry-over per skeleton d-20260911174907590232-15) using the SFace 2021dec fp32 embedder and YuNet detector:
-- **Enrollment**: 5 of 5 identities successfully enrolled with single accepted photos (`enrollment refused: 0`).
-- **Target probe behavior**: 5 of 13 target probes yielded zero single faces at the frozen 0.90 detector confidence gate and were honestly refused per design (`target probes usable: 8/13`).
-- **Non-target false acceptance**: Scored 4 of 4 probes; 0 false acceptances at the provisional 0.85/0.10 anchor (`FA 0/4`; anchor not selected, counts-only, N<30 never rates).
-- **Model selection gate**: With 8 usable target probes, statistical margins and cross-identity confusion remain undecidable. In strict conformance with spec §14 and Task 10 non-extrapolation rules, the **model selection gate remains OPEN (provisional, operator selection A recorded above)**; no artificial operating point was forced.
+## 現有選型證據（分母與限制不得省略）
 
-## Upgrade Tracking (gaps carried from the no-weights skeleton)
+| 工作 | 交付來源 | 可支持的結論／限制 |
+| --- | --- | --- |
+| M4 add 接線 | PR #30；re-enroll PR #32 | 單張真 pipeline 寫入／re-enroll 接線已驗，不是動態掃臉 |
+| M6 premise | `d-20260913084623309226-0` | 既有權重與檔名序 B 獲授權；非 EXIF 證實的跨日時間線 |
+| M2 Pair 2 | PR #35 | manifest/generation/同協議 bakeoff 已交付；不能由此推論新 30 non-target 的 Pair2 結果已完成 |
+| M1 real FA | PR #36 | Pair1、detector 0.8、23 gallery、30 non-target；match 0.45/margin 0.10 時觀察 FA 4/30 |
+| M5 二維表 | PR #37 | 7×4 cells；margin 0.15、match 0.30–0.55 時 target 3/13、FA 0/30；match 0.60 時 target 2/13。僅此資料集觀察，不是新產品預設 |
+| M3 real replay | PR #38 | 13 個 person-23 探針；baseline matched/review/unknown=2/10/1，adaptive=0/13/0；creation/corroboration/promotion=0，rejections=13 |
 
-- Pair 2 comparison (2026may detector + int8bq embedder) unrun — no weights on disk.
-- Rename-after rerun (manifest-path confirmation) pending weights dual-gate (S1 clear + operator decision, d-20260911171253541089-12).
-- Per-probe `predicted` for 7 usable probes pending (only probe-11 measured: enroll-02, margin 0.0687).
+M3 的 6 個 correct-supervision 事件最高 score 約 0.6785，均低於 candidate update 0.88；其餘 7 個為 not_me。這證明本串流沒有建立 candidate，**不證明學習增益或長期不污染**。M1 的 30 non-target 未包含在這 13 事件中；不能把 4/30 FA 說成那 7 個 not_me 的子集。Replay 的 retirements/rollbacks 固定 close-out 段須與真實輸入觸發分開，不計為現場生命週期成功證據。
 
-Phase 1A persists no biometric database, face crops, or embeddings; inference executes entirely offline. Phase-1B governance mechanics remain untouched.
+Baseline/adaptive 有不同規則；2/13 對 0/13 不是純粹同 operating point 的模型 A/B 勝負。檔名序只為授權的 replay 排序，不代表時間或年齡趨勢。零觀察誤認不代表零真實風險；小 gallery 不外推 500 人。
 
-## Product Direction
+原 no-weights [報告骨架](2026-09-12-model-selection-report-skeleton.md) 是歷史證據，不是最新 pending 清單。真實照片、權重、embeddings、DB、可識別逐筆 logs 均留 repo 外；跨 session 應確認外部 artifact 存活與版本，不把 `/tmp` 當永久證據庫。
 
-- Final target: Android/iOS tablet performs offline open-set 1:N face identification for up to 500 enrolled identities.
-- Registration: one student, one capture action, one accepted still photo.
-- Continuity: periodic trusted re-enrollment is not guaranteed. Bounded adaptive templates must handle long-term appearance change; manual re-enrollment is optional recovery.
-- Recognition: the user does not claim an identity first; the system returns a known identity only when the result is sufficiently strong, otherwise `review` or `unknown`.
-- Learning: Phase 1B requires an explicit `correct` confirmation before an observation can enter the shadow-candidate flow. `not_me`, cancellation, and expiry never learn. Self-confirmation is supervision, not authentication.
-- Integration: future business systems consume a versioned result contract or API adapter; business attendance rules are not part of Face Core.
-- Photo-library management is handled separately through a PhotoPrism evaluation.
+## 階段與授權，避免重新走錯 gate
 
-## Approved Phase-One Boundary
+1. **1B P0 開工 gate：已完成。** ADR 0006 是 accepted 的分階段架構決策，不是現在等著第一次批准 1B 的待辦。
+2. **1B 工程／研究 closeout：** 已交付功能與 M3 真圖負向／閾值 evidence；保留未測的真實 promotion、long-horizon drift 和現場失敗恢復限制。不能僅因 M3 跑完便自動宣布全部 spec acceptance 達成。
+3. **選型／operating point：OPEN。** 未決部署準確性不禁止經獨立設計的受控 Mac 研究；研究不降低原有模型 integrity/license/provenance gate。
+4. **Phase 2A 研究：設計文件階段。** 下一步是書面設計 review/merge、implementation plan、operator 實作 go。錄製需個別參與者同意；文件批准不構成同意。
+5. **Android/iOS／認證／產品整合：另行決策。** 代表性 gallery 重校準在部署／目標容量宣稱前完成；跨 runtime 與真人 carrier 在 mobile 評估前完成。相機引導、多幀穩定不等於 liveness。
 
-Phase 1 is split into two sequential milestones:
+## 後續範圍
 
-- **Phase 1A — accuracy first:** macOS static-image CLI and in-memory evaluation harness; one-shot enrollment, exact offline ONNX comparison, versioned results, deterministic conformance fixtures, two-to-three-model bake-off, and 500-vector capacity/latency evidence. It writes no persistent biometric database.
-- **Phase 1B — governance:** persistent identity CLI, confirmation-gated learning, chronological adaptive replay, bounded template revisions, encrypted storage, rollback, re-enrollment, deletion, and export/import.
-- Phase 1B starts only after the operator reviews Phase-1A evidence and records a go/no-go decision.
-- Phase 1A freezes result, policy, template, revision, and repository contracts in a revision-shaped form so Phase 1B does not require destructive redesign.
-- Static images and exactly one usable face per enrollment/probe remain the boundary for both milestones; no video, camera, server, REST API, Android, or iOS implementation.
-- Phase 1A enrolls three to five explicitly consented identities, one registration photo each, plus consented unknown/negative probes. Every input still contains exactly one usable face.
-- Results remain `matched`, `review`, `unknown`, or `invalid_input`; never `authenticated`.
+研究第一版固定 one-shot gallery，以 session 為評估單位；保存採明確同意、加密、TTL／刪除，詳細契約只在研究設計中維護。未註冊者、本人認錯身份、timeout 和品質失敗都要計數；先蒐集小批 session，再封存 holdout 比較，無須先手工整理大圖庫。
 
-## Approved Security and Privacy Rules
-
-- All inference works offline on device; network availability never changes thresholds or results.
-- Full background images are not stored by Face Core.
-- A limited set of face crops and embeddings may be retained encrypted.
-- Normal match events contain no image.
-- Keys remain separate from the database through a `KeyProvider` interface.
-- Model/store integrity failures fail closed.
-- Real photos, crops, embeddings, databases, attendance records, and secrets never enter Git.
-- `matched` is image similarity, not secure authentication. A future authentication layer requires trusted camera capture, liveness, anti-replay, and multi-frame policy.
-
-## Approved Portability Direction
-
-- ONNX-first model artifacts and ONNX Runtime on macOS.
-- ONNX Runtime Mobile is the intended Android/iOS runtime.
-- Preprocessing, postprocessing, normalization, template encoding, and JSON schemas are explicit and versioned.
-- Golden vectors must detect cross-runtime numerical or image-processing drift.
-- Phase 1A commits only deterministic, non-biometric Layer-A fixtures and proves macOS self-conformance. A reproducible, privacy-reviewed real-face carrier and Android/iOS cross-runtime conformance are Phase-2 entry work.
-
-## Review Conclusions
-
-- The initial enrollment template remains replaceable under the same bounded utility policy as later templates; it is not retained indefinitely as a hidden anchor.
-- Normal operation cannot depend on a yearly trusted refresh; useful later observations must accumulate through the guarded, bounded template lifecycle.
-- With no guaranteed trusted refresh, no permanent anchor, and only correlated similarity evidence, long-horizon cumulative drift remains an open risk. The Phase-1B implementation plan must propose measurable indicators and a bounded response; Phase 1B must not claim the risk is eliminated.
-- Similarity-based promotion gates all depend on the same embedder. They reduce risk but do not independently prove identity or eliminate poisoning.
-- Phase 1B excludes unattended automatic learning. Explicit confirmation gates candidate creation but does not bypass independent corroboration, quality, exclusion, or promotion rules.
-- Synthetic 500-identity data is valid for comparison capacity and latency only, not for false-acceptance or ranking claims.
-- Phase 1B must expose operator recovery for candidate rejection, identity rollback, and identity deletion.
-- Functional correctness does not accept a recognition model. The bake-off must provide a threshold-sweep operating table for an operator go/no-go decision.
-- The three-to-five-identity gallery provides real runner-up margins and cross-identity confusion evidence, but cannot justify 500-person false-acceptance or accuracy claims.
-- Real-face golden fixtures, consent/retention workflow fields, calibrated multi-identity exclusion, and production authentication remain later-phase work unless an operator decision explicitly expands scope.
-
-## Resolved Review Decisions
-
-No review decision remains open. The accepted choices are: no guaranteed periodic trusted refresh, confirmation-gated learning, separate Phase-1A/1B milestones, and a three-to-five-identity consented Phase-1A gallery. The operator approved the consolidated written specification containing these choices on 2026-09-10.
-
-## Future Phases
-
-1. Android tablet prototype with camera, offline identification, 500-person device benchmarks, and secure storage.
-2. iOS tablet prototype using the same models, schemas, and golden vectors.
-3. Authentication layer with liveness, replay protection, multi-frame decisions, and fallback.
-4. Product/API integration for identity sync, offline event queues, attendance rules, audit, and authorization.
-5. Optional mobile capture adapter that saves a still image plus up to five seconds immediately preceding the shutter action. Video-based recognition remains a separate research decision.
-6. Separate multi-face-in-one-photo search work after single-face identification is stable.
-
-## Phase-1B Status (Conditional Closeout, PR-G)
-
-Phase-1B Governance Engine delivered (provisional): confirmation-gated
-shadow candidates, corroboration/promotion/utility/eviction, identity
-lifecycle CLI, encrypted export/import with key re-homing, generation
-migration, drift policy, chronological replay harness, replay report,
-and capacity benchmark — all on synthetic streams only.
-
-Real SFace Pair-1 weights are released and the 13-probe filename time
-order is ratified (chronology B); the governed replay path
-(creation→corroboration→promotion→rejection→retirement→rollback) is
-GREEN on synthetic streams (`src/facecore/eval/real_replay.py`, §6-3).
-Commander true-photo rerun in /tmp/face-accept is pending: the model
-selection gate remains **OPEN**, and this closeout stays `partial
-governance validation`, NOT Phase-1B completion. Completion requires
-the commander rerun plus an operator review requesting ADR 0006
-closure.
+後續獨立研究：受控離線學習 replay（包含 unknown 與錯認事件）、更代表性圖庫、模型對比、現場效能與處理失敗。待驗項：R4 缺檔 seq/rank 對位、各臂 refused 計數／雜檔處理、ORT teardown crash（不可類比 timing flake）、runtime／資料保存機制。這些是已知限制／後續範圍，不隱含派工授權。
 
 ## Next Session
 
-Phase 1A is closed. Phase-1B implementation plan (`docs/plans/2026-09-12-phase-1b-implementation-plan.md`) is drafted and pending operator review. Next session entry:
-
-1. Read `CLAUDE.md`, `docs/plans/2026-09-12-phase-1b-implementation-plan.md`, and this file.
-2. Selection evidence: no-weights skeleton `docs/2026-09-12-model-selection-report-skeleton.md` (gate OPEN, provisional).
-3. Operator decisions required:
-   - Record the Phase-1B governance go/no-go decision (ADR 0006).
-   - Resolve Operator-level premises (weights dual gate, P1 corpus chronology, exemplar margin, retention TTL).
-4. Do not begin Phase-1B implementation (persistent identity CLI, confirmation-gated learning, chronological adaptive replay, encrypted storage, rollback, deletion) until the operator records the Phase-1B go/no-go decision.
+1. 讀本檔、母規格、ADR 0008、Mac 研究設計；查 git／task／inbox 活源。
+2. 若設計 PR 尚未 merge，先處理文件 reviewer 意見；不得直接實作。
+3. 設計通過後依研究設計 §10 寫 implementation plan，再取得明確實作 go；按使用者指定，plan/spec 由 codex 作者修改成檔案，再交 lead 正常 review／PR／merge。
+4. 不重開已完成的 P0；不把歷史骨架的缺權重、未跑真圖或本機舊 main 當現況；不重新派 M1/M2/M3/M5 已完成任務。
