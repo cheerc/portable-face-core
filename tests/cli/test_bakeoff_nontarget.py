@@ -144,3 +144,31 @@ def test_r3_grid_wires_through_cli_report() -> None:
         g for g in grid if g.match_threshold == 0.30 and g.margin_threshold == 0.10
     )
     assert low.real_fa == 1
+
+
+def test_bakeoff_accepts_real_probes_flag(tmp_path) -> None:
+    """M3 wiring pin: --real-probes parses; missing dir -> R4 skipped."""
+    import argparse
+    from pathlib import Path
+
+    from facecore.eval.real_replay import (
+        DEFAULT_REAL_PROBE_DIR,
+        load_real_replay_probes,
+    )
+
+    parser = argparse.ArgumentParser(prog="facecore")
+    sub = parser.add_subparsers(dest="command", required=True)
+    bo = sub.add_parser("bakeoff")
+    bo.add_argument("--corpus", required=True, type=Path)
+    bo.add_argument("--models", required=True, type=Path)
+    bo.add_argument("--out", required=True, type=Path)
+    bo.add_argument("--real-probes", required=False, type=Path, default=None)
+    parsed = parser.parse_args(
+        ["bakeoff", "--corpus", "c", "--models", "m", "--out", "o"]
+    )
+    assert parsed.real_probes is None
+    resolved = parsed.real_probes or DEFAULT_REAL_PROBE_DIR
+    assert "face_sample" in str(resolved)
+    outcome = load_real_replay_probes(tmp_path / "nonexistent-rp")
+    assert outcome.skipped is True
+    assert "R4" not in outcome.reason  # reason is path-free prose

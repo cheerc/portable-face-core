@@ -191,6 +191,7 @@ def cmd_bakeoff(
     pair: str = "pair1",
     detector_input_size: int | None = None,
     nontarget_corpus: Path | None = None,
+    real_probes: Path | None = None,
 ) -> int:
     from facecore.contracts.policy import PolicyProfile
     from facecore.pipeline.embed import Embedder
@@ -455,6 +456,65 @@ def cmd_bakeoff(
             render_real_fa_grid_section(grid_rows=real_grid).rstrip("\n"),
             "",
         ]
+    # R4: real-data governed replay (M3). Same gallery + same probe
+    # vectors as above, fed to GovernedReplayHarness in chronology-B
+    # filename order. Real photos/embeddings never enter Git. Missing
+    # probes, missing person-23, or unknown filenames -> fail-clear skip;
+    # synthetic replay (cmd_replay closeout) untouched.
+    from facecore.contracts.policy import GovernancePolicy
+    from facecore.eval.real_replay import (
+        DEFAULT_REAL_PROBE_DIR,
+        GovernedReplayHarness,
+        RealReplayEvent,
+        load_real_replay_probes,
+        render_real_replay_section,
+    )
+
+    rp_dir = real_probes if real_probes is not None else DEFAULT_REAL_PROBE_DIR
+    rp_outcome = load_real_replay_probes(rp_dir)
+    rp_reason = ""
+    if rp_outcome.skipped:
+        rp_reason = rp_outcome.reason
+    elif "person-23" not in gallery:
+        rp_reason = "real replay skipped (gallery has no person-23)"
+    else:
+        try:
+            rp_events: list[RealReplayEvent] = []
+            for seq, path in enumerate(rp_outcome.files, start=1):
+                vector = probe_vector(str(path))
+                if vector is None:
+                    probe_refused += 1
+                    continue
+                rp_events.append(
+                    RealReplayEvent(
+                        filename=path.name,
+                        sequence_number=seq,
+                        probe_vector=vector,
+                        ground_truth_identity="person-23",
+                    )
+                )
+            rp_summary = GovernedReplayHarness().run(rp_events, gallery)
+            rp_threshold = (
+                GovernancePolicy.provisional_v1().candidate_update_threshold
+            )
+            lines += [
+                "",
+                "real replay probes: repo-external SSOT dir "
+                f"(usable {len(rp_events)}/{len(rp_outcome.files)})",
+                "",
+                render_real_replay_section(
+                    rp_summary, update_threshold=rp_threshold
+                ).rstrip("\n"),
+                "",
+            ]
+        except ValueError as exc:
+            rp_reason = f"real replay skipped ({exc})"
+    if rp_reason:
+        # Concrete dir goes to stderr only; the report stays path-free
+        # per the redaction guard (Task 10).
+        print(f"bakeoff: {rp_reason} [{rp_dir}]", file=sys.stderr)
+        lines += ["", "## R4. real-data governed replay: skipped "
+                "(corpus unavailable or not applicable; N exact)", ""]
     lines += ["", "## Confusion rows (one per enrolled identity, aggregated)", ""]
     for identity in sorted(
         {f.identity for f in loaded.files if f.role == "enrollment"}
@@ -1128,6 +1188,9 @@ def main(argv: list[str] | None = None) -> int:
     bo.add_argument(
         "--nontarget-corpus", required=False, type=Path, default=None,
     )
+    bo.add_argument(
+        "--real-probes", required=False, type=Path, default=None,
+    )
     sub.add_parser("conformance")
     cl = sub.add_parser("confirm-learning")
     cl.add_argument("--verdict", required=True)
@@ -1187,6 +1250,7 @@ def main(argv: list[str] | None = None) -> int:
             args.pair,
             args.detector_input_size,
             args.nontarget_corpus,
+            args.real_probes,
         )
     if args.command == "conformance":
         return cmd_conformance()

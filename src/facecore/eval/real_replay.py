@@ -34,6 +34,7 @@ import hashlib
 import inspect
 import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -72,6 +73,109 @@ PROBE_FILENAMES: tuple[str, ...] = tuple(
 
 #: Margin firewall shared with the §6-2 SSOT run.
 MARGIN_FIREWALL = 0.1
+
+#: Default real-probe location: repo-external, never committed to Git.
+#: Chronology-B order is filename order (EXIF timeless, confirmed).
+DEFAULT_REAL_PROBE_DIR = Path("/Users/cheerc/Downloads/face_sample/辨識組")
+
+
+@dataclass(frozen=True)
+class ProbeLoadOutcome:
+    files: list[Path]
+    skipped: bool
+    reason: str
+
+
+def load_real_replay_probes(
+    probe_dir: Path = DEFAULT_REAL_PROBE_DIR,
+) -> ProbeLoadOutcome:
+    """Locate real probe files in filename (time) order; fail-clear skip.
+
+    Only locates files — embedding stays with the caller/commander
+    protocol so this layer never couples to model artifacts. The reason
+    carries no absolute path (report redaction guard, Task 10); the CLI
+    logs the concrete dir to stderr separately.
+    """
+    if not probe_dir.is_dir():
+        return ProbeLoadOutcome(
+            files=[],
+            skipped=True,
+            reason="real replay probe dir missing (repo-external SSOT dir; skipped)",
+        )
+    files = sorted(
+        [p for p in probe_dir.iterdir() if p.is_file()],
+        key=lambda p: p.name,
+    )
+    if not files:
+        return ProbeLoadOutcome(
+            files=[],
+            skipped=True,
+            reason="real replay probe dir empty (skipped)",
+        )
+    return ProbeLoadOutcome(files=files, skipped=False, reason="")
+
+
+def render_real_replay_section(
+    summary: GovernedReplaySummary,
+    *,
+    update_threshold: float,
+) -> str:
+    """Render the real-data governed-replay section (M3, counts only).
+
+    Includes the gate-evidence block: every ``correct``-supervision event
+    with its score against the creation threshold, so an all-zero
+    creation count reads as an honest threshold verdict (the gate ran and
+    blocked things), never as a harness that failed to start.
+    """
+    lines = [
+        "## R4. real-data governed replay (chronology-B filename order; "
+        "N exact, counts only)",
+        "",
+        "| outcome | baseline (1A frozen) | adaptive (1B bank) |",
+        "| --- | --- | --- |",
+        f"| matched | {summary.baseline_matched}/{summary.baseline_denominator} "
+        f"| {summary.adaptive_matched}/{summary.adaptive_denominator} |",
+        f"| review | {summary.baseline_review}/{summary.baseline_denominator} "
+        f"| {summary.adaptive_review}/{summary.adaptive_denominator} |",
+        f"| unknown | {summary.baseline_unknown}/{summary.baseline_denominator} "
+        f"| {summary.adaptive_unknown}/{summary.adaptive_denominator} |",
+        "",
+        "## Governance counters (real stream)",
+        "",
+        f"- candidate creations: {summary.creations}",
+        f"- corroborations: {summary.corroborations}",
+        f"- promotions: {summary.promotions}",
+        f"- rejections: {summary.rejections}",
+        f"- retirements: {summary.retirements}",
+        f"- rollbacks: {summary.rollbacks}",
+        "",
+        "## Gate evidence (creation threshold "
+        f">= {update_threshold:.2f}; blocked correct events)",
+        "",
+    ]
+    decisions = dict(summary.decisions)
+    scores = dict(summary.scores)
+    blocked = [
+        (seq, decisions[seq], scores[seq])
+        for seq in sorted(summary.processed_sequence)
+        if decisions.get(seq, "").endswith(":correct")
+    ]
+    if not blocked:
+        lines.append("- no correct-supervision events (all probes not_me).")
+    else:
+        for seq, decision, score in blocked:
+            top = decision.split(":")[1] if ":" in decision else "?"
+            verdict = (
+                "blocked (below threshold)"
+                if score < update_threshold
+                else "above threshold"
+            )
+            lines.append(
+                f"- seq={seq}: top-1 {top} score={score:.4f} "
+                f"vs threshold {update_threshold:.2f} -> {verdict}"
+            )
+    lines.append("")
+    return "\n".join(lines)
 
 #: Frozen-arm match/review waterlines for the 1A baseline bands.
 BASELINE_MATCH = 0.60

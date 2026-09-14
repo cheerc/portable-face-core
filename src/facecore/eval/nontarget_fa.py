@@ -51,7 +51,7 @@ REAL_NONTARGET_COUNT = 30
 #: SSOT F2 sweep grid (fa_real.log verbatim).
 REAL_MATCH_GRID = [0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60]
 
-#: M5 margin dimension: representative档 covering the 0.10 firewall line.
+#: M5 margin dimension: representative檔 covering the 0.10 firewall line.
 REAL_MARGIN_GRID = [0.05, 0.10, 0.15, 0.20]
 
 #: Default corpus location: repo-external, never committed to Git.
