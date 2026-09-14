@@ -61,6 +61,30 @@ uv run --extra dev python -m facecore.research.cli delete \
 
 - Tombstone-first, idempotent (`{"deleted": true}` even on re-run).
 
+## 3b. True camera device (Task A; operator-gated, no human testing here)
+
+```bash
+uv run --extra dev python -m facecore.research.cli live \
+  --profile <external-profile-json> \
+  --store <external-research-dir> \
+  --device <id> \
+  --session <session-id> \
+  --record-consent \
+  --image-consent \
+  --models <external-model-dir> \
+  --corpus <external-enrollment-manifest>
+```
+
+- Non-fake `--device` requires external `--models` + `--corpus`
+  (missing either fails clear, exit 2). Pair-1 frozen wiring (YuNet
+  2023mar + SFace fp32, SHA-gated); gallery built once from the
+  external manifest with digest frozen; every frame scored through the
+  true T2 `score_frame` (BGR→RGB lossless, mirror preview-only) into
+  the T3 engine and T5 encrypted chain. JSON line adds
+  `generation` + `gallery_digest`.
+- No real-camera run is performed by CI or by this task; human smoke
+  still needs separate participant consent (blocked until then).
+
 ## 4. S1 probe re-run (camera-free evidence, T4 acceptance carried)
 
 ```bash
