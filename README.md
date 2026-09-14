@@ -128,6 +128,8 @@ src/
     │   └── memory.py
     ├── research/
     │   ├── __init__.py
+    │   ├── keys.py
+    │   ├── recorder.py
     │   └── records.py
     └── storage/
         ├── __init__.py
@@ -218,6 +220,8 @@ tests/
 │   └── test_memory.py
 ├── research/
 │   ├── __init__.py
+│   ├── test_recorder.py
+│   ├── test_recorder_recovery.py
 │   └── test_records.py
 └── storage/
     ├── __init__.py
