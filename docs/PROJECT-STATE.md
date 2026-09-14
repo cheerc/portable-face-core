@@ -50,6 +50,6 @@ Baseline/adaptive 有不同規則；2/13 對 0/13 不是純粹同 operating poin
 ## Next Session
 
 1. 讀本檔、母規格、ADR 0008、Mac 研究設計；查 git／task／inbox 活源。
-2. 若設計 PR 尚未 merge，先處理文件 reviewer 意見；不得直接實作。
-3. 設計通過後依研究設計 §10 寫 implementation plan，再取得明確實作 go；按使用者指定，plan/spec 由 codex 作者修改成檔案，再交 lead 正常 review／PR／merge。
+2. 設計 PR #39 已 merge（`fa16843e12b90fd8bfe7ded29146a0af43af7fae`），operator 已批准撰寫 [Mac implementation plan](plans/2026-09-14-mac-live-identification-implementation-plan.md)。本次仍為 docs-only，先完成 plan 正常審查／merge。
+3. Plan merge 後需取得明確實作 go；先 D0 文件 gate、S1/S2 有界 spike、D1 選型凍結，再 T1–T8。相機／加密保存可行性尚未實測，不能跳過。按使用者指定，plan/spec 由 codex 作者修改成檔案，再交 lead 正常 review／PR／merge。
 4. 不重開已完成的 P0；不把歷史骨架的缺權重、未跑真圖或本機舊 main 當現況；不重新派 M1/M2/M3/M5 已完成任務。
