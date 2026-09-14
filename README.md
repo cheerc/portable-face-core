@@ -51,7 +51,8 @@ docs/
 │   ├── 2026-09-12-face-recognition-strength-spike.md
 │   ├── 2026-09-12-storage-crypto-manifest.md
 │   ├── 2026-09-12-weights-corpus-readiness.md
-│   └── 2026-09-14-mac-live-spike-manifest.md
+│   ├── 2026-09-14-mac-live-spike-manifest.md
+│   └── mac-live-runbook.md
 └── specs/
     ├── 2026-09-09-portable-face-core-design.md
     └── 2026-09-14-mac-live-identification-research-design.md
@@ -110,6 +111,7 @@ src/
     │   ├── capture.py
     │   ├── contracts.py
     │   ├── controller.py
+    │   ├── desktop.py
     │   ├── frame_pipeline.py
     │   └── session.py
     ├── pipeline/
@@ -130,6 +132,7 @@ src/
     │   └── memory.py
     ├── research/
     │   ├── __init__.py
+    │   ├── cli.py
     │   ├── keys.py
     │   ├── recorder.py
     │   ├── records.py
@@ -208,6 +211,7 @@ tests/
 │   ├── test_capture.py
 │   ├── test_contracts.py
 │   ├── test_controller_integration.py
+│   ├── test_desktop.py
 │   ├── test_frame_pipeline.py
 │   └── test_session.py
 ├── pipeline/
@@ -226,6 +230,7 @@ tests/
 │   └── test_memory.py
 ├── research/
 │   ├── __init__.py
+│   ├── test_cli.py
 │   ├── test_recorder.py
 │   ├── test_recorder_recovery.py
 │   ├── test_records.py

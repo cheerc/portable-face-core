@@ -16,6 +16,7 @@ from facecore.live.capture import (
     OpenCVCapture,
 )
 from facecore.live.controller import LiveController
+from facecore.live.desktop import DesktopSession
 from facecore.live.frame_pipeline import (
     ResearchGallery,
     ScoringContext,
@@ -31,6 +32,7 @@ from facecore.live.session import (
 __all__ = [
     "CaptureSource",
     "DEFAULT_CONTINUITY_MAX_CENTER_DELTA_RATIO",
+    "DesktopSession",
     "FakeCapture",
     "FrameObservation",
     "FramePacket",

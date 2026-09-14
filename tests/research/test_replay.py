@@ -34,6 +34,7 @@ from facecore.research.recorder import ResearchRecorder
 from facecore.research.replay import (
     ReplayRefusal,
     ReplayResult,
+    describe_replay,
     replay_session,
 )
 
@@ -287,6 +288,8 @@ def test_record_without_frames_analyzes_stored_scores_only(
         SessionStatus.timeout,
         SessionStatus.invalid_input,
     )
+    # T6 N2: frameless bundles formally carry replayed=False.
+    assert describe_replay(replayed)["replayed"] is False
 
 
 # ---------------------------------------------------------------------------

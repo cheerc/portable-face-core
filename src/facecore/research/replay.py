@@ -196,11 +196,17 @@ def replay_session(
 
 
 def describe_replay(result: ReplayResult) -> dict[str, Any]:
-    """Machine-readable replay summary (no labels attached)."""
+    """Machine-readable replay summary (no labels attached).
+
+    T6 N2: ``replayed`` is True only when frames were actually re-scored
+    (window full/early-stop); frameless bundles (window none) analyze
+    stored scores only and carry ``replayed: False``.
+    """
     return {
         "session_id": result.session_id,
         "status": result.result.status.value,
         "window": result.window,
+        "replayed": result.window != "none",
         "frames_replayed": result.frames_replayed,
         "profile_version": result.profile_version,
         "elapsed_ms": result.result.elapsed_ms,
