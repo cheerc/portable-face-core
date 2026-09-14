@@ -22,11 +22,14 @@ from facecore.eval.bakeoff import TEN_CONDITIONS_NOTE, run_candidate
 from facecore.eval.corpus import CorpusFile, load_manifest
 from facecore.eval.nontarget_fa import (
     DEFAULT_NONTARGET_DIR,
+    REAL_MARGIN_GRID,
     REAL_MATCH_GRID,
     ProbeTargetScore,
     load_real_nontarget_vectors,
+    real_fa_grid_table,
     real_fa_rows,
     real_fa_sweep_table,
+    render_real_fa_grid_section,
     render_real_fa_section,
     render_real_fa_skipped,
     stable_target_scores,
@@ -410,6 +413,8 @@ def cmd_bakeoff(
         # per the redaction guard (Task 10).
         print(f"bakeoff: {nt_outcome.reason} [{nt_dir}]", file=sys.stderr)
         lines += ["", render_real_fa_skipped(nt_outcome.reason).rstrip("\n"), ""]
+        lines += ["", "## R3. real-data match x margin operating table: skipped "
+                "(corpus unavailable; N exact)", ""]
     else:
         nt_vectors: list[np.ndarray] = []
         nt_names: list[str] = []
@@ -429,6 +434,12 @@ def cmd_bakeoff(
             real_rows=real_rows,
             match_grid=REAL_MATCH_GRID,
         )
+        real_grid = real_fa_grid_table(
+            target=stable_target_scores(target_arm),
+            real_rows=real_rows,
+            match_grid=REAL_MATCH_GRID,
+            margin_grid=REAL_MARGIN_GRID,
+        )
         lines += [
             "",
             "real non-target corpus: repo-external SSOT dir "
@@ -440,6 +451,8 @@ def cmd_bakeoff(
                 usable=len(real_rows),
                 total=len(nt_outcome.files),
             ).rstrip("\n"),
+            "",
+            render_real_fa_grid_section(grid_rows=real_grid).rstrip("\n"),
             "",
         ]
     lines += ["", "## Confusion rows (one per enrolled identity, aggregated)", ""]

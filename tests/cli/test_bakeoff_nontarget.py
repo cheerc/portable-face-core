@@ -95,3 +95,52 @@ def test_bakeoff_parser_accepts_nontarget_corpus_flag(
     outcome = load_real_nontarget_vectors(Path("/tmp/nonexistent-nt-xyz"))
     assert outcome.skipped is True
     assert "N=30" in render_real_fa_skipped(outcome.reason)
+
+
+def test_r3_grid_wires_through_cli_report() -> None:
+    """M5 wiring pin: R3 grid section renders from evaluated rows."""
+    from facecore.eval.fa_matrix import TargetProbeScore
+    from facecore.eval.nontarget_fa import (
+        REAL_MARGIN_GRID,
+        REAL_MATCH_GRID,
+        RealFaRow,
+        real_fa_grid_table,
+        render_real_fa_grid_section,
+    )
+
+    target = [
+        TargetProbeScore(
+            probe_index=i,
+            person23_score=0.65,
+            top_is_person23=True,
+            margin=0.15,
+        )
+        for i in range(3)
+    ]
+    real = [
+        RealFaRow(
+            probe_name="nontarget-09.jpg",
+            top_identity="person-11",
+            top_score=0.7346,
+            margin=0.1439,
+            is_false_accept=True,
+        )
+    ]
+    grid = real_fa_grid_table(
+        target=target,
+        real_rows=real,
+        match_grid=REAL_MATCH_GRID,
+        margin_grid=REAL_MARGIN_GRID,
+    )
+    section = render_real_fa_grid_section(grid_rows=grid)
+    assert "## R3." in section
+    assert "match>=0.30 margin>=0.05" in section
+    # Margin 0.15 cell still admits the 0.1439-margin row? No: 0.1439 < 0.15.
+    high = next(
+        g for g in grid if g.match_threshold == 0.30 and g.margin_threshold == 0.15
+    )
+    assert high.real_fa == 0
+    low = next(
+        g for g in grid if g.match_threshold == 0.30 and g.margin_threshold == 0.10
+    )
+    assert low.real_fa == 1

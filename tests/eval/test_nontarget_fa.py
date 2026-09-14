@@ -304,3 +304,119 @@ def test_skip_reason_carries_no_absolute_path() -> None:
         r"(?:/Users/|/tmp/|/private/)\\S+",
         render_real_fa_skipped(outcome.reason),
     )
+
+
+def test_real_fa_grid_margin_010_matches_r2_sweep() -> None:
+    """M5 regression guard: grid row at margin 0.10 == R2 sweep, all 7."""
+    from facecore.eval.fa_matrix import TargetProbeScore
+    from facecore.eval.nontarget_fa import (
+        REAL_MARGIN_GRID,
+        REAL_MATCH_GRID,
+        real_fa_grid_table,
+        real_fa_sweep_table,
+    )
+
+    assert 0.10 in REAL_MARGIN_GRID
+    rows = _rows_for([*REAL_SSOT, RISK_SSOT])
+    members = _members()
+    extra: list[RealFaRow] = []
+    for i in range(25):
+        runner_up = next(m for m in members if m != "person-01")
+        gal, probe = _synthetic_gallery(members, "person-01", runner_up, 0.30, 0.29)
+        repo_e = _harness(members, len(probe))
+        extra.extend(
+            real_fa_rows(gal, [probe], repo_e, "m", names=[f"quiet-{i:02d}.jpg"])
+        )
+    full = rows + extra
+    target = [
+        TargetProbeScore(
+            probe_index=i,
+            person23_score=0.65 if i < 2 else (0.57 if i == 2 else 0.20),
+            top_is_person23=i < 3,
+            margin=0.15 if i < 3 else None,
+        )
+        for i in range(13)
+    ]
+    sweep = real_fa_sweep_table(
+        target=target, real_rows=full, match_grid=REAL_MATCH_GRID
+    )
+    grid = real_fa_grid_table(
+        target=target,
+        real_rows=full,
+        match_grid=REAL_MATCH_GRID,
+        margin_grid=REAL_MARGIN_GRID,
+    )
+    assert len(grid) == len(REAL_MATCH_GRID) * len(REAL_MARGIN_GRID)
+    guard = [g for g in grid if g.margin_threshold == 0.10]
+    assert len(guard) == len(SWEEP_SSOT)
+    for grow, (mt, hits, fa) in zip(guard, SWEEP_SSOT, strict=True):
+        assert grow.match_threshold == mt
+        assert (grow.target_hits, grow.real_fa) == (hits, fa), mt
+        srow = next(s for s in sweep if s.match_threshold == mt)
+        assert (grow.target_hits, grow.real_fa) == (
+            srow.target_hits,
+            srow.real_fa,
+        ), mt
+        assert grow.target_denom == 13
+        assert grow.real_denom == 30
+
+
+def test_real_fa_grid_none_margin_never_counts() -> None:
+    """Boundary: None margin on either arm never counts at any grid cell."""
+    from facecore.eval.fa_matrix import TargetProbeScore
+    from facecore.eval.nontarget_fa import (
+        REAL_MARGIN_GRID,
+        REAL_MATCH_GRID,
+        RealFaRow,
+        real_fa_grid_table,
+    )
+
+    target = [
+        TargetProbeScore(
+            probe_index=0,
+            person23_score=0.99,
+            top_is_person23=True,
+            margin=None,
+        )
+    ]
+    real = [
+        RealFaRow(
+            probe_name="x.jpg",
+            top_identity="person-01",
+            top_score=0.99,
+            margin=None,
+            is_false_accept=False,
+        )
+    ]
+    grid = real_fa_grid_table(
+        target=target,
+        real_rows=real,
+        match_grid=REAL_MATCH_GRID,
+        margin_grid=REAL_MARGIN_GRID,
+    )
+    assert all(g.target_hits == 0 and g.real_fa == 0 for g in grid)
+
+
+def test_render_real_fa_grid_section_skeleton_shape() -> None:
+    """R3 renders skeleton §1.1 line shape with exact denominators."""
+    from facecore.eval.nontarget_fa import (
+        RealFaGridRow,
+        render_real_fa_grid_section,
+    )
+
+    section = render_real_fa_grid_section(
+        grid_rows=[
+            RealFaGridRow(
+                match_threshold=0.30,
+                margin_threshold=0.10,
+                target_hits=3,
+                target_denom=13,
+                real_fa=4,
+                real_denom=30,
+            )
+        ],
+    )
+    assert "R3" in section
+    assert "match>=0.30 margin>=0.10" in section
+    assert "3/13" in section
+    assert "4/30" in section

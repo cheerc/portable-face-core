@@ -17,6 +17,10 @@ repo-external, read-only) inside the bakeoff evaluation layer:
   on BOTH arms, reproducing the fa_real.py F2 counting rule exactly.
 - ``render_real_fa_section``: report section with exact N=30 denominators
   written out (counts only, never a bare rate).
+- ``real_fa_grid_table``: match x margin 2-D operating table (M5) with the
+  margin firewall swept on BOTH arms; the margin=0.10 row reproduces the
+  R2 sweep exactly. ``render_real_fa_grid_section`` renders it in the
+  selection-skeleton §1.1 line shape.
 
 Thresholds are swept, never chosen here; frozen operating defaults
 (detector gate 0.9, margin/match waterlines) are untouched. Real photos,
@@ -46,6 +50,9 @@ REAL_NONTARGET_COUNT = 30
 
 #: SSOT F2 sweep grid (fa_real.log verbatim).
 REAL_MATCH_GRID = [0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60]
+
+#: M5 margin dimension: representative档 covering the 0.10 firewall line.
+REAL_MARGIN_GRID = [0.05, 0.10, 0.15, 0.20]
 
 #: Default corpus location: repo-external, never committed to Git.
 DEFAULT_NONTARGET_DIR = Path("/Users/cheerc/Downloads/face_sample/non-target")
@@ -215,6 +222,79 @@ def real_fa_sweep_table(
     return rows
 
 
+@dataclass(frozen=True)
+class RealFaGridRow:
+    match_threshold: float
+    margin_threshold: float
+    target_hits: int
+    target_denom: int
+    real_fa: int
+    real_denom: int
+
+
+def real_fa_grid_table(
+    target: list["TargetProbeScore"],
+    real_rows: list[RealFaRow],
+    match_grid: list[float],
+    margin_grid: list[float],
+) -> list[RealFaGridRow]:
+    """Match x margin operating table (M5): same rule on both arms.
+
+    Target hit: person-23 top-1 AND person-23 score >= match AND
+    margin >= margin-cell. Real FA: top-1 score >= match AND
+    margin >= margin-cell. A ``None`` margin never counts on either arm
+    (same semantics as ``real_fa_sweep_table``). Thresholds are swept,
+    never chosen here.
+    """
+    rows: list[RealFaGridRow] = []
+    for match_t in match_grid:
+        for margin_t in margin_grid:
+            hits = sum(
+                1
+                for entry in target
+                if entry.top_is_person23
+                and entry.person23_score >= match_t
+                and entry.margin is not None
+                and entry.margin >= margin_t
+            )
+            fa = sum(
+                1
+                for row in real_rows
+                if row.top_score is not None
+                and row.top_score >= match_t
+                and row.margin is not None
+                and row.margin >= margin_t
+            )
+            rows.append(
+                RealFaGridRow(
+                    match_threshold=match_t,
+                    margin_threshold=margin_t,
+                    target_hits=hits,
+                    target_denom=len(target),
+                    real_fa=fa,
+                    real_denom=len(real_rows),
+                )
+            )
+    return rows
+
+
+def render_real_fa_grid_section(grid_rows: list[RealFaGridRow]) -> str:
+    """Render R3 in the selection-skeleton §1.1 line shape (counts only)."""
+    lines = [
+        "## R3. real-data match x margin operating table "
+        "(target arm vs real non-target FA; N exact, counts only)",
+        "",
+    ]
+    for cell in grid_rows:
+        lines.append(
+            f"- match>={cell.match_threshold:.2f} "
+            f"margin>={cell.margin_threshold:.2f}: "
+            f"target hits {cell.target_hits}/{cell.target_denom}, "
+            f"real FA {cell.real_fa}/{cell.real_denom}"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def render_real_fa_section(
     rows: list[RealFaRow],
     sweep_rows: list[RealFaSweepRow],
@@ -240,7 +320,8 @@ def render_real_fa_section(
     lines += [
         "",
         "## R2. match-threshold sweep: target arm vs real non-target FA "
-        "(margin firewall >= 0.10 on both arms; N=30 exact, counts only)",
+        f"(margin firewall >= {MARGIN_FIREWALL:.2f} on both arms; "
+        "N=30 exact, counts only)",
         "",
         "| match>= | target hits | real non-target FA |",
         "| --- | --- | --- |",

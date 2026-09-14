@@ -105,7 +105,7 @@ class ModelManifest:
             ),
             provenance=ProvenanceStatus.UNRESOLVED,
             provenance_note=(
-                "Derived de-input artifact: removed 174 redundant graph "
+                "Derived de-input artifact: removed 29 redundant graph "
                 "inputs shadowing DequantizeLinear outputs "
                 "(block_quantize.py artifact; data-only input) from upstream "
                 "SHA fb143eea07838aa532d1c95df5f69899974ea0140e1fba05e94204"
