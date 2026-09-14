@@ -379,10 +379,15 @@ def test_gallery_immutability_and_building_rules(tmp_path: Path) -> None:
     mock_embedder.model_version = "sface_2021dec"
     mock_detector = MagicMock()
 
+    # Pass an isolated fake repo_root so tmp_path files are guaranteed
+    # strictly external to repo_root (fixes Linux CI runner /tmp path collision)
+    isolated_repo = tmp_path / "fake_repo"
+    isolated_repo.mkdir()
+
     with pytest.raises(ValueError, match="duplicate identity in enrollment manifest"):
         build_research_gallery(
             manifest_path=manifest_dup,
-            repo_root=Path("/tmp"),
+            repo_root=isolated_repo,
             detector=mock_detector,
             embedder=mock_embedder,
             generation="gen-1",
@@ -400,7 +405,7 @@ def test_gallery_immutability_and_building_rules(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         build_research_gallery(
             manifest_path=manifest_missing,
-            repo_root=Path("/tmp"),
+            repo_root=isolated_repo,
             detector=mock_detector,
             embedder=mock_embedder,
             generation="gen-1",
