@@ -1,9 +1,10 @@
-"""Isolated research CLI: live / replay / delete (Phase 2A §4 & §6 T7).
+"""Isolated research CLI: live / replay / delete (Phase 2A §4 & §6 T7 + A).
 
 Source of truth:
     - Phase 2A Implementation Plan §4 & §6 T7;
-    - Task: t-20260914111211897569-76424-38;
-    - Governing decision: d-20260914110757304910-5.
+    - Task: t-20260914111211897569-76424-38 (T7);
+    - Task: t-20260914144956431776-76424-50 (A: true camera wiring);
+    - Governing decisions: d-20260914110757304910-5, d-20260914144615650283-7.
 
 Hard boundaries:
     - This module never touches the production facecore CLI commands; it
@@ -16,7 +17,9 @@ Hard boundaries:
     - ``--device fake`` runs the deterministic synthetic pump
       (controller → fake capture → real engine → real recorder) for CI
       and camera-free smoke. ``--device <id>`` opens the production
-      OpenCV adapter (needs a real camera; not covered by CI).
+      OpenCV adapter and scores every frame through the true T2 pipeline
+      (YuNet + SFace + frozen external gallery); needs a real camera and
+      external --models/--corpus, not covered by CI.
     - replay/delete reuse the sealed T6/T5 paths; labels never enter
       replay. Exit codes: 0 ok, 2 usage/config, 4 store/key failure.
 """
@@ -29,10 +32,11 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sys
+from typing import Any
 
 import numpy as np
 
-from facecore.live.capture import FakeCapture
+from facecore.live.capture import CaptureSource, FakeCapture, OpenCVCapture
 from facecore.live.contracts import (
     FrameObservation,
     FramePacket,
@@ -43,6 +47,15 @@ from facecore.live.session import SessionEngine
 from facecore.research.records import ConsentRecord
 from facecore.research.recorder import ResearchRecorder
 from facecore.research.replay import ReplayRefusal, replay_session
+
+# Frozen pair-1 model selection (matches production bakeoff wiring):
+# YuNet 2023mar fixed-640 detector + SFace 2021dec fp32 embedder.
+TRUE_PIPELINE_GENERATION = "gen-1"
+TRUE_DETECTOR_FILENAME = "face_detection_yunet_2023mar.onnx"
+TRUE_DETECTOR_SHA256 = (
+    "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
+)
+TRUE_EMBEDDER_FILENAME = "face_recognition_sface_2021dec.onnx"
 
 
 class StorePathError(ValueError):
@@ -127,6 +140,77 @@ def _emit(payload: dict[str, object]) -> None:
     print(json.dumps(payload, sort_keys=True))
 
 
+def _build_true_context(
+    models: Path,
+    corpus: Path,
+    profile: ResearchProfile,
+    *,
+    detector_factory: Callable[[Path], Any] | None = None,
+    embedder_factory: Callable[[Path], Any] | None = None,
+) -> Any:
+    """Build the frozen true scoring context from external artifacts."""
+    from facecore.live.frame_pipeline import (  # noqa: PLC0415 (device-gated)
+        ScoringContext,
+        build_research_gallery,
+    )
+
+    if detector_factory is None:
+        from facecore.pipeline.yunet import (  # noqa: PLC0415 (device-gated)
+            YuNetDetector,
+        )
+
+        def _default_detector(models_dir: Path) -> Any:
+            return YuNetDetector(
+                models_dir / TRUE_DETECTOR_FILENAME,
+                TRUE_DETECTOR_SHA256,
+            )
+
+        detector_factory = _default_detector
+    if embedder_factory is None:
+        from facecore.pipeline.embed import (  # noqa: PLC0415 (device-gated)
+            Embedder,
+        )
+        from facecore.contracts.manifest import (  # noqa: PLC0415
+            ModelManifest,
+        )
+
+        def _default_embedder(models_dir: Path) -> Any:
+            manifest = ModelManifest.sface_2021dec_fp32()
+            return Embedder(manifest, models_dir / TRUE_EMBEDDER_FILENAME)
+
+        embedder_factory = _default_embedder
+    detector = detector_factory(models)
+    embedder = embedder_factory(models)
+    gallery = build_research_gallery(
+        corpus,
+        repo_root=models,
+        detector=detector,
+        embedder=embedder,
+        generation=TRUE_PIPELINE_GENERATION,
+    )
+    policy = profile_to_policy(profile)
+    return ScoringContext(
+        gallery=gallery,
+        model_version=gallery.model_version,
+        policy=policy,
+        detector=detector,
+        embedder=embedder,
+    )
+
+
+def profile_to_policy(profile: ResearchProfile) -> Any:
+    """Map a research profile onto a frozen-v1 policy with its thresholds."""
+    from facecore.contracts.policy import (  # noqa: PLC0415 (device-gated)
+        PolicyProfile,
+    )
+
+    return PolicyProfile.frozen_v1().with_thresholds(
+        match_threshold=profile.match_threshold,
+        review_threshold=profile.review_threshold,
+        margin_threshold=profile.margin_threshold,
+    )
+
+
 def cmd_live(
     *,
     profile_path: Path,
@@ -137,6 +221,11 @@ def cmd_live(
     record_consent: bool,
     image_consent: bool,
     fixed_seconds: bool = False,
+    models: Path | None = None,
+    corpus: Path | None = None,
+    capture_factory: Callable[[str], CaptureSource] | None = None,
+    detector_factory: Callable[[Path], Any] | None = None,
+    embedder_factory: Callable[[Path], Any] | None = None,
 ) -> int:
     """Run one bounded research session (fake pump or real camera)."""
     try:
@@ -167,10 +256,12 @@ def cmd_live(
         image_expires_at_utc=(now + timedelta(days=7)).isoformat(),
     )
 
-    model_generation = "cli-fake-gen-1"
-    gallery_digest = "cli-fake-gallery"
-    engine = SessionEngine(profile, gallery_digest, model_generation)
+    window_label = "early-stop"
+    source: CaptureSource
     if device == "fake":
+        model_generation = "cli-fake-gen-1"
+        gallery_digest = "cli-fake-gallery"
+        engine = SessionEngine(profile, gallery_digest, model_generation)
         frames = [
             FramePacket(
                 sequence=seq,
@@ -184,13 +275,43 @@ def cmd_live(
         source = FakeCapture(frames=frames)
         scorer = _fake_scorer(model_generation, gallery_digest)
     else:
-        print(
-            "research live: camera-device scoring needs external "
-            "--models/--corpus wiring (T8 operator-gated smoke); "
-            "use --device fake in CI",
-            file=sys.stderr,
+        # True camera path (Task A): external models/corpus required,
+        # fail-clear otherwise. Fake path above is untouched.
+        if models is None or corpus is None:
+            print(
+                "research live: --device <id> requires --models <dir> and "
+                "--corpus <manifest> (external paths); use --device fake "
+                "for camera-free operation",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            context = _build_true_context(
+                models,
+                corpus,
+                profile,
+                detector_factory=detector_factory,
+                embedder_factory=embedder_factory,
+            )
+        except Exception as exc:
+            print(f"research live: true pipeline setup failed: {exc}", file=sys.stderr)
+            return 2
+        model_generation = context.gallery.generation
+        gallery_digest = context.gallery.digest
+        engine = SessionEngine(profile, gallery_digest, model_generation)
+        if capture_factory is not None:
+            source = capture_factory(device)
+        else:
+            source = OpenCVCapture()
+
+        from facecore.live.frame_pipeline import (  # noqa: PLC0415 (device-gated)
+            score_frame,
         )
-        return 2
+
+        def scorer(packet: FramePacket) -> FrameObservation:
+            return score_frame(packet, context)
+
+        window_label = "early-stop"
 
     desktop = DesktopSession(
         engine=engine, source=source, scorer=scorer, session_id=session_id
@@ -236,9 +357,11 @@ def cmd_live(
         {
             "session_id": session_id,
             "status": terminal.status.value,
-            "window": "early-stop",
+            "window": window_label,
             "elapsed_ms": terminal.elapsed_ms,
             "reason_codes": list(terminal.reason_codes),
+            "generation": model_generation,
+            "gallery_digest": gallery_digest,
         }
     )
     return 0
@@ -355,6 +478,8 @@ def main(argv: list[str] | None = None) -> int:
             record_consent=args.record_consent,
             image_consent=args.image_consent,
             fixed_seconds=args.fixed_seconds,
+            models=args.models,
+            corpus=args.corpus,
         )
     if args.command == "replay":
         return cmd_replay(
