@@ -105,6 +105,9 @@ src/
     │   ├── migration.py
     │   ├── promotion.py
     │   └── utility.py
+    ├── live/
+    │   ├── __init__.py
+    │   └── contracts.py
     ├── pipeline/
     │   ├── __init__.py
     │   ├── align.py
@@ -121,6 +124,9 @@ src/
     │   ├── __init__.py
     │   ├── base.py
     │   └── memory.py
+    ├── research/
+    │   ├── __init__.py
+    │   └── records.py
     └── storage/
         ├── __init__.py
         ├── cipher.py
@@ -189,6 +195,9 @@ tests/
 │   ├── test_model_migration.py
 │   ├── test_promotion.py
 │   └── test_utility_eviction.py
+├── live/
+│   ├── __init__.py
+│   └── test_contracts.py
 ├── pipeline/
 │   ├── __init__.py
 │   ├── test_align.py
@@ -203,6 +212,9 @@ tests/
 ├── repository/
 │   ├── __init__.py
 │   └── test_memory.py
+├── research/
+│   ├── __init__.py
+│   └── test_records.py
 └── storage/
     ├── __init__.py
     ├── test_cipher.py
