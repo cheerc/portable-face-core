@@ -107,7 +107,8 @@ src/
     │   └── utility.py
     ├── live/
     │   ├── __init__.py
-    │   └── contracts.py
+    │   ├── contracts.py
+    │   └── frame_pipeline.py
     ├── pipeline/
     │   ├── __init__.py
     │   ├── align.py
@@ -197,7 +198,8 @@ tests/
 │   └── test_utility_eviction.py
 ├── live/
 │   ├── __init__.py
-│   └── test_contracts.py
+│   ├── test_contracts.py
+│   └── test_frame_pipeline.py
 ├── pipeline/
 │   ├── __init__.py
 │   ├── test_align.py

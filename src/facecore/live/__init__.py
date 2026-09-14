@@ -9,11 +9,21 @@ from facecore.live.contracts import (
     SessionResult,
     SessionStatus,
 )
+from facecore.live.frame_pipeline import (
+    ResearchGallery,
+    ScoringContext,
+    build_research_gallery,
+    score_frame,
+)
 
 __all__ = [
     "FrameObservation",
     "FramePacket",
+    "ResearchGallery",
     "ResearchProfile",
+    "ScoringContext",
     "SessionResult",
     "SessionStatus",
+    "build_research_gallery",
+    "score_frame",
 ]
