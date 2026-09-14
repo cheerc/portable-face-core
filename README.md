@@ -2,7 +2,7 @@
 
 Portable Face Core is a proposed local-first, reusable face-identification engine. Its goal is to provide the same detect, align, embed, and open-set identification contracts to a macOS reference CLI and future Android/iOS tablet applications without tying the algorithm to a photo manager or business system.
 
-**Status:** Phase-1A implementation complete on 2026-09-11. Reference CLI, contracts, in-memory evaluation pipeline, bake-off harness, synthetic capacity benchmark, and deterministic Layer-A conformance check are delivered.
+**現況：** Phase-1A 靜態核心與 Phase-1B 治理工程已交付，M1/M5/M3 真圖評估報表已 merge。選型維持 provisional／OPEN，真實學習增益與部署準確性尚未證明。下一步為 Mac 動態辨識研究設計 review，非 mobile 開工；完整狀態見 [PROJECT-STATE](docs/PROJECT-STATE.md)。
 
 ## Intended Capabilities
 
@@ -39,7 +39,8 @@ docs/
 │   ├── 0004-onnx-first-portability.md
 │   ├── 0005-confirmation-gated-adaptive-learning.md
 │   ├── 0006-split-phase-one-accuracy-governance.md
-│   └── 0007-small-consented-evaluation-gallery.md
+│   ├── 0007-small-consented-evaluation-gallery.md
+│   └── 0008-mac-live-identification-research.md
 ├── plans/
 │   ├── 2026-09-10-phase-1a-implementation-plan.md
 │   └── 2026-09-12-phase-1b-implementation-plan.md
@@ -50,7 +51,8 @@ docs/
 │   ├── 2026-09-12-storage-crypto-manifest.md
 │   └── 2026-09-12-weights-corpus-readiness.md
 └── specs/
-    └── 2026-09-09-portable-face-core-design.md
+    ├── 2026-09-09-portable-face-core-design.md
+    └── 2026-09-14-mac-live-identification-research-design.md
 facecore.sh
 pyproject.toml
 src/
@@ -204,6 +206,6 @@ tests/
     └── test_stress.py
 ```
 
-Start with `CLAUDE.md`. Phase 1A is implemented and verified on macOS arm64. The model candidate bake-off evaluation was performed against the initial P1 consented gallery; the model selection gate remains OPEN pending operator review. Next milestone is operator model selection and the Phase-1B governance go/no-go decision.
+Start with `CLAUDE.md` and `docs/PROJECT-STATE.md`。Phase-1B P0 已放行，不重開歷史 go/no-go。Mac 原型的單張註冊、多幀 session、同意後研究保存與實作入口見 `docs/specs/2026-09-14-mac-live-identification-research-design.md`；計畫／文件 merge 不等於實作或真人蒐集授權。
 
 Licensed under the MIT License — see LICENSE.
