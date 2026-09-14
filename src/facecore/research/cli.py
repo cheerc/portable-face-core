@@ -285,6 +285,31 @@ def cmd_live(
                 file=sys.stderr,
             )
             return 2
+        if capture_factory is not None:
+            source = capture_factory(device)
+        else:
+            source = OpenCVCapture()
+        # Fix (a+c): open the requested device now (not fallback 0) and
+        # probe the first frame BEFORE heavy model loading; a
+        # dry/disconnected device fails clear here instead of committing
+        # a silent 0-frame bundle.
+        try:
+            source.open(device)
+        except Exception as exc:
+            print(
+                f"research live: cannot open device {device!r}: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        probe = source.read()
+        source.close()
+        if probe is None:
+            print(
+                f"research live: device {device!r} opened but delivered "
+                "no frames; refusing to start",
+                file=sys.stderr,
+            )
+            return 2
         try:
             context = _build_true_context(
                 models,
@@ -299,10 +324,6 @@ def cmd_live(
         model_generation = context.gallery.generation
         gallery_digest = context.gallery.digest
         engine = SessionEngine(profile, gallery_digest, model_generation)
-        if capture_factory is not None:
-            source = capture_factory(device)
-        else:
-            source = OpenCVCapture()
 
         from facecore.live.frame_pipeline import (  # noqa: PLC0415 (device-gated)
             score_frame,
@@ -319,8 +340,14 @@ def cmd_live(
     recorder = ResearchRecorder(
         store_root=store_root, key_dir=key_dir, clock=_now_utc
     )
+    import time as _time
+
+    # Fix (b): the session clock anchors at the live monotonic clock on the
+    # true path (fake path keeps its synthetic zero-origin stamps, so its
+    # start stays 0 and its envelope stays consistent).
+    start_ns = _time.monotonic_ns() if device != "fake" else 0
     try:
-        desktop.on_start(consent, now_ns=0)
+        desktop.on_start(consent, now_ns=start_ns, device_id=device)
     except (PermissionError, ValueError, RuntimeError) as exc:
         print(f"research live: start refused: {exc}", file=sys.stderr)
         return 2

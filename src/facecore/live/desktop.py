@@ -90,8 +90,14 @@ class DesktopSession:
         """Recording indicator: on from successful start until close."""
         return self._recording
 
-    def on_start(self, consent: ConsentRecord, now_ns: int) -> None:
-        """Start event: requires explicit dual consent (checkbox-mapped)."""
+    def on_start(
+        self, consent: ConsentRecord, now_ns: int, device_id: str = "default"
+    ) -> None:
+        """Start event: requires explicit dual consent (checkbox-mapped).
+
+        Fix (a): device_id is passed through to the capture open call so
+        the requested --device reaches the camera (no fallback-0).
+        """
         if self._state != "idle":
             raise RuntimeError(f"cannot start from state {self._state!r}")
         if consent is None or not isinstance(consent, ConsentRecord):
@@ -102,7 +108,7 @@ class DesktopSession:
             raise PermissionError("record consent absent; refusing to start")
         if not consent.image_consent:
             raise PermissionError("image consent absent; refusing to start")
-        self._controller.start_session(self._session_id, now_ns)
+        self._controller.start_session(self._session_id, now_ns, device_id=device_id)
         self._state = "running"
         self._recording = True
 
