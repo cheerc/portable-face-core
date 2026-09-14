@@ -168,3 +168,66 @@ def test_governed_replay_rejects_backward_rerun() -> None:
     harness.run(events, dict(gallery))
     with pytest.raises(ValueError, match="backward"):
         harness.run(list(reversed(events)), dict(gallery))
+
+
+def test_render_real_replay_section_pins_baseline_and_gate_evidence() -> None:
+    """M3: real 13-event dual-arm counts + blocked-correct gate evidence."""
+    import numpy as np
+
+    from facecore.eval.real_replay import (
+        GovernedReplayHarness,
+        RealReplayEvent,
+        render_real_replay_section,
+    )
+
+    gallery = {
+        "person-23": np.array([1.0, 0.0, 0.0, 0.0]),
+        "person-02": np.array([0.0, 1.0, 0.0, 0.0]),
+    }
+    probe_top23 = np.array([0.9, 0.1, 0.0, 0.0])
+    probe_top23 = probe_top23 / np.linalg.norm(probe_top23)
+    probe_other = np.array([0.1, 0.9, 0.0, 0.0])
+    probe_other = probe_other / np.linalg.norm(probe_other)
+    events = [
+        RealReplayEvent(
+            filename="enroll-23-probe-01.jpeg",
+            sequence_number=1,
+            probe_vector=probe_top23,
+            ground_truth_identity="person-23",
+        ),
+        RealReplayEvent(
+            filename="enroll-23-probe-02.jpeg",
+            sequence_number=2,
+            probe_vector=probe_other,
+            ground_truth_identity="person-23",
+        ),
+    ]
+    summary = GovernedReplayHarness().run(events, gallery)
+    section = render_real_replay_section(summary, update_threshold=0.88)
+    assert "real governed replay" in section.lower() or "R4" in section
+    assert f"{summary.baseline_matched}/{summary.baseline_denominator}" in section
+    assert f"{summary.adaptive_matched}/{summary.adaptive_denominator}" in section
+    assert f"{summary.creations}" in section
+    # Gate evidence: blocked correct events listed with threshold contrast.
+    assert "0.88" in section
+
+
+def test_load_real_replay_probes_missing_dir_skips_fail_clear() -> None:
+    from pathlib import Path
+
+    from facecore.eval.real_replay import load_real_replay_probes
+
+    outcome = load_real_replay_probes(Path("/nonexistent/probe-dir-xyz"))
+    assert outcome.skipped is True
+    assert outcome.reason != ""
+    assert outcome.files == []
+
+
+def test_load_real_replay_probes_lists_sorted_probes(tmp_path) -> None:
+    from facecore.eval.real_replay import load_real_replay_probes
+
+    for name in ("b.png", "a.jpeg", "c.png"):
+        (tmp_path / name).write_bytes(b"fake")
+    outcome = load_real_replay_probes(tmp_path)
+    assert outcome.skipped is False
+    assert [p.name for p in outcome.files] == ["a.jpeg", "b.png", "c.png"]
