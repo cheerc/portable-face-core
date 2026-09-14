@@ -50,6 +50,6 @@ Baseline/adaptive 有不同規則；2/13 對 0/13 不是純粹同 operating poin
 ## Next Session
 
 1. 讀本檔、母規格、ADR 0008、Mac 研究設計；查 git／task／inbox 活源。
-2. T2 單幀管線（PR #45 `c7ee145`）已 merge。T3 有界 session 與兩策略已完成交付，並完成 D1 §11.3 continuity 位移界線初值（0.50）與命名測試。下一步為 T4 capture pump／controller。
+2. T2 單幀管線（PR #45 `c7ee145`）已 merge。T3 有界 session 與兩策略已完成交付，並完成 D1 §11.3 continuity 位移界線初值（0.50）與命名測試。T5 同意加密 TTL 可恢復刪除已完成交付（ResearchRecorder＋ResearchKeyProvider，僅 synthetic 驗證）。下一步依 Lead 派工（T4 capture pump／controller 或 T6 回放）。
 3. Plan 規範：T1–T8 依序推進，未完成 T7/T8 前不寫正式 GUI 入口。相機錄製需個別參與者同意；文件批准不構成同意。
 4. 不重開已完成的 P0；不把歷史骨架的缺權重、未跑真圖或本機舊 main 當現況；不重新派 M1/M2/M3/M5 已完成任務。
