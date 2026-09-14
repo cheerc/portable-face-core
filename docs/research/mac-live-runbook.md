@@ -1,10 +1,12 @@
-# Mac Live Research Runbook (Phase 2A T7)
+# Mac Live Research Runbook (Phase 2A T7, acceptance-closed in T8)
 
-Source of truth: Phase 2A research design + implementation plan §6 T7.
-Task: t-20260914111211897569-76424-38.
+Source of truth: Phase 2A research design + implementation plan §6 T7/T8.
+Tasks: t-20260914111211897569-76424-38 (T7), t-20260914111218389235-76424-39 (T8).
 
-This runbook covers camera-free operation only. Real-camera and real-
-participant smoke are operator-gated (T8) and are not claimed here.
+This runbook covers camera-free operation only. Real-participant smoke
+is operator-gated and NOT claimed here: hardware-ready;
+participant-smoke blocked (no consent solicited, no photos requested,
+no completion fabricated).
 
 ## 0. Prerequisites
 
@@ -86,3 +88,44 @@ uv run --extra dev python experiments/mac_live_capture_probe.py \
 | 0 | ok (committed / replayed / deleted) |
 | 2 | usage/config (bad profile, store guard, missing consent flags) |
 | 4 | store/key failure (refused replay, commit failure) |
+
+## 7. Failure matrix (T8 acceptance; each row: command/operation/status)
+
+| Injected fault | Command / operation | Expected status |
+| --- | --- | --- |
+| Permission denied (no consent flags) | `cli live` without `--record-consent`/`--image-consent` | exit 2, nothing committable on disk |
+| Device disconnect mid-run | `cli live` → `cli delete` (restart-safe) | exit 0 / 0, bundle removed |
+| Cancel | DesktopSession.on_cancel | cancelled terminal, workers joined |
+| Stop (timeout) | LiveController.run_with_timeout (T7 N1: stop+join+timeout terminal) | timeout terminal, pump stopped < 5s |
+| Window close | DesktopSession.close | source released, workers joined, state closed |
+| Restart → purge → delete | fresh ResearchRecorder reconcile/read/purge/delete | reconcile lists partials, delete True, re-read KeyError |
+| Record tamper | flip record.enc byte → `cli replay` | exit 4, error JSON (never unknown) |
+| Frame tamper | flip frame byte → replay_session | ReplayRefusal kind=tampered |
+| Crash before commit | begin+append, restart, reconcile | partial purged, read raises KeyError |
+| Report with failed attempt | summarize with refusals | attempted counts it, errors+1, omitted lists reason |
+
+## 8. T1–T7 acceptance receipts (in place at T8 base)
+
+| Task | PR | HEAD | Review |
+| --- | --- | --- | --- |
+| T1 contracts | #44 | `33d0ad4` | VERIFIED |
+| T2 single-frame pipeline | #45 | `c7ee145` | VERIFIED |
+| T3 session engine + continuity 0.50 | #46 | `edb89f8` | VERIFIED |
+| S1 spike / S2 spike / D1 freeze | #41 / #42 / #43 | `1734bb5` / `8ef2ad5` / `58991d8` | VERIFIED |
+| T5 recorder | #47 | `08af7a5` | VERIFIED |
+| T4 capture/controller | #48 | `b3e39a8` | VERIFIED |
+| T6 replay/report | #49 | `a0f5121` | VERIFIED |
+| T7 desktop/CLI | #50 | `2c8add0` | VERIFIED |
+
+Full-suite verification: `uv run --extra dev pytest tests/ -q`
+(≈480 passed + 8 skipped), `ruff check src tests`, `mypy src`,
+`git diff --check` — all green at T8 HEAD (capacity growth-ratio is a
+known timing flake: passes isolated/rerun, untouched by T4–T8 paths).
+
+## 9. Tool-readiness claim boundary (T8)
+
+- MAY claim: research tooling is ready (camera-free E2E, sealed
+  replay, encrypted store with TTL/deletion, failure matrix green).
+- MUST NOT claim: algorithm calibration complete, zero misrecognition
+  rate, or readiness for deployment. No cross-identity or 500-person
+  claim is made anywhere in this report chain.

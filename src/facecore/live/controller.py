@@ -257,6 +257,46 @@ class LiveController:
         self._release_source()
         return self._terminal
 
+    def run_with_timeout(self, timeout_ns: int) -> SessionResult:
+        """Background pump + synchronous consume with true timeout semantics.
+
+        T7 N1 (claimed by T8): the background pump fills the slot-1 queue
+        while the foreground consumes. On timeout the pump is stopped,
+        the worker joined, the source released, and a timeout terminal is
+        returned. An earlier engine terminal wins immediately (also
+        stopping and joining the pump). Either way no worker is left
+        behind and no fire-and-forget thread escapes.
+        """
+        live = self._require_active()
+        if timeout_ns <= 0:
+            raise ValueError(f"timeout_ns must be positive, got {timeout_ns}")
+        assert self._session_start_ns is not None
+        deadline_ns = self._session_start_ns + timeout_ns
+        self.start_background_pump()
+        try:
+            while True:
+                if self._terminal is not None:
+                    return self._terminal
+                terminal = self._consume_one()
+                if terminal is not None:
+                    return terminal
+                if self._controller_now_ns() >= deadline_ns:
+                    break
+                time.sleep(0.005)
+        finally:
+            self._stop_pump_and_join()
+        if self._terminal is not None:
+            return self._terminal
+        self._terminal = self._engine.finish(deadline_ns)
+        self._release_source()
+        assert self._terminal.session_id == live
+        return self._terminal
+
+    def _stop_pump_and_join(self) -> None:
+        self._pump_stop.set()
+        with self._lock:
+            self._join_tracked_locked()
+
     def start_background_pump(self) -> None:
         """Start the tracked pump thread (joined on close; never detached)."""
         self._require_active()
