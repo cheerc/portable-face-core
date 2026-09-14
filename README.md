@@ -50,10 +50,13 @@ docs/
 │   ├── 2026-09-10-model-candidate-gate.md
 │   ├── 2026-09-12-face-recognition-strength-spike.md
 │   ├── 2026-09-12-storage-crypto-manifest.md
-│   └── 2026-09-12-weights-corpus-readiness.md
+│   ├── 2026-09-12-weights-corpus-readiness.md
+│   └── 2026-09-14-mac-live-spike-manifest.md
 └── specs/
     ├── 2026-09-09-portable-face-core-design.md
     └── 2026-09-14-mac-live-identification-research-design.md
+experiments/
+└── mac_live_capture_probe.py
 facecore.sh
 pyproject.toml
 src/
@@ -166,6 +169,7 @@ tests/
 │   ├── test_corpus.py
 │   ├── test_fa_matrix.py
 │   ├── test_guard_expected_identity.py
+│   ├── test_mac_live_capture_probe.py
 │   ├── test_per_probe_detail.py
 │   ├── test_real_replay.py
 │   ├── test_replay.py
