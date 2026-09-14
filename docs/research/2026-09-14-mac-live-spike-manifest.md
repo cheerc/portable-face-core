@@ -1,14 +1,19 @@
-# Mac Live Capture / UI / Runtime Feasibility Spike Manifest (Phase 2A Spike S1)
+# Mac Live Feasibility Spike Manifest: Capture & AEAD Recorder (Phase 2A S1 & S2)
 
 - **Date**: 2026-09-14
 - **Author**: `fc-team-impl`
-- **Task ID**: `t-20260914095617665619-76424-22`
-- **Governing Decision**: `d-20260914095558310095-3`
-- **Source of Truth**: [Phase 2A Mac Prototype Implementation Plan](../plans/2026-09-14-mac-live-identification-implementation-plan.md) §5 S1; [Mac Live Research Design Spec](../specs/2026-09-14-mac-live-identification-research-design.md)
+- **Task IDs**:
+  - S1 Capture Spike: `t-20260914095617665619-76424-22`
+  - S2 Recorder Spike: `t-20260914095623320390-76424-23`
+  - S1 N2-b Redaction: `t-20260914101837891836-76424-27`
+- **Governing Decisions**: `d-20260914095558310095-3` (S1 & S2), `d-20260914101832142663-4` (N2-b Redaction)
+- **Source of Truth**: [Phase 2A Mac Prototype Implementation Plan](../plans/2026-09-14-mac-live-identification-implementation-plan.md) §5 S1 & S2; [Mac Live Research Design Spec](../specs/2026-09-14-mac-live-identification-research-design.md)
 - **Review Class**: Single
 - **Spike Artifacts**:
-  - Probe Script: `experiments/mac_live_capture_probe.py`
-  - Test Suite: `tests/eval/test_mac_live_capture_probe.py`
+  - S1 Capture Probe: `experiments/mac_live_capture_probe.py`
+  - S1 Test Suite: `tests/eval/test_mac_live_capture_probe.py`
+  - S2 Recorder Probe: `experiments/mac_live_recorder_probe.py`
+  - S2 Test Suite: `tests/eval/test_mac_live_recorder_probe.py`
   - Spike Manifest: `docs/research/2026-09-14-mac-live-spike-manifest.md` (this document)
 
 ---
@@ -98,7 +103,7 @@ uv run python experiments/mac_live_capture_probe.py --mode hardware
   [PASS] camera_permissions
          - hardware_tcc: {"available": true, "status_code": 3, "status_name": "authorized", ...}
   [PASS] device_enumeration
-         - hardware_devices: [{'name': 'FaceTime HD相機', 'model_id': 'FaceTime HD相機', 'unique_id': 'EAB7A68F-EC2B-4487-AADF-D8A91C1CB782'}, {'name': 'CheerC的iPhone 16 Pro相機', 'model_id': 'iPhone17,1', 'unique_id': 'D9B9EBF1-CD2F-4316-A481-7AD800000001'}]
+         - hardware_devices: [{'name': 'FaceTime HD Camera', 'model_id': 'FaceTime HD Camera', 'unique_id': '<redacted-mac-uid-01>'}, {'name': 'Continuity Camera (iPhone)', 'model_id': 'iPhone17,1', 'unique_id': '<redacted-continuity-uid-02>'}]
   ```
 
 ### 4.4 Automated Unit & Regression Tests
@@ -134,8 +139,8 @@ git diff --check
 
 ### 5.2 Device Enumeration & Fallback
 - **Discovered Host Devices**:
-  1. `FaceTime HD相機` (Internal FaceTime HD camera, Model ID: `FaceTime HD相機`, Unique ID: `EAB7A68F-EC2B-4487-AADF-D8A91C1CB782`).
-  2. `CheerC的iPhone 16 Pro相機` (Continuity Camera via Apple Wireless/USB, Model ID: `iPhone17,1`, Unique ID: `D9B9EBF1-CD2F-4316-A481-7AD800000001`).
+  1. `FaceTime HD Camera` (Internal FaceTime HD camera, Model ID: `FaceTime HD Camera`, Unique ID: `<redacted-mac-camera-uuid-01>`).
+  2. `Continuity iPhone Camera` (Continuity Camera via Apple Wireless/USB, Model ID: `iPhone17,1 / iPhone 16 Pro`, Unique ID: `<redacted-continuity-camera-uuid-02>`).
 - **Zero-Device Handling**:
   - When no camera is attached (such as headless cloud runners), the device registry raises a structured `RuntimeError("No camera devices available on this host")` without segfaulting or hanging.
 
@@ -220,3 +225,152 @@ The plan specifies 5 explicit STOP conditions for Spike S1:
 5. **Requires server / mobile to work**: Refuted; all capture and UI mechanisms operate 100% locally on macOS arm64 desktop without network calls.
 
 **Result**: All S1 requirements satisfied with reproducible empirical evidence. Ready for Reviewer r0 verification.
+
+---
+
+## 8. S2 Research AEAD Recorder & Deletion Feasibility Spike
+
+### 8.1 Scope & Primitive Reuse Analysis
+- **Cryptographic Primitive**:
+  - Reuses the vetted `AeadCipher` (AES-256-GCM) from `facecore.storage.cipher`.
+  - **Zero Cipher Modification**: The underlying encryption algorithm is strictly unchanged (AES-256-GCM, 12-byte CSPRNG nonce, 16-byte authentication tag).
+  - **Namespace & Session Separation**:
+    - The existing `FileKeyProvider` is tightly coupled to `identity_id`.
+    - S2 verified that research sessions must **not** masquerade as identities. Instead, research keys reside in an isolated research key directory (e.g. `~/.facecore/research_keys` with `0700` permissions) managed by a dedicated `ResearchKeyProvider`.
+
+### 8.2 Key Layout & Namespace Isolation
+- **Dual-Key Architecture per Session**:
+  - `record_key_id`: `rk_{session_id}` (controls evaluation record JSON metadata; 30-day TTL).
+  - `image_key_id`: `ik_{session_id}` (controls raw sampling frame blobs; 7-day TTL).
+- **Independent Lifecycle Verification**:
+  - At day 7, `image_key_id` is purged via random-overwrite + `fsync` + `unlink`.
+  - Image payloads become mathematically unrecoverable (`KeyNotFoundError`).
+  - Evaluation records remain decryptable under `record_key_id` until the 30-day milestone.
+
+### 8.3 File Layout & Wire Format
+```text
+research_store/
+└── <session_id>/
+    ├── manifest.json.tmp       (staging during active session write)
+    ├── manifest.json           (atomic commit: status="committed", counts, hashes)
+    ├── record.enc              (encrypted evaluation summary, AAD: kind="record")
+    ├── frame_000.enc           (encrypted frame payload, AAD: kind="image", frame=0)
+    ├── ...
+    ├── frame_024.enc           (maximum 25 frames)
+    └── tombstone.json          (written first during deletion: blocks all reads)
+```
+- **Blob Wire Format**:
+  - `[0..1]`: Format Version (`0x01`)
+  - `[1..2]`: Cipher ID (`0x01` = AES-256-GCM)
+  - `[2..4]`: Reserved (`0x00 0x00`)
+  - `[4..16]`: CSPRNG Nonce (12 bytes)
+  - `[16..]`: Ciphertext with appended 16-byte GCM tag.
+
+### 8.4 Canonical Research AAD Contract
+Length-prefixed binary encoding preventing frame-swapping, kind-swapping, and cross-session transplantation:
+$$\text{AAD} = \text{"facecore:research:v1:"} \parallel \text{len(schema)} \parallel \text{schema} \parallel \text{len(session)} \parallel \text{session} \parallel \text{len(kind)} \parallel \text{kind} \parallel \text{len(frame)} \parallel \text{frame}$$
+- **Cross-Attack Resistance**:
+  - Attempting to decrypt `frame_000.enc` using frame 1's AAD fails with `StoreCorruptionError` / `InvalidTag`.
+  - Attempting to decrypt an image blob as a record fails with `StoreCorruptionError`.
+  - Attempting to inject a blob from Session A into Session B fails with `StoreCorruptionError`.
+
+### 8.5 Encrypt-Before-Write & Zero Plaintext Temp
+- **Memory-to-Disk Direct Encryption**:
+  - Raw numpy frame buffers are serialized and encrypted in-memory before disk I/O.
+  - Full-directory byte audits confirmed that secret plaintext signatures never appear in any file on disk.
+  - Zero temporary unencrypted `.bmp`, `.png`, or `.raw` scratch files created during capture or storage.
+
+### 8.6 Atomic Commit & Partial Blob Reconciliation
+- **Atomic Manifest Rename**:
+  - Writers write `manifest.json.tmp` with `status: "in_progress"`.
+  - Readers refuse to load any bundle lacking a valid `manifest.json` with `status: "committed"`.
+  - Commit is finalized via atomic filesystem rename: `os.replace(manifest_tmp, manifest_committed)`.
+- **Interrupted Session Reconciliation**:
+  - On application startup or store scan, `reconcile_store()` detects uncommitted or crashed sessions.
+  - Incomplete sessions are safely quarantined and purged: associated DEK keys are destroyed, partial `.enc` blobs unlinked, and directory reclaimed.
+
+### 8.7 Two-Stage Retention (30d / 7d TTL) & Clock Rollback Defense
+- **Two-Stage TTL**:
+  - `image_expires_at`: `created_at + 7 days`.
+  - `record_expires_at`: `created_at + 30 days`.
+  - Verified that purging at Day 8 destroys image keys and blobs while keeping the evaluation record intact; purging at Day 31 deletes the entire session.
+- **Clock Rollback Defense**:
+  - The store tracks `last_seen_timestamp`.
+  - If `current_wall_clock < last_seen_timestamp` (detected time jump backwards), the controller flags `clock_rollback_detected` and refuses to update or extend any existing `expires_at`.
+
+### 8.8 Re-entrant Tombstone-First Deletion Flow
+Four-stage deletion contract:
+1. **Stage 1 (Tombstone)**: Write `tombstone.json` immediately; readers detecting tombstone immediately fail closed (`SessionDeletedError`).
+2. **Stage 2 (Key Destruction)**: Overwrite `rk_{session_id}.key` and `ik_{session_id}.key` with CSPRNG bytes, `fsync`, and unlink.
+3. **Stage 3 (Payload Purge)**: Unlink all `.enc` blobs and manifests.
+4. **Stage 4 (Directory Removal)**: `rmdir` session directory.
+- **Re-entrancy Verification**:
+  - Interrupted deletions restarted at any stage execute to clean completion with idempotency (`execute_delete(...) == True`).
+
+### 8.9 Failure Injection & Crash Matrix
+Empirically validated error responses under fault injection:
+
+| Fault Injected | Simulation Mechanism | Expected Behavior | Measured Result |
+|---|---|---|---|
+| **Key Lost / Unavailable** | Missing DEK in key provider | Fail closed with `KeyNotFoundError` | **PASS** (Zero plaintext leak; clean error) |
+| **Disk Full during Write** | `OSError(ENOSPC)` injected | Abort write transaction, uncommitted | **PASS** (Partial write rejected, zero corrupt bundle) |
+| **Ciphertext Bit Flip** | 1-bit XOR flip in `.enc` payload | Reject on GCM tag verification | **PASS** (`StoreCorruptionError` raised) |
+| **AAD Tampering** | Altered frame index in AAD | Reject on GCM tag verification | **PASS** (`StoreCorruptionError` raised) |
+
+### 8.10 Consented Negative Sample Isolation
+- **Consent Separation**:
+  - Independent consent gates for `record_consent` and `image_consent`.
+- **Negative Sample Storage for Replay**:
+  - Research sessions marked `not_me` or un-enrolled are safely encrypted and retained for offline benchmark comparisons when consented.
+- **Strict Learning Barrier**:
+  - Evaluated contract confirming negative samples are strictly barred from `candidate_pipeline` and `LifecycleManager`. Zero candidate creation, zero template accumulation, and zero gallery mutation.
+
+---
+
+## 9. S2 Reproducible Commands & Verification
+
+### 9.1 S2 Synthetic Recorder Probe
+```bash
+uv run python experiments/mac_live_recorder_probe.py --mode synthetic
+```
+- **Exit Code**: `0`
+- **Output Evidence**:
+  ```text
+  === Mac Live Research AEAD Recorder Probe (Mode: synthetic) ===
+  [PASS] encrypt_before_write_no_plaintext_temp
+  [PASS] key_separation_and_lifecycles
+  [PASS] canonical_research_aad
+  [PASS] atomic_manifest_and_commit
+  [PASS] partial_blob_reconciliation
+  [PASS] ttl_separation_and_clock_rollback
+  [PASS] reentrant_deletion_flow
+  [PASS] failure_injection_crash_matrix
+  [PASS] consented_negative_sample_isolation
+  === Summary: exit_code=0 ===
+  ```
+
+### 9.2 S2 Machine-Readable JSON Export
+```bash
+uv run python experiments/mac_live_recorder_probe.py --json
+```
+- **Exit Code**: `0`
+
+### 9.3 S2 Automated Unit & Regression Tests
+```bash
+uv run pytest tests/eval/test_mac_live_recorder_probe.py -v
+```
+- **Exit Code**: `0` (13 passed in 0.23s).
+
+---
+
+## 10. Review of S2 STOP Conditions
+
+The plan specifies 5 explicit STOP conditions for Spike S2:
+
+1. **Plaintext temp file created**: Refuted; zero plaintext temp files on disk (all encrypted in-memory before write).
+2. **Deletion failed across restart**: Refuted; tombstone-first deletion verified idempotent and re-entrant.
+3. **Readable after key loss**: Refuted; missing key immediately raises `KeyNotFoundError` without decryption.
+4. **Forced modification of production DB**: Refuted; research storage uses an isolated directory hierarchy and dedicated key namespace, completely decoupled from `facecore.db`.
+5. **Timeout**: Refuted; spike executed well within the 1-day timebox.
+
+**Result**: All S2 requirements satisfied with reproducible empirical evidence. Ready for Reviewer r0 verification.

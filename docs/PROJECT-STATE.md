@@ -8,7 +8,7 @@
 - Phase-1B plan 的 PR-C–G（Task 1–11）及後續接線／治理修正已 merge；不是「尚未取得開工 go」。P0 已於 decision `d-20260912041106780391-34` 放行，實作全波段授權為 `d-20260912090115587658-42`。
 - 真圖 replay 已在 M3／PR #38 接入報表並重跑；不是「只有 synthetic／等待權重」。但真實 candidate creation/promotion 成效及長期 drift 尚未證明，不能宣稱治理已獲全面真實情境驗證。
 - SFace Pair 1 維持 provisional，**selection gate OPEN**。M1–M6 工作交付不等於選型條件全部滿足，更不等於安全認證或正式部署核准。
-- Operator 已同意先整理 **Phase 2A Mac 動態辨識研究原型** 設計與更新文件；[正式研究設計](specs/2026-09-14-mac-live-identification-research-design.md)／[ADR 0008](decisions/0008-mac-live-identification-research.md) 為新研究邊界；[實作計畫](plans/2026-09-14-mac-live-identification-implementation-plan.md) 已於 PR #40 merge。S1 Mac capture/UI 可行性 spike 已完成實測與 manifest 落地。相機產品程式、錄製與 mobile 尚未授權。
+- Operator 已同意先整理 **Phase 2A Mac 動態辨識研究原型** 設計與更新文件；[正式研究設計](specs/2026-09-14-mac-live-identification-research-design.md)／[ADR 0008](decisions/0008-mac-live-identification-research.md) 為新研究邊界；[實作計畫](plans/2026-09-14-mac-live-identification-implementation-plan.md) 已於 PR #40 merge。S1 Mac capture 與 S2 AEAD recorder 可行性 spike 已完成實測與 manifest 落地，S1 設備資訊完成去識別化（N2-b）。相機產品程式、錄製與 mobile 尚未授權。
 
 ## 功能與 evidence 的界線
 
@@ -50,6 +50,6 @@ Baseline/adaptive 有不同規則；2/13 對 0/13 不是純粹同 operating poin
 ## Next Session
 
 1. 讀本檔、母規格、ADR 0008、Mac 研究設計；查 git／task／inbox 活源。
-2. 設計 PR #39（`fa16843`）與實作計畫 PR #40（`69aedda`）均已 merge。S1 Mac capture 可行性 spike 已完成探測腳本與 manifest。下一步為 S2 研究 recorder spike 與 D1 選型凍結。
+2. S1 capture spike（PR #41 `1734bb5`）已 merge。S2 AEAD recorder spike 與 S1 N2-b 去識別化已完成（`experiments/mac_live_recorder_probe.py`、manifest S2 段與 tests）。下一步為 D1 選型結論凍結（docs-only，產品實作前 blocking）。
 3. Plan 規範：先 S1/S2 有界 spike、D1 選型凍結，再開工 T1–T8。未完成 D1 凍結前不寫產品程式。相機錄製需個別參與者同意；文件批准不構成同意。
 4. 不重開已完成的 P0；不把歷史骨架的缺權重、未跑真圖或本機舊 main 當現況；不重新派 M1/M2/M3/M5 已完成任務。
