@@ -56,7 +56,8 @@ docs/
     ├── 2026-09-09-portable-face-core-design.md
     └── 2026-09-14-mac-live-identification-research-design.md
 experiments/
-└── mac_live_capture_probe.py
+├── mac_live_capture_probe.py
+└── mac_live_recorder_probe.py
 facecore.sh
 pyproject.toml
 src/
@@ -170,6 +171,7 @@ tests/
 │   ├── test_fa_matrix.py
 │   ├── test_guard_expected_identity.py
 │   ├── test_mac_live_capture_probe.py
+│   ├── test_mac_live_recorder_probe.py
 │   ├── test_per_probe_detail.py
 │   ├── test_real_replay.py
 │   ├── test_replay.py
