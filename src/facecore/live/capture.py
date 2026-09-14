@@ -1,0 +1,210 @@
+"""Bounded camera capture sources and latest-slot-1 pump (Phase 2A §4 & §6 T4).
+
+Source of truth:
+    - Phase 2A Implementation Plan §4 & §6 T4;
+    - Task: t-20260914111156870952-76424-36;
+    - Governing decision: d-20260914110757304910-5;
+    - Capture backend selection: D1 §11.1 (opencv-python-headless primary
+      via AVFoundation; pyobjc-framework-AVFoundation native fallback).
+
+Hard boundaries:
+    - Production code written fresh for this task; the S1 spike probe
+      (experiments/mac_live_capture_probe.py) is evidence only and is
+      never copied (S1N3).
+    - Latest-slot-1 buffering only: an unconsumed older frame is dropped
+      immediately with the drop counter incremented; no unbounded queue.
+    - BGR→RGB contract: OpenCV delivers BGR; inference consumes
+      ``bgr[:, :, ::-1]`` losslessly. Preview mirroring stays in the UI
+      layer and never touches inference pixels.
+    - Zero ground truth labels; zero real faces in the repo.
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+import threading
+from typing import Generic, TypeVar
+
+import numpy as np
+
+from facecore.live.contracts import FramePacket
+
+T = TypeVar("T")
+
+
+class LatestSlot1Queue(Generic[T]):
+    """Single-slot bounded buffer holding only the latest pushed item."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._slot: T | None = None
+        self._has_item = False
+        self._dropped = 0
+
+    def push(self, item: T) -> None:
+        """Store the latest item; count one drop if a prior item waited."""
+        with self._lock:
+            if self._has_item:
+                self._dropped += 1
+            self._slot = item
+            self._has_item = True
+
+    def drain(self) -> T | None:
+        """Take the latest item, leaving the slot empty."""
+        with self._lock:
+            if not self._has_item:
+                return None
+            item = self._slot
+            self._slot = None
+            self._has_item = False
+            return item
+
+    @property
+    def dropped(self) -> int:
+        with self._lock:
+            return self._dropped
+
+    @property
+    def depth(self) -> int:
+        with self._lock:
+            return 1 if self._has_item else 0
+
+
+class CaptureSource(ABC):
+    """Abstract camera source lifecycle: open → read* → close."""
+
+    @abstractmethod
+    def open(self, device_id: str) -> None:
+        """Acquire the device. Raise on failure; fail-closed."""
+        ...
+
+    @abstractmethod
+    def read(self) -> FramePacket | None:
+        """Return the next packet, or None when exhausted/disconnected."""
+        ...
+
+    @abstractmethod
+    def close(self) -> None:
+        """Release the device. Idempotent."""
+        ...
+
+    @property
+    @abstractmethod
+    def is_closed(self) -> bool:
+        ...
+
+
+class FakeCapture(CaptureSource):
+    """Deterministic in-memory source for tests and camera-free smoke."""
+
+    def __init__(self, frames: list[FramePacket]) -> None:
+        self._frames = list(frames)
+        self._cursor = 0
+        self._opened = False
+        self._closed = True
+        self._lock = threading.Lock()
+
+    def open(self, device_id: str) -> None:
+        with self._lock:
+            if not device_id:
+                raise ValueError("device_id must not be empty")
+            self._opened = True
+            self._closed = False
+            self._cursor = 0
+
+    def read(self) -> FramePacket | None:
+        with self._lock:
+            if self._closed or not self._opened:
+                return None
+            if self._cursor >= len(self._frames):
+                return None
+            packet = self._frames[self._cursor]
+            self._cursor += 1
+            return packet
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+
+    @property
+    def is_closed(self) -> bool:
+        with self._lock:
+            return self._closed
+
+
+class OpenCVCapture(CaptureSource):
+    """Production OpenCV adapter (opencv-python-headless, CAP_AVFOUNDATION).
+
+    ``cv2`` is imported lazily inside :meth:`open` so module import stays
+    headless/CI-safe on hosts without the native wheel. No frame is
+    buffered here; callers move each packet into a LatestSlot1Queue.
+    """
+
+    def __init__(self, device_id: int = 0) -> None:
+        self._device_id = device_id
+        self._handle: object | None = None
+        self._sequence = 0
+        self._closed = True
+        self._lock = threading.Lock()
+
+    def open(self, device_id: str) -> None:
+        # Imported late by design: keeps module import CI-safe. (S1N3:
+        # production code is written fresh; only the backend choice and
+        # the BGR→RGB contract come from the frozen D1 selection.)
+        try:
+            import cv2  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError(
+                "opencv-python-headless is not installed; "
+                "camera capture unavailable"
+            ) from exc
+        with self._lock:
+            if not device_id:
+                raise ValueError("device_id must not be empty")
+            try:
+                index = int(device_id)
+            except ValueError:
+                index = self._device_id
+            backend = getattr(cv2, "CAP_AVFOUNDATION", 0)
+            handle = cv2.VideoCapture(index, backend)
+            if not handle.isOpened():
+                raise RuntimeError(
+                    f"camera device {device_id!r} could not be opened"
+                )
+            self._handle = handle
+            self._sequence = 0
+            self._closed = False
+
+    def read(self) -> FramePacket | None:
+        with self._lock:
+            if self._closed or self._handle is None:
+                return None
+            handle: object = self._handle
+        # NOTE: device I/O intentionally outside the state lock.
+        ret, bgr = handle.read()  # type: ignore[attr-defined]
+        if not ret or bgr is None:
+            return None
+        rgb = np.ascontiguousarray(bgr[:, :, ::-1])
+        with self._lock:
+            if self._closed:
+                return None
+            self._sequence += 1
+            import time
+
+            return FramePacket(
+                sequence=self._sequence,
+                captured_ns=time.monotonic_ns(),
+                rgb=rgb,
+            )
+
+    def close(self) -> None:
+        with self._lock:
+            handle, self._handle = self._handle, None
+            self._closed = True
+        if handle is not None:
+            handle.release()  # type: ignore[attr-defined]
+
+    @property
+    def is_closed(self) -> bool:
+        with self._lock:
+            return self._closed

@@ -107,7 +107,9 @@ src/
     │   └── utility.py
     ├── live/
     │   ├── __init__.py
+    │   ├── capture.py
     │   ├── contracts.py
+    │   ├── controller.py
     │   ├── frame_pipeline.py
     │   └── session.py
     ├── pipeline/
@@ -201,7 +203,9 @@ tests/
 │   └── test_utility_eviction.py
 ├── live/
 │   ├── __init__.py
+│   ├── test_capture.py
 │   ├── test_contracts.py
+│   ├── test_controller_integration.py
 │   ├── test_frame_pipeline.py
 │   └── test_session.py
 ├── pipeline/
