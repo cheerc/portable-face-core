@@ -108,7 +108,8 @@ src/
     ├── live/
     │   ├── __init__.py
     │   ├── contracts.py
-    │   └── frame_pipeline.py
+    │   ├── frame_pipeline.py
+    │   └── session.py
     ├── pipeline/
     │   ├── __init__.py
     │   ├── align.py
@@ -199,7 +200,8 @@ tests/
 ├── live/
 │   ├── __init__.py
 │   ├── test_contracts.py
-│   └── test_frame_pipeline.py
+│   ├── test_frame_pipeline.py
+│   └── test_session.py
 ├── pipeline/
 │   ├── __init__.py
 │   ├── test_align.py
