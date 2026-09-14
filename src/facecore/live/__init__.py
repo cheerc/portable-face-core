@@ -9,6 +9,13 @@ from facecore.live.contracts import (
     SessionResult,
     SessionStatus,
 )
+from facecore.live.capture import (
+    CaptureSource,
+    FakeCapture,
+    LatestSlot1Queue,
+    OpenCVCapture,
+)
+from facecore.live.controller import LiveController
 from facecore.live.frame_pipeline import (
     ResearchGallery,
     ScoringContext,
@@ -22,9 +29,14 @@ from facecore.live.session import (
 )
 
 __all__ = [
+    "CaptureSource",
     "DEFAULT_CONTINUITY_MAX_CENTER_DELTA_RATIO",
+    "FakeCapture",
     "FrameObservation",
     "FramePacket",
+    "LatestSlot1Queue",
+    "LiveController",
+    "OpenCVCapture",
     "ResearchGallery",
     "ResearchProfile",
     "ScoringContext",
