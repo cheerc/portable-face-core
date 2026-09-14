@@ -54,7 +54,7 @@ Evaluation of candidate capture adapters and desktop GUI frameworks on macOS arm
 | **`pyobjc-framework-AVFoundation`** | Yes (v12.2.2) | MIT | Clean; standard Apple platform bridge | Native access to `AVCaptureDeviceDiscoverySession`, TCC permission status, `AVCaptureSession`, and device disconnect notifications. Zero C++ bridge needed. | **Viable (Native Capture Candidate)** |
 | **`pyside6`** (Qt for Python) | Yes (v6.11.2) | LGPLv3 | Clean under dynamic linking; no proprietary license fee | Full desktop GUI suite; includes `QCamera`, `QMediaDevices`, `QVideoSink`, rich dialogs, and native threading support (`QThread`). | **Viable (Full GUI Candidate)** |
 | **`pyqt6`** | Yes (v6.11.0) | GPLv3 / Commercial | High copyleft risk; strict reciprocal licensing | Restrictive copyleft licensing makes GPLv3 unacceptable for portable core distribution compared to LGPLv3 / MIT. | **Rejected** |
-| **`tkinter`** | No (Missing `_tkinter` in Homebrew) | PSF / Tcl/Tk | Clean, but binary missing | Homebrew Python 3.14 on macOS does not build `_tkinter` by default (`ImportError: No module named '_tkinter'`). Cannot be assumed present out-of-the-box on developer Macs. | **Blocked as baseline GUI** |
+| **`tkinter`** | No (Missing in Homebrew) | PSF / Tcl/Tk | Clean, but binary divergence | Divergence confirmed across build environments: GitHub Actions `hostedtoolcache` Python 3.14 includes `_tkinter`, whereas Homebrew Python 3.14 on macOS arm64 omits `_tkinter` (`ImportError: No module named '_tkinter'`). Cannot be relied upon as an out-of-the-box cross-environment GUI. | **Blocked as baseline GUI** |
 
 ---
 

@@ -48,7 +48,9 @@ def test_probe_environment_and_packaging() -> None:
     assert "installed_dependencies" in result.details
     assert "onnxruntime" in result.details["installed_dependencies"]
     assert "candidate_libraries_license_matrix" in result.details
-    assert not result.details["tkinter_available"]  # Confirmed on Python 3.14 Homebrew
+    assert "tkinter_available" in result.details
+    # Host divergence: True on GitHub hostedtoolcache, False on Homebrew Python 3.14
+    assert isinstance(result.details["tkinter_available"], bool)
 
 
 def test_probe_camera_permissions_synthetic() -> None:
