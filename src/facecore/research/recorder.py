@@ -56,6 +56,11 @@ from facecore.storage.cipher import AeadCipher
 MAX_FRAMES_PER_SESSION = 25
 SCHEMA_VERSION = "v1"
 
+# T5 N1 (reviewer-gated): decoded-frame sanity cap — a single frame may not
+# exceed 4096 px per side or ~30 MiB of raw RGB bytes.
+MAX_FRAME_SIDE_PX = 4096
+MAX_FRAME_BYTES = 30 * 1024 * 1024
+
 _RESEARCH_AAD_PREFIX = b"facecore:research:v1:"
 MAX_AAD_FIELD_BYTES = 65535
 
@@ -428,9 +433,21 @@ class ResearchRecorder:
             ) from exc
         try:
             payload = json.loads(plaintext.decode("utf-8"))
+            height, width = int(payload["height"]), int(payload["width"])
+            if (
+                height <= 0
+                or width <= 0
+                or height > MAX_FRAME_SIDE_PX
+                or width > MAX_FRAME_SIDE_PX
+                or height * width * 3 > MAX_FRAME_BYTES
+            ):
+                raise ValueError(
+                    f"session {session_id!r} frame {index} dims "
+                    f"{width}x{height} exceed sanity cap"
+                )
             rgb = np.frombuffer(
                 bytes.fromhex(payload["pixels_hex"]), dtype=np.uint8
-            ).reshape(int(payload["height"]), int(payload["width"]), 3)
+            ).reshape(height, width, 3)
             return FramePacket(
                 sequence=int(payload["sequence"]),
                 captured_ns=int(payload["captured_ns"]),

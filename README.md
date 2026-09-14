@@ -132,7 +132,9 @@ src/
     │   ├── __init__.py
     │   ├── keys.py
     │   ├── recorder.py
-    │   └── records.py
+    │   ├── records.py
+    │   ├── replay.py
+    │   └── report.py
     └── storage/
         ├── __init__.py
         ├── cipher.py
@@ -226,7 +228,9 @@ tests/
 │   ├── __init__.py
 │   ├── test_recorder.py
 │   ├── test_recorder_recovery.py
-│   └── test_records.py
+│   ├── test_records.py
+│   ├── test_replay.py
+│   └── test_report.py
 └── storage/
     ├── __init__.py
     ├── test_cipher.py
