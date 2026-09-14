@@ -1,7 +1,7 @@
 # Phase 2A：Mac 動態辨識研究原型設計
 
 - 日期：2026-09-14
-- 狀態：operator 已同意方向並授權整理正式設計／更新文件；本文件待正常 review／merge。尚未授權產品實作或開始蒐集影像。
+- 狀態：設計已經 PR #39 review／merge；operator 2026-09-14 已批准撰寫 [implementation plan](../plans/2026-09-14-mac-live-identification-implementation-plan.md)。尚未授權產品實作、spike 執行或開始蒐集影像。
 - 上位規格：[Portable Face Core Design](2026-09-09-portable-face-core-design.md)；階段決策：[ADR 0008](../decisions/0008-mac-live-identification-research.md)。
 - Phase 2A 是新增的研究子階段，不是 Android／iOS 開發，也不是模型選型或 Phase-1B 全面驗收通過的宣告。
 

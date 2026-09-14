@@ -43,7 +43,8 @@ docs/
 │   └── 0008-mac-live-identification-research.md
 ├── plans/
 │   ├── 2026-09-10-phase-1a-implementation-plan.md
-│   └── 2026-09-12-phase-1b-implementation-plan.md
+│   ├── 2026-09-12-phase-1b-implementation-plan.md
+│   └── 2026-09-14-mac-live-identification-implementation-plan.md
 ├── research/
 │   ├── 2026-09-09-open-source-face-stack.md
 │   ├── 2026-09-10-model-candidate-gate.md
