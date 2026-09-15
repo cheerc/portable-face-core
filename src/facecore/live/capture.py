@@ -132,6 +132,58 @@ class FakeCapture(CaptureSource):
             return self._closed
 
 
+LOCAL_CAMERA_SCAN_MAX = 8
+
+#: A probe frame this dark counts as no usable picture (black-lens side).
+LOCAL_CAMERA_BLACK_MEAN = 5.0
+
+
+#: Probe reads per device: exposure needs a few frames to settle after
+#: open; judging by the first frame alone misfires on a live camera.
+LOCAL_CAMERA_PROBE_READS = 5
+
+
+def resolve_local_camera(*, scan_max: int = LOCAL_CAMERA_SCAN_MAX) -> str:
+    """Resolve the local Mac camera to a stable device id string.
+
+    Enumeration drifts (a departed iPhone moves the body camera from 1
+    to 0), so a bare int is unreliable. Probe indices 0..scan_max in
+    order; the first device that opens AND reads a non-black frame wins.
+    Each device gets a few warm-up reads (exposure settles after open).
+    Probes are released immediately. Nothing qualifying raises
+    RuntimeError explicitly — never a silent fallback (issue #65).
+    """
+    try:
+        import cv2  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise RuntimeError(
+            "opencv-python-headless is not installed; "
+            "camera capture unavailable"
+        ) from exc
+    backend = getattr(cv2, "CAP_AVFOUNDATION", 0)
+    for index in range(scan_max):
+        handle = cv2.VideoCapture(index, backend)
+        try:
+            if not handle.isOpened():
+                continue
+            brightest = 0.0
+            for _ in range(LOCAL_CAMERA_PROBE_READS):
+                ret, frame = handle.read()
+                if ret and frame is not None:
+                    brightest = max(
+                        brightest, float(np.asarray(frame).mean())
+                    )
+            if brightest < LOCAL_CAMERA_BLACK_MEAN:
+                continue
+            return str(index)
+        finally:
+            handle.release()
+    raise RuntimeError(
+        "no readable local camera found in "
+        f"indices 0..{scan_max - 1}; refusing to guess"
+    )
+
+
 class OpenCVCapture(CaptureSource):
     """Production OpenCV adapter (opencv-python-headless, CAP_AVFOUNDATION).
 
@@ -151,8 +203,11 @@ class OpenCVCapture(CaptureSource):
         # Imported late by design: keeps module import CI-safe. (S1N3:
         # production code is written fresh; only the backend choice and
         # the BGR→RGB contract come from the frozen D1 selection.)
+        # NOTE: the import-not-found ignore lives on the first cv2 import
+        # in this file (resolve_local_camera); mypy reports a repeated
+        # lazy import only once, so this site carries no ignore comment.
         try:
-            import cv2  # type: ignore[import-not-found]
+            import cv2
         except ImportError as exc:
             raise RuntimeError(
                 "opencv-python-headless is not installed; "
@@ -161,10 +216,13 @@ class OpenCVCapture(CaptureSource):
         with self._lock:
             if not device_id:
                 raise ValueError("device_id must not be empty")
-            try:
-                index = int(device_id)
-            except ValueError:
-                index = self._device_id
+            if device_id == "local":
+                index = int(resolve_local_camera())
+            else:
+                try:
+                    index = int(device_id)
+                except ValueError:
+                    index = self._device_id
             backend = getattr(cv2, "CAP_AVFOUNDATION", 0)
             handle = cv2.VideoCapture(index, backend)
             if not handle.isOpened():
