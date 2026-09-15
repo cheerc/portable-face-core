@@ -159,6 +159,18 @@ known timing flake: passes isolated/rerun, untouched by T4–T8 paths).
 - Staged frames are encrypted at rest, repo-external, and deleted with
   the session chain immediately after acceptance (no 7-day wait).
 
+## 9c. Frame-count semantics (small-gaps batch; two counters, not one)
+
+- `manifest.frame_count` (recorder `state.frame_count`, recorder.py) =
+  number of frames ACTUALLY STAGED encrypted, capped by
+  `MAX_FRAMES_PER_SESSION`; replay re-reads exactly this many blobs.
+- Engine observation/sample counts = number of frames SCORED (incl.
+  quality-rejected and envelope-only fake-path frames); never written
+  to the manifest. A session may score N frames yet stage M < N.
+- Replay contract: `window`/`frames_replayed` derive from staged blobs
+  only; `frame_scores` (per-frame ledger) derive from scored
+  observations. Do not compare them as the same denominator.
+
 ## 9. Tool-readiness claim boundary (T8)
 
 - MAY claim: research tooling is ready (camera-free E2E, sealed
