@@ -90,7 +90,14 @@ def replay_session(
     model_generation: str,
     gallery_digest: str,
 ) -> ReplayResult:
-    """Decrypt a committed bundle and re-run scorer + engine deterministically."""
+    """Decrypt a committed bundle and re-run scorer + engine deterministically.
+
+    Count semantics (small-gaps batch): `manifest.frame_count` counts
+    STAGED encrypted blobs only (capped by MAX_FRAMES_PER_SESSION);
+    `window`/`frames_replayed` below derive from those blobs, while
+    `frame_scores` derive from scored observations — the two denominators
+    differ by design, see runbook §9c.
+    """
     recorder = ResearchRecorder(
         store_root=store_root, key_dir=key_dir, clock=clock
     )
