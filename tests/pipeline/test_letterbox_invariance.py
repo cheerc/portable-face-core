@@ -126,3 +126,28 @@ def test_restored_landmark_spread_matches_square_reference() -> None:
         assert got == pytest.approx(ref, rel=1e-6), (
             f"{name}: landmark spread {got:.4f} != square ref {ref:.4f}"
         )
+
+
+def test_restored_absolute_geometry_pins_centered_convention() -> None:
+    """Absolute restored coordinates pin the centered-pad convention.
+
+    The stub decodes to 640-space box (316, 316, 8, 8); landmarks
+    x=[304,312,320,328,336], y=[312,320,328,312,328]. With the locked
+    convention (uniform scale + CENTERED zero pad) the restored values
+    below follow by hand computation — e.g. portrait-9:16 (360x640):
+    scale=min(640/360, 640/640)=1.0, pad_x=(640-360)/2=140, so
+    x=(316-140)/1=176. A top-left pad convention would restore x=316;
+    a +5% scale error would restore x=167.6, w=7.6 — both fail here.
+
+    Odd-width rounding asymmetry (canvas placement uses int(round(pad))
+    while restore uses the exact float pad) is deliberately NOT pinned:
+    all shapes below have even pads, and the 0.5px non-symmetry must not
+    be \"fixed\" by touching the restore formula (reviewer note).
+    """
+    det = _detector()
+    assert _restore(det, 640, 640).box == pytest.approx((316.0, 316.0, 8.0, 8.0))
+    assert _restore(det, 360, 640).box == pytest.approx((176.0, 316.0, 8.0, 8.0))
+    assert _restore(det, 640, 360).box == pytest.approx((316.0, 176.0, 8.0, 8.0))
+    portrait_landmarks = _restore(det, 360, 640).landmarks
+    assert portrait_landmarks[0] == pytest.approx((164.0, 312.0))
+    assert portrait_landmarks[4] == pytest.approx((196.0, 328.0))
