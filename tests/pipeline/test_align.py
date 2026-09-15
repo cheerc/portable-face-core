@@ -20,5 +20,5 @@ def test_same_input_yields_byte_identical_crop() -> None:
     first = align_crop(pixels, 64, 64, face)
     second = align_crop(pixels, 64, 64, face)
     assert first.pixels == second.pixels
-    assert first.contract_version == ALIGN_CONTRACT_VERSION == 2
+    assert first.contract_version == ALIGN_CONTRACT_VERSION == 3
     assert (first.width, first.height) == (112, 112)
