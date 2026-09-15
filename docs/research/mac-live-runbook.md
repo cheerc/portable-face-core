@@ -171,6 +171,20 @@ known timing flake: passes isolated/rerun, untouched by T4–T8 paths).
   only; `frame_scores` (per-frame ledger) derive from scored
   observations. Do not compare them as the same denominator.
 
+## 9d. Capture shape contract (Fix-2 spec; device-independent)
+
+- Where the system's own UI captures, it presents a **square alignment
+  guide and yields a square image** (pyside6, Cocoa closed) — portrait
+  vs landscape must not change face geometry.
+- This is ergonomic/consistency only, **never a correctness
+  precondition**: arbitrary-aspect images (corpora, replay, import,
+  mobile) must score correctly per the §6 aspect-invariance rule.
+- Device notes: macOS AVFoundation default may yield 720x1280 portrait
+  with no `CAP_PROP` set by this codebase; do not assume a resolution —
+  the numerical path must be invariant to whatever shape arrives.
+  `orientation` on FramePacket stays 0 on the capture path; the
+  normalizer in `score_frame` is dormant there by design.
+
 ## 9. Tool-readiness claim boundary (T8)
 
 - MAY claim: research tooling is ready (camera-free E2E, sealed

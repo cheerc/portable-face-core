@@ -1,6 +1,6 @@
 # Project State
 
-更新：2026-09-15。證據基準：PR #54 merge `44b70de386284ccbdaf5641d99922a5d87966a21`。啟動 session 時仍須查 live main／board；本檔不是 daemon 工作快照。
+更新：2026-09-15。證據基準：PR #56 merge `fab5c43f850d1fc60d9644b86369ce863c99570a`。啟動 session 時仍須查 live main／board；本檔不是 daemon 工作快照。
 
 ## 現在在哪裡
 
@@ -9,8 +9,9 @@
 - 真圖 replay 已在 M3／PR #38 接入報表並重跑；不是「只有 synthetic／等待權重」。但真實 candidate creation/promotion 成效及長期 drift 尚未證明，不能宣稱治理已獲全面真實情境驗證。
 - SFace Pair 1 維持 provisional，**selection gate OPEN**。M1–M6 工作交付不等於選型條件全部滿足，更不等於安全認證或正式部署核准。
 - **Phase 2A 實作鏈 T1–T8 已全數 merge**（PR #44–#51），並補完計畫外三項缺口：真機相機接線 PR #52（T7 的 `--device` 非 fake 分支原為 exit 2 死路，T1–T8 只驗 fake pump）、device 透傳＋live 時鐘修復 PR #53、加密存幀接線＋逐幀 ID ledger＋replay 真 gallery 重建 PR #54。[正式研究設計](specs/2026-09-14-mac-live-identification-research-design.md)／[ADR 0008](decisions/0008-mac-live-identification-research.md)／[實作計畫](plans/2026-09-14-mac-live-identification-implementation-plan.md) 為研究邊界。
-- **真人 smoke 已執行（operator 本人，單一參與者）**：六次 session 下來鏈路跑通——相機→取幀→真實 YuNet+SFace 評分→session engine→AEAD 加密鏈→回放→刪除。有效輪（blind-005/006）採到真人幀並產生 per-frame ledger，**但頂候選皆非本人、全部落 review 帶、margin 0.017–0.041，operator 現場判定辨識結果錯誤**；原因未查。所有 session 已依同意設計全數刪除（零殘留），故目前**沒有任何封存 session 語料**。
-- 據此可宣稱：**Phase 2A 工具鏈就緒且已在真機上通過一次端到端執行（執行成功、辨識失敗）**。不可宣稱：校準完成、辨識可用、誤認率為 0、準備部署。
+- **真人 smoke 已執行（operator 本人，單一參與者）**：六次 session 下來鏈路跑通——相機→取幀→真實 YuNet+SFace 評分→session engine→AEAD 加密鏈→回放→刪除。有效輪（blind-005/006）採到真人幀並產生 per-frame ledger，**但頂候選皆非本人、全部落 review 帶、margin 0.017–0.041，operator 現場判定辨識結果錯誤**；原因已查明為前處理長寬比形變 bug（[ADR 0009](decisions/0009-preprocessing-aspect-invariance.md)，decision `d-20260915071553820286-1` operator go 修復中）。所有 session 已依同意設計全數刪除（零殘留），故目前**沒有任何封存 session 語料**。
+- 據此可宣稱：**Phase 2A 工具鏈就緒且已在真機上通過一次端到端執行（執行成功、辨識失敗，失敗原因為已定位的前處理 bug，非模型／門檻／gallery 問題）**。不可宣稱：校準完成、辨識可用、誤認率為 0、準備部署。
+- **Phase 2A／2B 界線（2026-09-15 修訂）：** 2A＝工具正確性＋前處理不變性＋團隊可自足的 §9 項目，**不設準確率目標**；2B＝研究有效性（§5 對照臂、§8 分母、holdout 切分、未註冊參與者 session）。未註冊參與者 session 移至 2B，不構成 2A 收尾條件。引導 UI 定案為 **pyside6** 真窗＋方形對齊框（Cocoa 關閉）；方形框為採集側措施，不替代 §6 不變量。
 
 ## 功能與 evidence 的界線
 
@@ -31,6 +32,8 @@
 | 2A 真機 smoke | 本機執行，無 repo artifact | 一位已註冊參與者、六次 session；鏈路端到端通、per-frame ledger 產出；**頂候選非本人、全落 review、margin ≤0.041**。session 已全刪，不可重算；不支持任何準確率宣稱 |
 
 M3 的 6 個 correct-supervision 事件最高 score 約 0.6785，均低於 candidate update 0.88；其餘 7 個為 not_me。這證明本串流沒有建立 candidate，**不證明學習增益或長期不污染**。M1 的 30 non-target 未包含在這 13 事件中；不能把 4/30 FA 說成那 7 個 not_me 的子集。Replay 的 retirements/rollbacks 固定 close-out 段須與真實輸入觸發分開，不計為現場生命週期成功證據。
+
+**Contract v1 標註（只標註不重詮釋，2026-09-15）：** 上表 M1／M5／M3 皆為 `ALIGN_CONTRACT_VERSION=1` 下的量測——gallery 側方形（形變 1.0）、探針側 1440x1920（形變 1.333）。是否需重詮釋或重測為另行決策，**不在本次授權內**，任何人不得據此觸碰既有選型報表。
 
 Baseline/adaptive 有不同規則；2/13 對 0/13 不是純粹同 operating point 的模型 A/B 勝負。檔名序只為授權的 replay 排序，不代表時間或年齡趨勢。零觀察誤認不代表零真實風險；小 gallery 不外推 500 人。**靜態 M1/M5 成績不推論動態 session 成績，反向亦然；2A smoke 的辨識錯誤不等於靜態 pipeline 迴歸，須由 spike 分離成因後才能歸因。**
 

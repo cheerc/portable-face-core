@@ -128,6 +128,14 @@ The portable contract versions all of the following:
 - model and preprocessing manifest;
 - template serialization and result JSON.
 
+Versioning these stages is necessary but not sufficient: a stage can be versioned and still be silently wrong for a subset of inputs. The preprocessing chain therefore carries one explicit invariant.
+
+**Source aspect ratio is preserved end to end.** Any resize onto a fixed network input uses a single uniform scale plus padding; face box and landmark coordinates are restored through that same uniform scale and the same padding offset, never through independent per-axis factors. The aligned crop is derived from the landmark constellation, not from a raw detection box resized anisotropically. Consequently the embedding produced for one face must be invariant, within a stated numeric tolerance, to the aspect ratio and letterboxing of the frame that carried it.
+
+Layer-A conformance covers this directly: fixtures include non-square inputs whose restored geometry must match the square-input reference within tolerance. These fixtures stay face-free, so the check adds no privacy surface.
+
+This invariant is stated explicitly because its absence is not hypothetical. A fixed-square detector resize with per-axis coordinate restoration satisfied every versioned-stage requirement above while distorting every non-square input, and the resulting embedding displacement was large enough to collapse open-set margins to near zero.
+
 Phase 1A commits a deterministic fixture generator rather than biometric images. At test time it generates face-free gradients, checkerboards, chroma patterns, EXIF-orientation cases, and synthetic tensors. Committed expected JSON values cover decoding, orientation, color order, resize, crop, padding, interpolation, tensor layout, scaling, normalization, embedding normalization, and numeric encoding. A macOS self-conformance command must reproduce those values.
 
 These Layer-A fixtures do not validate detector or landmark equivalence on real faces. A reproducible and privacy-reviewed real-face conformance carrier remains a Phase-2 entry problem; it must not become an indefinite out-of-band biometric fixture by default. Android/iOS must pass cross-runtime conformance before mobile evaluation begins. Platform accelerators such as NNAPI or Core ML are optional optimizations; CPU correctness is the baseline.
@@ -151,6 +159,10 @@ No person is asked to submit many headshots or perform a long scan. A single acc
 Quality policy is versioned and must declare at least sharpness, usable face-pixel size, yaw/pitch bounds, exposure or illumination, occlusion, and detector confidence. The implementation plan selects measurable definitions and defaults rather than treating “high quality” as an undocumented model judgment.
 
 Zero-face, multi-face, low-quality, or incompatible decoded samples return `invalid_input` with reason codes and do not create a partial identity. Unreadable or undecodable input is a process/input failure and likewise never creates a partial identity.
+
+**Capture shape.** Where an enrollment or identification image is produced by a camera under this system's own UI, that UI presents a square alignment guide and yields a square image, so face geometry does not depend on whether the device was held in portrait or landscape.
+
+This is an ergonomic and consistency measure for images this system captures. It is **not** a precondition for correctness. Images from any other source — existing corpora, replay, import, future mobile adapters — carry arbitrary aspect ratios, and the §6 aspect-invariance requirement holds for all of them. A capture-side convention must never be relied upon to keep the numerical path correct.
 
 ## 8. Identification Policy
 
