@@ -10,7 +10,7 @@
 - SFace Pair 1 維持 provisional，**selection gate OPEN**。M1–M6 工作交付不等於選型條件全部滿足，更不等於安全認證或正式部署核准。
 - **Phase 2A 實作鏈 T1–T8 已全數 merge**（PR #44–#51），並補完計畫外三項缺口：真機相機接線 PR #52（T7 的 `--device` 非 fake 分支原為 exit 2 死路，T1–T8 只驗 fake pump）、device 透傳＋live 時鐘修復 PR #53、加密存幀接線＋逐幀 ID ledger＋replay 真 gallery 重建 PR #54。[正式研究設計](specs/2026-09-14-mac-live-identification-research-design.md)／[ADR 0008](decisions/0008-mac-live-identification-research.md)／[實作計畫](plans/2026-09-14-mac-live-identification-implementation-plan.md) 為研究邊界。
 - **真人 smoke 已執行（operator 本人，單一參與者）**：六次 session 下來鏈路跑通——相機→取幀→真實 YuNet+SFace 評分→session engine→AEAD 加密鏈→回放→刪除。有效輪（blind-005/006）採到真人幀並產生 per-frame ledger，**但頂候選皆非本人、全部落 review 帶、margin 0.017–0.041，operator 現場判定辨識結果錯誤**；原因未查。所有 session 已依同意設計全數刪除（零殘留），故目前**沒有任何封存 session 語料**。
-- 據此可宣稱：**Phase 2A 工具鏈就緒且已在真機上通過一次端到端執行**。不可宣稱：校準完成、辨識可用、誤認率為 0、準備部署。
+- 據此可宣稱：**Phase 2A 工具鏈就緒且已在真機上通過一次端到端執行（執行成功、辨識失敗）**。不可宣稱：校準完成、辨識可用、誤認率為 0、準備部署。
 
 ## 功能與 evidence 的界線
 
