@@ -1,5 +1,8 @@
 """Deterministic versioned alignment: box crop, pad, resize to 112x112 (Task 5).
 
+Contract version 2 (PR-1, ADR 0009 Decision 3): detector input uses uniform
+scale + centered zero padding, so restored box/landmark geometry feeding
+this crop is aspect-preserving. Crop math itself unchanged from version 1.
 Contract version 1: nearest-neighbor resize, edge padding, RGB byte output.
 """
 
@@ -9,7 +12,7 @@ from PIL import Image
 
 from facecore.pipeline.detect import DetectedFace
 
-ALIGN_CONTRACT_VERSION = 1
+ALIGN_CONTRACT_VERSION = 2
 ALIGN_SIZE = 112
 
 

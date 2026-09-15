@@ -10,8 +10,10 @@ source DecodedImage pixels. NMS is score-ordered IoU suppression + top_k.
 Input: RGB DecodedImage -> BGR numpy -> pad to /32 -> NCHW float32 raw
 [0,255] (blobFromImage defaults, face_detect.cpp:136-148).
 2023mar takes fixed 640x640 (measured: other shapes rejected); the adapter
-resizes (BILINEAR, Pillow == OpenCV INTER_LINEAR default) then scales boxes
-back. 2026may symbolic dims ride the same path when fed its native shape.
+letterboxes with ONE uniform scale plus CENTERED zero padding (ADR 0009
+Decision 1: aspect preserved end to end), then restores boxes/landmarks
+through that same scale and padding offset. 2026may symbolic dims ride
+the same path when fed its native shape.
 """
 
 import hashlib
@@ -105,6 +107,29 @@ def nms(
     return kept
 
 
+def _letterbox_to(
+    bgr: np.ndarray, size: int
+) -> tuple[np.ndarray, float, float, float]:
+    """Uniform-scale + CENTERED zero-pad onto size x size.
+
+    Returns (canvas, scale, pad_x, pad_y) where a 640-space coordinate
+    restores as (x - pad_x) / scale. Centered + 0 locked by
+    test_letterbox_invariance (plan open-question 2).
+    """
+    h, w = bgr.shape[:2]
+    scale = min(size / w, size / h)
+    nw, nh = round(w * scale), round(h * scale)
+    small = np.asarray(
+        Image.fromarray(bgr).resize((nw, nh), Image.Resampling.BILINEAR)
+    )
+    canvas = np.zeros((size, size, 3), dtype=np.uint8)
+    pad_x = (size - nw) / 2.0
+    pad_y = (size - nh) / 2.0
+    y0, x0 = int(round(pad_y)), int(round(pad_x))
+    canvas[y0 : y0 + nh, x0 : x0 + nw] = small
+    return canvas, scale, pad_x, pad_y
+
+
 def _pad_to(image: np.ndarray, divisor: int = 32) -> np.ndarray:
     h, w = image.shape[:2]
     pad_h = (divisor - h % divisor) % divisor
@@ -148,17 +173,10 @@ class YuNetDetector:
         )
         bgr = rgb[:, :, ::-1]
         if self._input_size is not None:
-            resized = np.asarray(
-                Image.fromarray(bgr).resize(
-                    (self._input_size, self._input_size), Image.Resampling.BILINEAR
-                )
-            )
-            scale_x = decoded.width / self._input_size
-            scale_y = decoded.height / self._input_size
+            letterboxed, scale, pad_x, pad_y = _letterbox_to(bgr, self._input_size)
         else:
-            resized = bgr
-            scale_x = scale_y = 1.0
-        padded = _pad_to(resized)
+            letterboxed, scale, pad_x, pad_y = bgr, 1.0, 0.0, 0.0
+        padded = _pad_to(letterboxed)
         tensor = np.transpose(padded, (2, 0, 1))[None].astype(np.float32)
         raw = self._session.run(None, {"input": tensor})
         outputs = dict(
@@ -187,12 +205,15 @@ class YuNetDetector:
         return [
             DetectedFace(
                 box=(
-                    f.box[0] * scale_x,
-                    f.box[1] * scale_y,
-                    f.box[2] * scale_x,
-                    f.box[3] * scale_y,
+                    (f.box[0] - pad_x) / scale,
+                    (f.box[1] - pad_y) / scale,
+                    f.box[2] / scale,
+                    f.box[3] / scale,
                 ),
-                landmarks=tuple((x * scale_x, y * scale_y) for x, y in f.landmarks),
+                landmarks=tuple(
+                    ((x - pad_x) / scale, (y - pad_y) / scale)
+                    for x, y in f.landmarks
+                ),
                 confidence=f.confidence,
             )
             for f in kept
