@@ -187,7 +187,11 @@ class LiveController:
                 model_generation=self._terminal.model_generation,
                 gallery_digest=self._terminal.gallery_digest,
             )
-            self._release_source()
+            # Stop the background pump BEFORE releasing the source: a
+            # native read blocked in the pump thread must not race the
+            # close (AVFoundation segfaults on close-during-read).
+            # No-op when no background pump is running (sync path).
+            self._stop_and_release()
             return self._terminal
         if observation.sequence != packet.sequence:
             raise ValueError(
@@ -200,7 +204,7 @@ class LiveController:
         result = self._engine.observe(observation)
         if result is not None:
             self._terminal = result
-            self._release_source()
+            self._stop_and_release()
         return self._terminal
 
     def run_until_terminal(self, max_steps: int = 100) -> SessionResult | None:
@@ -234,7 +238,7 @@ class LiveController:
         result = self._engine.observe(observation)
         if result is not None:
             self._terminal = result
-            self._release_source()
+            self._stop_and_release()
         return result
 
     def publish_external_result(self, result: SessionResult) -> None:
@@ -246,7 +250,7 @@ class LiveController:
                 f"live session is {live!r} — discarded, never shown in UI"
             )
         self._terminal = result
-        self._release_source()
+        self._stop_and_release()
 
     # -- clock / finish / close --------------------------------------------------
     def _controller_now_ns(self) -> int:
@@ -267,7 +271,7 @@ class LiveController:
         if effective > deadline:
             effective = now_ns
         self._terminal = self._engine.finish(effective)
-        self._release_source()
+        self._stop_and_release()
         return self._terminal
 
     def run_with_timeout(self, timeout_ns: int) -> SessionResult:
@@ -301,7 +305,7 @@ class LiveController:
         if self._terminal is not None:
             return self._terminal
         self._terminal = self._engine.finish(deadline_ns)
-        self._release_source()
+        self._stop_and_release()
         assert self._terminal.session_id == live
         return self._terminal
 
@@ -310,14 +314,44 @@ class LiveController:
         with self._lock:
             self._join_tracked_locked()
 
+    def _stop_and_release(self) -> None:
+        """Stop the pump, join it (bounded), then release — iff safe.
+
+        The pump thread closes the source itself on exit, so a release
+        here is usually a no-op. It is SKIPPED while the pump is still
+        alive: releasing under an in-flight native read segfaults
+        AVFoundation (issue #64). The pump's own finally-close covers
+        the skipped case whenever its read returns. With no background
+        pump (sync path) the release always runs.
+        Must NOT be called while holding self._lock (see close()).
+
+        Honest residual: if the native read NEVER returns, the source
+        stays open and the (daemon) pump thread stays alive — verified
+        locally (closed False, joined False until the gate opens).
+        Rationale: disconnect makes AVFoundation reads fail-return, so
+        the stuck-forever case is driver-hang-only; crashing the process
+        (status quo) is strictly worse than leaking one daemon thread.
+        A watchdog for this residual is future work, not this PR.
+        """
+        self._stop_pump_and_join()
+        with self._lock:
+            joined = all(not t.is_alive() for t in self._tracked_threads)
+        if joined:
+            self._release_source()
+
     def start_background_pump(self) -> None:
         """Start the tracked pump thread (joined on close; never detached)."""
         self._require_active()
 
         def _pump_loop() -> None:
-            while not self._pump_stop.is_set():
-                if not self._pump_once():
-                    break
+            try:
+                while not self._pump_stop.is_set():
+                    if not self._pump_once():
+                        break
+            finally:
+                # The pump thread owns the source close on its way out:
+                # close and read never run concurrently on two threads.
+                self._release_source()
 
         thread = threading.Thread(
             target=_pump_loop, name="t4-capture-pump", daemon=True
@@ -335,16 +369,21 @@ class LiveController:
             pass
 
     def close(self) -> None:
-        """Stop the pump, release the source, join every tracked worker."""
+        """Stop the pump, join it, then release the source.
+
+        Ordering (issue #64): the pump thread closes the source itself
+        on exit; this release is a no-op then. Never release while a
+        native read may still be in flight.
+        """
         with self._lock:
             if self._closed:
                 self._join_tracked_locked()
                 return
             self._closed = True
             self._pump_stop.set()
+            self._join_tracked_locked()
         self._release_source()
         with self._lock:
-            self._join_tracked_locked()
             self._pump_thread = None
 
     def _join_tracked_locked(self) -> None:
