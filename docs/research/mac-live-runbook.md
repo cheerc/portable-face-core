@@ -146,6 +146,19 @@ Full-suite verification: `uv run --extra dev pytest tests/ -q`
 `git diff --check` — all green at T8 HEAD (capacity growth-ratio is a
 known timing flake: passes isolated/rerun, untouched by T4–T8 paths).
 
+## 9b. Wired frame staging (t-3; true path only)
+
+- True-path live stages each sampled frame encrypted (AEAD, 25-frame
+  cap, dims-capped) as it is scored; fake path stays envelope-only.
+- Per-frame best-match ledger (sequence/top_id/top_score/margin) rides
+  the encrypted envelope; terminal matched_identity is still written
+  only on matched — review band keeps the terminal identity empty.
+- replay accepts --models/--corpus to rebuild the true gallery
+  (without them, true bundles refuse with generation_mismatch).
+- Camera lamp flashes twice per session (open-probe + formal open).
+- Staged frames are encrypted at rest, repo-external, and deleted with
+  the session chain immediately after acceptance (no 7-day wait).
+
 ## 9. Tool-readiness claim boundary (T8)
 
 - MAY claim: research tooling is ready (camera-free E2E, sealed

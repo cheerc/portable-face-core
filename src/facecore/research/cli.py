@@ -44,7 +44,7 @@ from facecore.live.contracts import (
 )
 from facecore.live.desktop import DesktopSession
 from facecore.live.session import SessionEngine
-from facecore.research.records import ConsentRecord
+from facecore.research.records import ConsentRecord, FrameScore
 from facecore.research.recorder import ResearchRecorder
 from facecore.research.replay import ReplayRefusal, replay_session
 
@@ -138,6 +138,27 @@ def _load_profile(profile_path: Path) -> ResearchProfile:
 
 def _emit(payload: dict[str, object]) -> None:
     print(json.dumps(payload, sort_keys=True))
+
+
+def frame_score_of(observation: FrameObservation) -> FrameScore:
+    """Reduce one scored observation to its best-match ledger entry."""
+    scores = observation.identity_scores
+    if not scores:
+        return FrameScore(
+            sequence=observation.sequence,
+            top_identity=None,
+            top_score=None,
+            margin=None,
+        )
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    top_identity, top_score = ranked[0]
+    runner_up = ranked[1][1] if len(ranked) > 1 else None
+    return FrameScore(
+        sequence=observation.sequence,
+        top_identity=top_identity,
+        top_score=float(top_score),
+        margin=float(top_score - runner_up) if runner_up is not None else None,
+    )
 
 
 def _build_true_context(
@@ -274,6 +295,7 @@ def cmd_live(
         ]
         source = FakeCapture(frames=frames)
         scorer = _fake_scorer(model_generation, gallery_digest)
+        is_true_path = False
     else:
         # True camera path (Task A): external models/corpus required,
         # fail-clear otherwise. Fake path above is untouched.
@@ -333,30 +355,45 @@ def cmd_live(
             return score_frame(packet, context)
 
         window_label = "early-stop"
+        is_true_path = True
 
-    desktop = DesktopSession(
-        engine=engine, source=source, scorer=scorer, session_id=session_id
-    )
     recorder = ResearchRecorder(
         store_root=store_root, key_dir=key_dir, clock=_now_utc
+    )
+    try:
+        recorder.begin(session_id, consent)
+    except (PermissionError, ValueError) as exc:
+        print(f"research live: recorder refused: {exc}", file=sys.stderr)
+        return 4
+    # t-3: true path stages each sampled frame encrypted as it is scored;
+    # fake path keeps envelope-only behavior.
+    staged_errors: list[str] = []
+
+    def _stage_frame(packet: FramePacket) -> None:
+        try:
+            recorder.append_frame(packet)
+        except Exception as exc:
+            staged_errors.append(f"{packet.sequence}:{type(exc).__name__}")
+
+    desktop = DesktopSession(
+        engine=engine,
+        source=source,
+        scorer=scorer,
+        session_id=session_id,
+        frame_sink=_stage_frame if is_true_path else None,
     )
     import time as _time
 
     # Fix (b): the session clock anchors at the live monotonic clock on the
     # true path (fake path keeps its synthetic zero-origin stamps, so its
     # start stays 0 and its envelope stays consistent).
-    start_ns = _time.monotonic_ns() if device != "fake" else 0
+    start_ns = _time.monotonic_ns() if is_true_path else 0
     try:
         desktop.on_start(consent, now_ns=start_ns, device_id=device)
     except (PermissionError, ValueError, RuntimeError) as exc:
         print(f"research live: start refused: {exc}", file=sys.stderr)
+        recorder.abort(session_id, reason="start_refused")
         return 2
-    try:
-        recorder.begin(session_id, consent)
-    except (PermissionError, ValueError) as exc:
-        print(f"research live: recorder refused: {exc}", file=sys.stderr)
-        desktop.close()
-        return 4
     # Pump frames into the recorder's staging area as they are sampled.
     # (Desktop owns inference; recorder owns encrypted staging.)
     terminal = desktop.run_until_terminal(max_steps=50)
@@ -369,11 +406,13 @@ def cmd_live(
         # Fixed-5s comparison mode: inference terminal is locked, but an
         # image-consented recording runs to the profile deadline.
         _ = fixed_seconds
-    # Stage sampled frames is owned by the pump; here the recorder commits
-    # the terminal envelope (frames staged during the run in T8 wiring;
-    # the fake path commits the envelope for replay-shape validation).
+    # t-3: per-frame best-match ledger from scored observations; the
+    # terminal matched_identity is still written only on matched.
+    frame_scores = tuple(
+        frame_score_of(obs) for obs in desktop.observations
+    )
     try:
-        recorder.commit(terminal)
+        recorder.commit(terminal, frame_scores=frame_scores)
     except (KeyError, ValueError) as exc:
         print(f"research live: commit failed: {exc}", file=sys.stderr)
         desktop.close()
@@ -400,14 +439,56 @@ def cmd_replay(
     key_dir: Path,
     session_id: str,
     profile_path: Path,
+    models: Path | None = None,
+    corpus: Path | None = None,
+    detector_factory: Callable[[Path], Any] | None = None,
+    embedder_factory: Callable[[Path], Any] | None = None,
 ) -> int:
-    """Replay one committed bundle deterministically (labels never enter)."""
+    """Replay one committed bundle deterministically (labels never enter).
+
+    t-3: with --models/--corpus the true gallery is rebuilt and true
+    bundles replay without generation_mismatch; without them the legacy
+    fake generation is used (true bundles then refuse, fail-closed).
+    """
+    scorer: Callable[[FramePacket], FrameObservation]
     try:
         profile = _load_profile(profile_path)
         store_root = resolve_store(store)
     except (ValueError, StorePathError) as exc:
         print(f"research replay: {exc}", file=sys.stderr)
         return 2
+    if models is not None or corpus is not None:
+        if models is None or corpus is None:
+            print(
+                "research replay: --models and --corpus must be given together",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            context = _build_true_context(
+                models,
+                corpus,
+                profile,
+                detector_factory=detector_factory,
+                embedder_factory=embedder_factory,
+            )
+        except Exception as exc:
+            print(f"research replay: gallery rebuild failed: {exc}", file=sys.stderr)
+            return 2
+        from facecore.live.frame_pipeline import (  # noqa: PLC0415 (device-gated)
+            score_frame,
+        )
+
+        def _scorer(packet: FramePacket) -> FrameObservation:
+            return score_frame(packet, context)
+
+        scorer = _scorer
+        model_generation = context.gallery.generation
+        gallery_digest = context.gallery.digest
+    else:
+        scorer = _fake_scorer("cli-fake-gen-1", "cli-fake-gallery")
+        model_generation = "cli-fake-gen-1"
+        gallery_digest = "cli-fake-gallery"
     try:
         replayed = replay_session(
             session_id,
@@ -415,9 +496,9 @@ def cmd_replay(
             key_dir=key_dir,
             clock=_now_utc,
             profile=profile,
-            scorer=_fake_scorer("cli-fake-gen-1", "cli-fake-gallery"),
-            model_generation="cli-fake-gen-1",
-            gallery_digest="cli-fake-gallery",
+            scorer=scorer,
+            model_generation=model_generation,
+            gallery_digest=gallery_digest,
         )
     except ReplayRefusal as exc:
         _emit(
@@ -478,6 +559,8 @@ def main(argv: list[str] | None = None) -> int:
     replay.add_argument("--key-dir", required=False, type=Path, default=None)
     replay.add_argument("--session", required=True)
     replay.add_argument("--profile", required=True, type=Path)
+    replay.add_argument("--corpus", required=False, type=Path, default=None)
+    replay.add_argument("--models", required=False, type=Path, default=None)
 
     delete = sub.add_parser("delete")
     delete.add_argument("--store", required=True, type=Path)
@@ -514,6 +597,8 @@ def main(argv: list[str] | None = None) -> int:
             key_dir=key_dir,
             session_id=args.session,
             profile_path=args.profile,
+            models=args.models,
+            corpus=args.corpus,
         )
     if args.command == "delete":
         return cmd_delete(
