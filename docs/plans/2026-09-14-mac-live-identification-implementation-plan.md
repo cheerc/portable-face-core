@@ -191,3 +191,5 @@ D0本plan PR；S1、S2各一spike PR；D1單獨docs選型manifest PR；T1–T8�
 每PR：task source/spec section、exact base/head、RED/GREEN與CI、docs-check、non-goals、known limits、typed reviewer receipt。lead正常merge後核tree；plan/spec實質變更回作者codex修檔。reviewer對隱私/生命周期/權限風險可要求dual review，不因docs或prototype降低門檻。
 
 本plan完成＝書面scope/interface/dependency/測試契約經review及merge。產品實作完成＝T8工程與真機證據，受真人同意gate限制。研究有效性＝後續sealed session比較，另行報告。三者不能互相替代。
+
+（2026-09-15 修訂，decision `d-20260915071553820286-1`）上段第二項「產品實作完成」進一步界定為 **Phase 2A**＝T8 工程 ＋ 前處理正確性與不變性 ＋ §9 中團隊可自足的項目（UI 輸出對上、保存開關、真機故障路徑、一位已註冊參與者 smoke）。第三項「研究有效性」界定為 **Phase 2B**＝§5 對照臂、§8 分母、holdout 切分與未註冊參與者 session。**2A 不設準確率目標。** 三者仍不能互相替代。
