@@ -50,7 +50,11 @@ from facecore.contracts.crypto import (
 from facecore.errors import FaceCoreError
 from facecore.live.contracts import FramePacket, SessionResult
 from facecore.research.keys import ResearchKeyProvider
-from facecore.research.records import ConsentRecord, ResearchSessionRecord
+from facecore.research.records import (
+    ConsentRecord,
+    FrameScore,
+    ResearchSessionRecord,
+)
 from facecore.storage.cipher import AeadCipher
 
 MAX_FRAMES_PER_SESSION = 25
@@ -277,7 +281,11 @@ class ResearchRecorder:
         )
         state.frame_count += 1
 
-    def commit(self, result: SessionResult) -> None:
+    def commit(
+        self,
+        result: SessionResult,
+        frame_scores: tuple[FrameScore, ...] = (),
+    ) -> None:
         """Atomically commit the session bundle (record + staged frames)."""
         self._check_clock(self._clock())
         session_id = result.session_id
@@ -289,6 +297,7 @@ class ResearchRecorder:
             schema_version=SCHEMA_VERSION,
             consent=state.consent,
             result=result,
+            frame_scores=frame_scores,
         )
         plaintext = json.dumps(record.to_dict(), sort_keys=True).encode("utf-8")
         cipher = AeadCipher(self._keys.get_key(state.record_key_id))

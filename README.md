@@ -230,12 +230,16 @@ tests/
 │   └── test_memory.py
 ├── research/
 │   ├── __init__.py
+│   ├── test_camera_wiring.py
 │   ├── test_cli.py
+│   ├── test_cli_lifecycle.py
+│   ├── test_device_passthrough.py
 │   ├── test_recorder.py
 │   ├── test_recorder_recovery.py
 │   ├── test_records.py
 │   ├── test_replay.py
-│   └── test_report.py
+│   ├── test_report.py
+│   └── test_wired_frames.py
 └── storage/
     ├── __init__.py
     ├── test_cipher.py

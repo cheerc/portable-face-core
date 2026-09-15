@@ -48,7 +48,14 @@ class LiveController:
         *,
         sample_interval_ns: int = 200_000_000,
         max_frames: int = 25,
+        frame_sink: Callable[[FramePacket], None] | None = None,
     ) -> None:
+        """frame_sink (t-3): optional per-sampled-frame staging hook.
+
+        Called with each sampled packet AFTER scoring succeeds and BEFORE
+        engine observe, so encrypted staging (recorder.append_frame) sees
+        exactly the frames the engine scored. None keeps prior behavior.
+        """
         profile = engine.profile
         if sample_interval_ns <= 0:
             raise ValueError(
@@ -64,6 +71,8 @@ class LiveController:
         self._scorer = scorer
         self._sample_interval_ns = sample_interval_ns
         self._max_frames = max_frames
+        self._frame_sink = frame_sink
+        self._scored_observations: list[FrameObservation] = []
 
         self._queue: LatestSlot1Queue[FramePacket] = LatestSlot1Queue()
         self._session_id: str | None = None
@@ -106,6 +115,7 @@ class LiveController:
             self._next_sample_ns = now_ns
             self._last_sequence = 0
             self._terminal = None
+            self._scored_observations = []
             self._pump_stop.clear()
 
     def _require_active(self) -> str:
@@ -184,6 +194,9 @@ class LiveController:
                 "scorer returned observation for "
                 f"sequence {observation.sequence}, expected {packet.sequence}"
             )
+        self._scored_observations.append(observation)
+        if self._frame_sink is not None:
+            self._frame_sink(packet)
         result = self._engine.observe(observation)
         if result is not None:
             self._terminal = result
@@ -369,3 +382,8 @@ class LiveController:
     @property
     def current_session_id(self) -> str | None:
         return self._session_id
+
+    @property
+    def scored_observations(self) -> list[FrameObservation]:
+        """Copy of scored observations in sample order (t-3 ledger source)."""
+        return list(self._scored_observations)

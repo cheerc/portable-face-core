@@ -55,6 +55,7 @@ class DesktopSession:
         *,
         sample_interval_ns: int = 200_000_000,
         max_frames: int = 25,
+        frame_sink: Callable[[FramePacket], None] | None = None,
     ) -> None:
         if not session_id:
             raise ValueError("session_id must not be empty")
@@ -64,6 +65,7 @@ class DesktopSession:
             scorer=scorer,
             sample_interval_ns=sample_interval_ns,
             max_frames=max_frames,
+            frame_sink=frame_sink,
         )
         self._engine = engine
         self._session_id = session_id
@@ -211,3 +213,8 @@ class DesktopSession:
     @property
     def terminal(self) -> SessionResult | None:
         return self._terminal
+
+    @property
+    def observations(self) -> list[FrameObservation]:
+        """Scored observations in sample order (t-3 ledger source)."""
+        return self._controller.scored_observations

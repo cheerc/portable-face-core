@@ -10,7 +10,11 @@ from facecore.research.recorder import (
     ResearchRecorder,
     build_research_aad,
 )
-from facecore.research.records import ConsentRecord, ResearchSessionRecord
+from facecore.research.records import (
+    ConsentRecord,
+    FrameScore,
+    ResearchSessionRecord,
+)
 from facecore.research.replay import (
     ReplayRefusal,
     ReplayResult,
@@ -26,6 +30,7 @@ from facecore.research.report import (
 __all__ = [
     "ClockRollbackError",
     "ConsentRecord",
+    "FrameScore",
     "LabeledOutcome",
     "MAX_FRAME_BYTES",
     "MAX_FRAME_SIDE_PX",
