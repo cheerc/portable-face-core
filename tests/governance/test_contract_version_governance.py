@@ -4,7 +4,7 @@ The gap: ALIGN_CONTRACT_VERSION had zero consumers in governance —
 a bump changed nothing downstream. These tests pin the trigger wiring:
 
 (a) bumped contract -> required new generation (via check_compatibility
-    AND the required_generation_for trigger);
+    on the derived generation string);
 (b) reproducible geometry -> re-embedded to the new generation;
 (c) unreproducible geometry -> re_enrollment_required;
 (d) cross-generation comparison refused.
@@ -17,7 +17,6 @@ from facecore.contracts.migration import ModelMigrationManifest
 from facecore.governance.contract_guard import (
     PREPROCESSING_GENERATION_FAMILY,
     current_preprocessing_generation,
-    required_generation_for,
 )
 from facecore.pipeline.align import ALIGN_CONTRACT_VERSION
 
@@ -40,17 +39,6 @@ def test_current_generation_derives_from_live_contract() -> None:
     assert current_preprocessing_generation() == (
         f"{PREPROCESSING_GENERATION_FAMILY}+align{ALIGN_CONTRACT_VERSION}"
     )
-
-
-def test_stale_generation_requires_migration_to_current() -> None:
-    """(a) Any non-live generation triggers, never silently compat."""
-    assert required_generation_for("sface-112-rgb") == (
-        current_preprocessing_generation()
-    )
-    assert required_generation_for("sface-112-rgb+align1") == (
-        current_preprocessing_generation()
-    )
-    assert required_generation_for(current_preprocessing_generation()) is None
 
 
 def test_bump_surfaces_as_migration_required_not_compat() -> None:
