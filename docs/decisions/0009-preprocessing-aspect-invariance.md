@@ -17,12 +17,12 @@ Two spikes located the cause in preprocessing, not in the model, the thresholds,
 
 Measured effect, using the real scoring chain and controls:
 
-| source | distortion | top-1 / margin |
+| source | distortion | result |
 |---|---|---|
-| square enrollment, self-comparison | 1.000 | 1.0000 / 0.4482 |
-| 1440×1920 probe, as captured | 1.333 | 0.34–0.46 / ≤0.064 |
-| same probe, letterboxed | 1.000 | 0.3988 / 0.6435 |
-| square image warped to 720×1280 | 1.778 | 0.3178 / 0.0219 |
+| square enrollment, self-comparison | 1.000 | top-1 1.0000, margin 0.4482 |
+| two 1440×1920 probes, as captured | 1.333 | top-1 0.3399 (margin 0.0151) and 0.4577 (margin 0.0639) |
+| the same two probes, letterboxed | 1.000 | top-1 0.3988 and 0.6435; the second probe's margin rose from 0.0639 to 0.0753 |
+| square image warped to 720×1280 | 1.778 | top-1 fell 1.0000 → 0.3178, margin 0.0219 |
 
 Controls separated the cause: black bars alone cost nothing (0.9682 / 0.4496), pure warping alone collapsed the margin to 0.0004, and the same image under two preprocessings produced embeddings 0.42 apart in cosine distance. A square-cropped probe still scored 0.5656 with a wrong top-1, confirming that single-photo gallery coverage is a real but much smaller residual.
 
@@ -32,7 +32,7 @@ Every versioned stage of the portable contract was satisfied throughout. Version
 
 1. Preprocessing preserves source aspect ratio end to end. Fixed-input resize uses one uniform scale plus padding; coordinates are restored through that same scale and padding offset. Per-axis restoration is prohibited.
 2. The aligned crop is produced by a similarity transform fitted to the five detected landmarks onto a canonical 112×112 template, replacing the raw-box crop. This restores compliance with the architecture already specified in the design document; it is a correction, not a new design.
-3. `ALIGN_CONTRACT_VERSION` moves from 1 to 2. Per the existing governance clause, this creates a new template generation: retained exemplars are re-embedded, and identities whose stored geometry and margin cannot reproduce the new alignment become `re_enrollment_required`. Nothing is silently re-embedded under mismatched geometry.
+3. `ALIGN_CONTRACT_VERSION` is bumped once for each of these corrections — 1 → 2 for the resize change, 2 → 3 for the alignment change. Per the existing governance clause, each bump creates a new template generation: retained exemplars are re-embedded, and identities whose stored geometry and margin cannot reproduce the new alignment become `re_enrollment_required`. Nothing is silently re-embedded under mismatched geometry.
 4. Layer-A conformance gains non-square fixtures asserting geometric invariance. They stay face-free.
 5. Evaluation artifacts measured under contract version 1 are labeled as such. They are not silently carried forward as descriptions of the shipped pipeline.
 
