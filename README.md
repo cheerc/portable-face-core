@@ -132,6 +132,7 @@ src/
     │   └── memory.py
     ├── research/
     │   ├── __init__.py
+    │   ├── __main__.py
     │   ├── cli.py
     │   ├── keys.py
     │   ├── recorder.py
