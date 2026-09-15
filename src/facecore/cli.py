@@ -904,15 +904,23 @@ def cmd_candidate_reject(candidate_id: str) -> int:
 
 
 def _runtime_manifest() -> "ModelMigrationManifest":
-    """Current-runtime canonical manifest (Task 6 import gate)."""
+    """Current-runtime canonical manifest (Task 6 import gate).
+
+    preprocessing_generation derives from the live ALIGN_CONTRACT_VERSION
+    (governance trigger): a contract bump surfaces as MIGRATION_REQUIRED
+    instead of silent compat.
+    """
     from facecore.contracts.migration import ModelMigrationManifest
+    from facecore.governance.contract_guard import (
+        current_preprocessing_generation,
+    )
 
     return ModelMigrationManifest(
         embedder_artifact_hash=(
             "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"
         ),
         detector_generation="yunet-2023mar",
-        preprocessing_generation="sface-112-rgb",
+        preprocessing_generation=current_preprocessing_generation(),
         tensor_layout="NCHW",
         normalization_contract="scale=1/128;mean=127.5;std=128",
         embedding_dimension=128,

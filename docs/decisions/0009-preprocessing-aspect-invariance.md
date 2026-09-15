@@ -4,6 +4,7 @@
 - Date: 2026-09-15
 - Amends: 0004 (ONNX-first portability) — adds an explicit invariant to the portable contract
 - Relates: 0008 (Mac live identification research) — phase boundary amended, see below
+- Implementation status: governance trigger (`contract_guard`, runtime manifest derivation) lands after PR #58; until then the 1→2 bump was applied by manual gallery rebuild only.
 
 ## Context
 
