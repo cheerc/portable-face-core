@@ -35,6 +35,8 @@ M3 的 6 個 correct-supervision 事件最高 score 約 0.6785，均低於 candi
 
 **Contract v1 標註（只標註不重詮釋，2026-09-15）：** 上表 M1／M5／M3 皆為 `ALIGN_CONTRACT_VERSION=1` 下的量測——gallery 側方形（形變 1.0）、探針側 1440x1920（形變 1.333）。是否需重詮釋或重測為另行決策，**不在本次授權內**，任何人不得據此觸碰既有選型報表。
 
+**治理缺口曾存在與消解（2026-09-15）：** `ALIGN_CONTRACT_VERSION` 升版在 PR #58 前無治理層消費者——升版不建新 generation、不重嵌、不轉 `re_enrollment_required`（手動重建前例：PR #58 1→2，research gallery digest `e98519ae`→`b3448c31`）。消解：`governance/contract_guard.py` 綁定版本→generation，runtime manifest 派生，升版即 `MIGRATION_REQUIRED`；runtime generation 字串 `sface-112-rgb`→`sface-112-rgb+align2`（本 PR 起）。
+
 Baseline/adaptive 有不同規則；2/13 對 0/13 不是純粹同 operating point 的模型 A/B 勝負。檔名序只為授權的 replay 排序，不代表時間或年齡趨勢。零觀察誤認不代表零真實風險；小 gallery 不外推 500 人。**靜態 M1/M5 成績不推論動態 session 成績，反向亦然；2A smoke 的辨識錯誤不等於靜態 pipeline 迴歸，須由 spike 分離成因後才能歸因。**
 
 原 no-weights [報告骨架](2026-09-12-model-selection-report-skeleton.md) 是歷史證據，不是最新 pending 清單。真實照片、權重、embeddings、DB、可識別逐筆 logs 均留 repo 外；跨 session 應確認外部 artifact 存活與版本，不把 `/tmp` 當永久證據庫。

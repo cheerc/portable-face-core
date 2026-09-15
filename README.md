@@ -99,6 +99,7 @@ src/
     ├── governance/
     │   ├── __init__.py
     │   ├── candidate.py
+    │   ├── contract_guard.py
     │   ├── corroboration.py
     │   ├── drift.py
     │   ├── eviction.py
@@ -202,6 +203,7 @@ tests/
 ├── governance/
 │   ├── __init__.py
 │   ├── test_candidate_pipeline.py
+│   ├── test_contract_version_governance.py
 │   ├── test_corroboration.py
 │   ├── test_drift_policy.py
 │   ├── test_model_migration.py
