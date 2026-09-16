@@ -85,6 +85,19 @@ uv run --extra dev python -m facecore.research.cli live \
 - No real-camera run is performed by CI or by this task; human smoke
   still needs separate participant consent (blocked until then).
 
+## 3c. 前置與收尾檢查腳本（issue #63；preflight 會開相機）
+
+```bash
+python scripts/live_preflight.py [--corpus MANIFEST] [--models DIR]
+python scripts/live_teardown.py --store STORE --key-dir KEYDIR --session SESSION_ID [--device INDEX]
+```
+
+- **`live_preflight.py` 會開相機**：它無條件對 index 0–3 逐一 `VideoCapture` 並讀一幀，不是 camera-free 檢查。只在 operator 確認場地、允許開相機時執行。
+- preflight 的 `gallery` 區塊只回報 manifest 檔數與 runtime generation；**它不計算 gallery digest，也不驗證 `--models`**。digest 由研究 context 自行產生。
+- preflight `exit 0` 只代表 opencv 可用並完成掃描，**不代表每個 index 都成功讀到影像**；必須讀 JSON 的 `devices[].read` 與實際選用的 index。
+- `live_teardown.py` 不帶 `--device` 就不碰相機（`camera` 欄為 `skipped`，那不是「相機已釋放」的證據）。
+- teardown 的 `store`／`keys` 檢查掃**整個**目錄，不依 `--session` 篩選；多 session 的研究 store 會被它報成殘留。請對隔離的單次驗收目錄執行，**不要為了讓它變綠而刪掉其他 session 的資料**。
+
 ## 4. S1 probe re-run (camera-free evidence, T4 acceptance carried)
 
 ```bash
