@@ -58,6 +58,7 @@ ATTEMPT_STATUSES = frozenset(
 )
 
 LABEL_KINDS = frozenset({"enrolled", "unenrolled", "uncertain"})
+SPLIT_KINDS = frozenset({"development", "holdout"})
 
 
 def _require_iso8601(value: str | None, field_name: str) -> None:
@@ -66,16 +67,13 @@ def _require_iso8601(value: str | None, field_name: str) -> None:
     try:
         datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
-        raise ValueError(
-            f"{field_name} must be ISO 8601, got {value!r}"
-        ) from exc
+        raise ValueError(f"{field_name} must be ISO 8601, got {value!r}") from exc
 
 
 def _require_study_schema(version: object) -> None:
     if version != STUDY_SCHEMA_VERSION:
         raise ValueError(
-            f"unsupported study schema {version!r}; "
-            f"expected {STUDY_SCHEMA_VERSION!r}"
+            f"unsupported study schema {version!r}; expected {STUDY_SCHEMA_VERSION!r}"
         )
 
 
@@ -150,9 +148,14 @@ class AttemptRecord:
     error_code: str | None
     bundle_ref: str | None
     schema_version: str = STUDY_SCHEMA_VERSION
+    split: str = "development"
 
     def __post_init__(self) -> None:
         _require_study_schema(self.schema_version)
+        if self.split not in SPLIT_KINDS:
+            raise ValueError(
+                f"unknown split {self.split!r}; expected one of {sorted(SPLIT_KINDS)}"
+            )
         for name in (
             "experiment_id",
             "attempt_id",
@@ -197,6 +200,7 @@ class AttemptRecord:
             "operational_status": self.operational_status,
             "error_code": self.error_code,
             "bundle_ref": self.bundle_ref,
+            "split": self.split,
         }
 
     @classmethod
@@ -218,6 +222,7 @@ class AttemptRecord:
             operational_status=data["operational_status"],
             error_code=data.get("error_code"),
             bundle_ref=data.get("bundle_ref"),
+            split=data.get("split", "development"),
         )
 
 

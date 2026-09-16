@@ -33,6 +33,7 @@ import json
 from pathlib import Path
 import sys
 from typing import Any
+from uuid import uuid4
 
 import numpy as np
 
@@ -55,6 +56,7 @@ from facecore.research.replay import (
     evaluate_arms,
     replay_session,
 )
+from facecore.research.split import ContaminationRecord
 
 # Frozen pair-1 model selection (matches production bakeoff wiring):
 # YuNet 2023mar fixed-640 detector + SFace 2021dec fp32 embedder.
@@ -82,9 +84,7 @@ def resolve_store(
     approved root.
     """
     root = (
-        repo_root
-        if repo_root is not None
-        else Path(__file__).resolve().parents[3]
+        repo_root if repo_root is not None else Path(__file__).resolve().parents[3]
     ).resolve()
     # Resolve fully (symlinks included) for the escape check.
     resolved = store.resolve()
@@ -332,9 +332,7 @@ def cmd_live(
         error_code=None,
         bundle_ref=None,
     )
-    recorder = ResearchRecorder(
-        store_root=store_root, key_dir=key_dir, clock=_now_utc
-    )
+    recorder = ResearchRecorder(store_root=store_root, key_dir=key_dir, clock=_now_utc)
     try:
         recorder.begin_attempt(attempt_manifest, attempt, consent)
     except (PermissionError, ValueError) as exc:
@@ -448,9 +446,7 @@ def cmd_live(
         )
 
         def scorer(packet: FramePacket) -> FrameObservation:
-            return score_frame(
-                packet, context, diagnostic_sink=_diagnostic_sink
-            )
+            return score_frame(packet, context, diagnostic_sink=_diagnostic_sink)
 
         window_label = "early-stop"
         is_true_path = True
@@ -529,9 +525,7 @@ def cmd_live(
         )
     # t-3: per-frame best-match ledger from scored observations; the
     # terminal matched_identity is still written only on matched.
-    frame_scores = tuple(
-        frame_score_of(obs) for obs in desktop.observations
-    )
+    frame_scores = tuple(frame_score_of(obs) for obs in desktop.observations)
     collection_window = None
     if fixed_seconds:
         from facecore.research.records import CollectionWindow
@@ -560,9 +554,7 @@ def cmd_live(
     # the committed session bundle for trace recovery.
     try:
         op_status = (
-            "completed"
-            if terminal.status.value == "matched"
-            else terminal.status.value
+            "completed" if terminal.status.value == "matched" else terminal.status.value
         )
         if op_status not in (
             "accepted",
@@ -696,9 +688,7 @@ def cmd_delete(*, store: Path, key_dir: Path, session_id: str) -> int:
     except (ValueError, StorePathError) as exc:
         print(f"research delete: {exc}", file=sys.stderr)
         return 2
-    recorder = ResearchRecorder(
-        store_root=store_root, key_dir=key_dir, clock=_now_utc
-    )
+    recorder = ResearchRecorder(store_root=store_root, key_dir=key_dir, clock=_now_utc)
     ok = recorder.delete(session_id)
     _emit({"session_id": session_id, "deleted": ok})
     return 0 if ok else 4
@@ -723,10 +713,10 @@ def cmd_analyze(
     - Encrypts and persists detailed case summaries to AEAD store under _cases.
     - Emits aggregate summary and run code to stdout (zero sensitive leaks).
     """
-    if mode != "development":
+    if mode not in ("development", "holdout"):
         print(
-            f"research analyze: mode {mode!r} is rejected in E5; "
-            "only 'development' is authorized prior to E6",
+            f"research analyze: mode {mode!r} is rejected; "
+            "only 'development' and 'holdout' are supported",
             file=sys.stderr,
         )
         return 2
@@ -763,21 +753,71 @@ def cmd_analyze(
 
     profile_digest = profile.profile_digest()
 
-    recorder = ResearchRecorder(
-        store_root=store_root, key_dir=key_dir, clock=_now_utc
+    recorder = ResearchRecorder(store_root=store_root, key_dir=key_dir, clock=_now_utc)
+
+    freeze = recorder.get_freeze(experiment_id)
+    release = recorder.get_release(experiment_id)
+
+    if mode == "holdout":
+        if freeze is None:
+            print(
+                f"research analyze: experiment {experiment_id!r} lacks "
+                "candidate freeze; holdout mode requires authorized freeze and release",
+                file=sys.stderr,
+            )
+            return 4
+        if release is None:
+            print(
+                f"research analyze: holdout for experiment {experiment_id!r} "
+                "is sealed; authorized release required before analysis",
+                file=sys.stderr,
+            )
+            return 4
+        if profile_digest != freeze.profile_digest:
+            recorder.record_contamination(
+                ContaminationRecord(
+                    contamination_id=f"cnt_{uuid4().hex[:12]}",
+                    experiment_id=experiment_id,
+                    reason="hash_mismatch",
+                    details={
+                        "expected_profile_digest": freeze.profile_digest,
+                        "got_profile_digest": profile_digest,
+                    },
+                    detected_at_utc=_now_utc().isoformat(),
+                )
     )
+            print(
+                f"research analyze: profile digest {profile_digest} does not match "
+                f"frozen candidate profile digest {freeze.profile_digest}",
+                file=sys.stderr,
+            )
+            return 4
 
     try:
         attempts = recorder.list_attempts(experiment_id=experiment_id)
     except Exception as exc:
-        print(
-            f"research analyze: failed to list attempts: {exc}", file=sys.stderr
-        )
+        print(f"research analyze: failed to list attempts: {exc}", file=sys.stderr)
         return 4
+
+    if mode == "development":
+        attempts = [
+            a
+            for a in attempts
+            if a.split == "development"
+            and (freeze is None or a.visit_id not in freeze.planned_visit_ids)
+        ]
+    elif mode == "holdout":
+        assert freeze is not None
+        attempts = [
+            a
+            for a in attempts
+            if a.split == "holdout" or a.visit_id in freeze.planned_visit_ids
+        ]
 
     if not attempts:
         print(
-            f"research analyze: no attempts found for experiment {experiment_id!r}",
+            f"research analyze: no eligible {mode} attempts found for "
+            f"experiment {experiment_id!r}",
             file=sys.stderr,
         )
         return 2
@@ -892,6 +932,8 @@ def cmd_analyze(
             traces=traces,
             profile=profile,
             mode=mode,
+            freeze=freeze,
+            release=release,
         )
     except Exception as exc:
         print(f"research analyze: analyze_batch failed: {exc}", file=sys.stderr)
@@ -947,9 +989,12 @@ def main(argv: list[str] | None = None) -> int:
     analyze.add_argument("--experiment", required=True)
     analyze.add_argument(
         "--mode",
-        choices=["development"],
+        choices=["development", "holdout"],
         default="development",
-        help="Analysis mode (E5 supports 'development' only; holdout guarded by E6)",
+        help=(
+            "Analysis mode ('development' or 'holdout' guarded by "
+            "candidate freeze/release)"
+        ),
     )
     analyze.add_argument(
         "--profile",
@@ -992,9 +1037,7 @@ def main(argv: list[str] | None = None) -> int:
             corpus=args.corpus,
         )
     if args.command == "delete":
-        return cmd_delete(
-            store=args.store, key_dir=key_dir, session_id=args.session
-        )
+        return cmd_delete(store=args.store, key_dir=key_dir, session_id=args.session)
     if args.command == "analyze":
         return cmd_analyze(
             store=args.store,
