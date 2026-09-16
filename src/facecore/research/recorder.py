@@ -31,7 +31,7 @@ Hard boundaries:
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -49,6 +49,13 @@ from facecore.contracts.crypto import (
 )
 from facecore.errors import FaceCoreError
 from facecore.live.contracts import FramePacket, SessionResult
+from facecore.research.experiment import (
+    ATTEMPT_STATUSES,
+    STUDY_SCHEMA_VERSION,
+    AttemptRecord,
+    EvaluationLabel,
+    ExperimentManifest,
+)
 from facecore.research.keys import ResearchKeyProvider
 from facecore.research.records import (
     ConsentRecord,
@@ -469,12 +476,14 @@ class ResearchRecorder:
 
     # -- expiry / reconcile / delete -------------------------------------------
     def purge_expired(self, now: datetime) -> list[str]:
-        """Purge expired images/records store-wide; returns purged ids."""
+        """Purge expired images/records/attempts store-wide; returns purged ids."""
         purged: list[str] = []
         if not self._store.is_dir():
             return purged
         for sess_dir in sorted(self._store.iterdir()):
             if not sess_dir.is_dir():
+                continue
+            if sess_dir.name.startswith("_"):
                 continue
             manifest_path = sess_dir / "manifest.json"
             if not manifest_path.is_file():
@@ -499,6 +508,24 @@ class ResearchRecorder:
             elif now >= image_exp and manifest.get("images_purged") is not True:
                 self._purge_images(session_id)
                 purged.append(session_id)
+        # F2: purge expired attempts and their label sidecars
+        attempts_root = self._store / self._ATTEMPTS_DIR
+        if attempts_root.is_dir():
+            for exp_dir in sorted(attempts_root.iterdir()):
+                if not exp_dir.is_dir():
+                    continue
+                for path in sorted(exp_dir.glob("*.enc")):
+                    attempt_id = path.stem
+                    try:
+                        _, meta = self._decrypt_attempt(path)
+                        exp_str = meta.get("record_expires_at_utc")
+                        if exp_str:
+                            record_exp = _parse_utc(str(exp_str))
+                            if now >= record_exp:
+                                self.withdraw_attempt(attempt_id)
+                                purged.append(attempt_id)
+                    except Exception:
+                        continue
         return purged
 
     def _purge_images(self, session_id: str) -> None:
@@ -525,6 +552,8 @@ class ResearchRecorder:
         for sess_dir in sorted(self._store.iterdir()):
             if not sess_dir.is_dir():
                 continue
+            if sess_dir.name.startswith("_"):
+                continue
             if (sess_dir / "manifest.json").is_file():
                 continue
             session_id = sess_dir.name
@@ -537,19 +566,316 @@ class ResearchRecorder:
     def delete(self, session_id: str) -> bool:
         """Tombstone-first re-entrant deletion; idempotent success."""
         sess_dir = self._sess_dir(session_id)
-        if not sess_dir.exists():
+        if sess_dir.exists():
+            tombstone = sess_dir / "tombstone.json"
+            if not tombstone.is_file():
+                self._atomic_write_json(
+                    tombstone,
+                    {
+                        "tombstoned_at_utc": self._clock().isoformat(),
+                        "session_id": session_id,
+                    },
+                )
             self._active.pop(session_id, None)
-            return True
-        tombstone = sess_dir / "tombstone.json"
-        if not tombstone.is_file():
-            self._atomic_write_json(
-                tombstone,
-                {
-                    "tombstoned_at_utc": self._clock().isoformat(),
-                    "session_id": session_id,
-                },
-            )
-        self._active.pop(session_id, None)
-        self._keys.destroy_session_keys(session_id)
-        shutil.rmtree(sess_dir, ignore_errors=True)
+            self._keys.destroy_session_keys(session_id)
+            shutil.rmtree(sess_dir, ignore_errors=True)
+        else:
+            self._active.pop(session_id, None)
+        # F2: cascade delete any attempts linked to this session
+        attempts_root = self._store / self._ATTEMPTS_DIR
+        if attempts_root.is_dir():
+            for exp_dir in sorted(attempts_root.iterdir()):
+                if not exp_dir.is_dir():
+                    continue
+                for path in sorted(exp_dir.glob("*.enc")):
+                    attempt_id = path.stem
+                    try:
+                        record, meta = self._decrypt_attempt(path)
+                        if (
+                            record.bundle_ref == session_id
+                            or meta.get("consent_session_id") == session_id
+                        ):
+                            self.withdraw_attempt(attempt_id)
+                    except Exception:
+                        continue
         return not sess_dir.exists()
+
+    # -- E1: attempt ledger & label sidecar (Phase 2B §12 E1) ----------------
+    #
+    # Attempt records live under ``_store / _ATTEMPTS_DIR / experiment_id /``
+    # as ``{attempt_id}.enc``; labels live under
+    # ``_store / _LABELS_DIR / {attempt_id} /`` as ``rev_{N}.enc``.
+    # Both are AEAD-encrypted under the dedicated research record DEK
+    # (``rk_{attempt_id}``) via ResearchKeyProvider.
+    _ATTEMPTS_DIR = "_attempts"
+    _LABELS_DIR = "_labels"
+
+    def _attempt_dir(self, experiment_id: str) -> Path:
+        if not experiment_id or "/" in experiment_id:
+            raise ValueError(f"invalid experiment_id {experiment_id!r}")
+        return self._store / self._ATTEMPTS_DIR / experiment_id
+
+    def _label_dir(self, attempt_id: str) -> Path:
+        if not attempt_id or "/" in attempt_id:
+            raise ValueError(f"invalid attempt_id {attempt_id!r}")
+        return self._store / self._LABELS_DIR / attempt_id
+
+    def begin_attempt(
+        self,
+        manifest: ExperimentManifest,
+        attempt: AttemptRecord,
+        consent: ConsentRecord,
+    ) -> None:
+        """Durably record an accepted attempt BEFORE camera/model work.
+
+        The durable write must succeed before the caller opens the camera.
+        If the write fails, the Start was never accepted and the camera
+        must not be opened. Idempotent on the same ``attempt_id``.
+        """
+        self._check_clock(self._clock())
+        if manifest.experiment_id != attempt.experiment_id:
+            raise ValueError(
+                f"manifest experiment_id {manifest.experiment_id!r} does not match "
+                f"attempt experiment_id {attempt.experiment_id!r}"
+            )
+        if not consent.record_consent:
+            raise PermissionError(
+                f"record consent absent for attempt {attempt.attempt_id!r}; "
+                "refusing to accept Start"
+            )
+        attempt_dir = self._attempt_dir(attempt.experiment_id)
+        attempt_path = attempt_dir / f"{attempt.attempt_id}.enc"
+        if attempt_path.is_file():
+            return  # idempotent: already accepted
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        dek = self._keys.get_or_create_record_key(attempt.attempt_id)
+        payload = {
+            **attempt.to_dict(),
+            "manifest_digest": manifest.digest(),
+            "consent_session_id": consent.session_id,
+            "record_expires_at_utc": consent.record_expires_at_utc,
+        }
+        plaintext = json.dumps(payload, sort_keys=True).encode("utf-8")
+        aad = build_research_aad(
+            STUDY_SCHEMA_VERSION, attempt.attempt_id, "attempt", "none"
+        )
+        blob = AeadCipher(dek).encrypt(plaintext, aad)
+        self._atomic_write_bytes(attempt_path, _blob_to_wire(blob))
+
+    def _decrypt_attempt(
+        self, path: Path
+    ) -> tuple[AttemptRecord, dict[str, Any]]:
+        attempt_id = path.stem
+        try:
+            wire = path.read_bytes()
+            blob = _blob_from_wire(wire)
+        except (StoreCorruptionError, OSError) as exc:
+            raise StoreCorruptionError(
+                f"corrupt wire format for attempt {attempt_id!r}"
+            ) from exc
+        try:
+            dek = self._keys.get_key(f"rk_{attempt_id}")
+        except KeyNotFoundError as exc:
+            raise StoreCorruptionError(
+                f"key missing for attempt {attempt_id!r}"
+            ) from exc
+        aad = build_research_aad(
+            STUDY_SCHEMA_VERSION, attempt_id, "attempt", "none"
+        )
+        try:
+            plaintext = AeadCipher(dek).decrypt(blob, aad)
+        except StoreCorruptionError as exc:
+            raise StoreCorruptionError(
+                f"attempt {attempt_id!r} tamper/AAD verification failed"
+            ) from exc
+        try:
+            data = json.loads(plaintext.decode("utf-8"))
+            record = AttemptRecord.from_dict(data)
+            return record, data
+        except (ValueError, KeyError, TypeError) as exc:
+            raise StoreCorruptionError(
+                f"attempt {attempt_id!r} payload invalid"
+            ) from exc
+
+    def finish_attempt(
+        self,
+        attempt_id: str,
+        *,
+        result: SessionResult | None,
+        operational_status: str,
+        error_code: str | None,
+    ) -> None:
+        """Update a durable attempt with its operational outcome."""
+        if operational_status not in ATTEMPT_STATUSES:
+            raise ValueError(
+                f"unknown operational_status {operational_status!r}"
+            )
+        path, record, meta = self._find_attempt_and_path(attempt_id)
+        if path is None or record is None:
+            raise KeyError(f"attempt {attempt_id!r} not found")
+        updated = replace(
+            record,
+            operational_status=operational_status,
+            error_code=error_code,
+            ended_at_utc=self._clock().isoformat(),
+            bundle_ref=(
+                result.session_id if result is not None else record.bundle_ref
+            ),
+        )
+        payload = {
+            **updated.to_dict(),
+            "manifest_digest": meta.get("manifest_digest", ""),
+            "consent_session_id": meta.get("consent_session_id", ""),
+            "record_expires_at_utc": meta.get("record_expires_at_utc", ""),
+        }
+        dek = self._keys.get_key(f"rk_{attempt_id}")
+        aad = build_research_aad(
+            STUDY_SCHEMA_VERSION, attempt_id, "attempt", "none"
+        )
+        plaintext = json.dumps(payload, sort_keys=True).encode("utf-8")
+        blob = AeadCipher(dek).encrypt(plaintext, aad)
+        self._atomic_write_bytes(path, _blob_to_wire(blob))
+
+    def list_attempts(
+        self, *, experiment_id: str
+    ) -> list[AttemptRecord]:
+        """List all durable attempts for one experiment."""
+        attempt_dir = self._attempt_dir(experiment_id)
+        if not attempt_dir.is_dir():
+            return []
+        results: list[AttemptRecord] = []
+        for path in sorted(attempt_dir.iterdir()):
+            if not path.is_file():
+                continue
+            if path.name.endswith(".tmp"):
+                continue
+            if not path.name.endswith(".enc"):
+                # F4 fail-closed: unrecognized or corrupt non-enc file
+                raise StoreCorruptionError(
+                    f"unrecognized or corrupt attempt file {path.name!r} "
+                    f"in {attempt_dir}"
+                )
+            record, _ = self._decrypt_attempt(path)
+            results.append(record)
+        return results
+
+    def _find_attempt(self, attempt_id: str) -> AttemptRecord | None:
+        _, record, _ = self._find_attempt_and_path(attempt_id)
+        return record
+
+    def _find_attempt_and_path(
+        self, attempt_id: str
+    ) -> tuple[Path | None, AttemptRecord | None, dict[str, Any]]:
+        """Scan all experiment dirs for one attempt by id."""
+        attempts_root = self._store / self._ATTEMPTS_DIR
+        if not attempts_root.is_dir():
+            return None, None, {}
+        for exp_dir in sorted(attempts_root.iterdir()):
+            if not exp_dir.is_dir():
+                continue
+            path = exp_dir / f"{attempt_id}.enc"
+            if path.is_file():
+                record, meta = self._decrypt_attempt(path)
+                return path, record, meta
+        return None, None, {}
+
+    def write_label(self, label: EvaluationLabel) -> None:
+        """Persist an encrypted label revision to the sidecar.
+
+        Labels are evaluator-only: they never enter inference.
+        """
+        self._check_clock(self._clock())
+        label_dir = self._label_dir(label.attempt_id)
+        target_path = label_dir / f"rev_{label.revision:04d}.enc"
+        if target_path.is_file():
+            raise ValueError(
+                f"revision {label.revision} for attempt {label.attempt_id!r} "
+                "already exists; label revisions are append-only"
+            )
+        if label_dir.is_dir():
+            existing_revs = [
+                int(p.stem.split("_")[1])
+                for p in label_dir.glob("rev_*.enc")
+                if "_" in p.stem and p.stem.split("_")[1].isdigit()
+            ]
+            if existing_revs and label.revision <= max(existing_revs):
+                raise ValueError(
+                    f"revision {label.revision} must be greater than existing "
+                    f"revisions {existing_revs}"
+                )
+        label_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            dek = self._keys.get_key(f"rk_{label.attempt_id}")
+        except KeyNotFoundError as exc:
+            raise KeyError(
+                f"attempt {label.attempt_id!r} key not found for label write"
+            ) from exc
+        plaintext = json.dumps(label.to_dict(), sort_keys=True).encode("utf-8")
+        aad = build_research_aad(
+            STUDY_SCHEMA_VERSION, label.attempt_id, "label", str(label.revision)
+        )
+        blob = AeadCipher(dek).encrypt(plaintext, aad)
+        self._atomic_write_bytes(target_path, _blob_to_wire(blob))
+
+    def read_label(self, attempt_id: str) -> EvaluationLabel:
+        """Return the latest label revision for an attempt."""
+        history = self.read_label_history(attempt_id)
+        if not history:
+            raise KeyError(f"no labels for attempt {attempt_id!r}")
+        return history[-1]
+
+    def read_label_history(
+        self, attempt_id: str
+    ) -> list[EvaluationLabel]:
+        """Return all label revisions (ascending) for an attempt."""
+        label_dir = self._label_dir(attempt_id)
+        if not label_dir.is_dir():
+            raise KeyError(f"no labels for attempt {attempt_id!r}")
+        try:
+            dek = self._keys.get_key(f"rk_{attempt_id}")
+        except KeyNotFoundError as exc:
+            raise KeyError(
+                f"key not found for attempt {attempt_id!r}"
+            ) from exc
+        labels: list[EvaluationLabel] = []
+        for path in sorted(label_dir.glob("rev_*.enc")):
+            rev_part = path.stem.split("_")[1]
+            if not rev_part.isdigit():
+                continue
+            rev_num = int(rev_part)
+            wire = path.read_bytes()
+            blob = _blob_from_wire(wire)
+            aad = build_research_aad(
+                STUDY_SCHEMA_VERSION, attempt_id, "label", str(rev_num)
+            )
+            plaintext = AeadCipher(dek).decrypt(blob, aad)
+            data = json.loads(plaintext.decode("utf-8"))
+            labels.append(EvaluationLabel.from_dict(data))
+        if not labels:
+            raise KeyError(f"no labels for attempt {attempt_id!r}")
+        return labels
+
+    def withdraw_attempt(self, attempt_id: str) -> None:
+        """Full consent withdrawal: tombstone-first + DEK destruction.
+
+        Report denominators must be recalculated after withdrawal.
+        """
+        path, _, _ = self._find_attempt_and_path(attempt_id)
+        if path is not None and path.is_file():
+            tombstone = path.with_name(f"{attempt_id}.tombstone.json")
+            if not tombstone.is_file():
+                self._atomic_write_json(
+                    tombstone,
+                    {
+                        "tombstoned_at_utc": self._clock().isoformat(),
+                        "attempt_id": attempt_id,
+                    },
+                )
+            self._keys.destroy_key(f"rk_{attempt_id}")
+            path.unlink(missing_ok=True)
+            tombstone.unlink(missing_ok=True)
+        else:
+            self._keys.destroy_key(f"rk_{attempt_id}")
+        label_dir = self._label_dir(attempt_id)
+        if label_dir.is_dir():
+            shutil.rmtree(label_dir, ignore_errors=True)

@@ -138,6 +138,25 @@ class ResearchKeyProvider:
             self._cache[key_id] = dek
         return record_key_id, image_key_id
 
+    def create_record_key(self, target_id: str) -> str:
+        """Create a dedicated record DEK (rk_{target_id}); return key id."""
+        key_id = _research_key_id("rk", target_id)
+        dek = AESGCM.generate_key(bit_length=256)
+        path = self._key_path(key_id)
+        path.write_bytes(self._seal(dek, key_id))
+        os.chmod(path, 0o600)
+        self._cache[key_id] = dek
+        return key_id
+
+    def get_or_create_record_key(self, target_id: str) -> bytes:
+        """Retrieve existing record DEK or create and persist a new one."""
+        key_id = _research_key_id("rk", target_id)
+        try:
+            return self.get_key(key_id)
+        except KeyNotFoundError:
+            self.create_record_key(target_id)
+            return self.get_key(key_id)
+
     def get_key(self, key_id: str) -> bytes:
         """Retrieve a DEK; fail closed when absent."""
         cached = self._cache.get(key_id)
