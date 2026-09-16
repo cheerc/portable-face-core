@@ -676,12 +676,35 @@ class TestCLIAnalyzeIntegration:
         for entry in trace.entries:
             recorder.append_trace("s1", entry)
 
+        profile_path = tmp_path / "profile.json"
+        profile_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "v1",
+                    "profile_version": "prof-e5",
+                    "timeout_ms": 5000,
+                    "sample_interval_ms": 200,
+                    "max_frames": 25,
+                    "queue_limit": 1,
+                    "required_support": 3,
+                    "min_support_interval_ms": 200,
+                    "match_threshold": 0.45,
+                    "review_threshold": 0.30,
+                    "margin_threshold": 0.10,
+                    "detector_version": "det-1",
+                    "quality_policy_version": "qual-1",
+                    "continuity_max_center_delta_ratio": 0.50,
+                }
+            )
+        )
+
         # Run cmd_analyze (production path)
         rc = cmd_analyze(
             store=store_dir,
             key_dir=key_dir,
             experiment_id="exp-e5",
             mode="development",
+            profile_path=profile_path,
         )
         assert rc == 0
 

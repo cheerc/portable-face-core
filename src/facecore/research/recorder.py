@@ -918,6 +918,12 @@ class ResearchRecorder:
         trace_dir = self._trace_dir(attempt_id)
         if trace_dir.is_dir():
             shutil.rmtree(trace_dir, ignore_errors=True)
+        cases_root = self._store / "_cases"
+        if cases_root.is_dir():
+            for exp_dir in cases_root.iterdir():
+                if exp_dir.is_dir():
+                    case_path = exp_dir / f"{attempt_id}.enc"
+                    case_path.unlink(missing_ok=True)
 
     # -- E2: diagnostic trace (Phase 2B §12 E2) -----------------------------
     def append_trace(self, attempt_id: str, entry: FrameTraceEntry) -> None:

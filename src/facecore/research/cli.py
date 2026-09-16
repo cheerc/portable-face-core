@@ -723,6 +723,14 @@ def cmd_analyze(
     - Encrypts and persists detailed case summaries to AEAD store under _cases.
     - Emits aggregate summary and run code to stdout (zero sensitive leaks).
     """
+    if mode != "development":
+        print(
+            f"research analyze: mode {mode!r} is rejected in E5; "
+            "only 'development' is authorized prior to E6",
+            file=sys.stderr,
+        )
+        return 2
+
     try:
         store_root = resolve_store(store)
     except (ValueError, StorePathError) as exc:
@@ -736,33 +744,24 @@ def cmd_analyze(
         )
         return 4
 
-    if profile_path is not None:
-        try:
-            profile_data = json.loads(profile_path.read_text(encoding="utf-8"))
-            profile = ResearchProfile.from_dict(profile_data)
-        except Exception as exc:
-            print(
-                f"research analyze: invalid profile at {profile_path}: {exc}",
-                file=sys.stderr,
-            )
-            return 2
-    else:
-        profile = ResearchProfile(
-            schema_version="v1",
-            profile_version="prof-e5-default",
-            timeout_ms=5000,
-            sample_interval_ms=200,
-            max_frames=25,
-            queue_limit=1,
-            required_support=3,
-            min_support_interval_ms=200,
-            match_threshold=0.45,
-            review_threshold=0.30,
-            margin_threshold=0.10,
-            detector_version=TRUE_DETECTOR_FILENAME,
-            quality_policy_version="default",
-            continuity_max_center_delta_ratio=0.50,
+    if profile_path is None:
+        print(
+            "research analyze: --profile is required and must match stored provenance",
+            file=sys.stderr,
         )
+        return 2
+
+    try:
+        profile_data = json.loads(profile_path.read_text(encoding="utf-8"))
+        profile = ResearchProfile.from_dict(profile_data)
+    except Exception as exc:
+        print(
+            f"research analyze: invalid profile at {profile_path}: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
+    profile_digest = profile.profile_digest()
 
     recorder = ResearchRecorder(
         store_root=store_root, key_dir=key_dir, clock=_now_utc
@@ -783,24 +782,65 @@ def cmd_analyze(
         )
         return 2
 
+    # Verify profile against provenance (record/trace)
+    for attempt in attempts:
+        if attempt.bundle_ref:
+            try:
+                s_rec = recorder.read_record(attempt.bundle_ref)
+                if (
+                    s_rec.result.profile_digest
+                    and s_rec.result.profile_digest != profile_digest
+                ):
+                    print(
+                        f"research analyze: profile digest {profile_digest} "
+                        "does not match stored record digest "
+                        f"{s_rec.result.profile_digest}",
+                        file=sys.stderr,
+                    )
+                    return 4
+            except KeyError:
+                pass
+            except Exception as exc:
+                print(
+                    f"research analyze: failed to verify record provenance: {exc}",
+                    file=sys.stderr,
+                )
+                return 4
+
     outcomes: list[ArmOutcome] = []
     traces: dict[str, SessionTrace] = {}
 
     for attempt in attempts:
         trace = None
-        try:
-            trace = recorder.read_trace(attempt.attempt_id)
-            traces[attempt.attempt_id] = trace
-        except Exception:
-            pass
+        trace_dir = recorder._trace_dir(attempt.attempt_id)
+        if trace_dir.is_dir() and any(trace_dir.glob("frame_*.enc")):
+            try:
+                trace = recorder.read_trace(attempt.attempt_id)
+                traces[attempt.attempt_id] = trace
+            except KeyError:
+                pass
+            except Exception as exc:
+                print(
+                    f"research analyze: integrity violation in trace for attempt "
+                    f"{attempt.attempt_id}: {exc}",
+                    file=sys.stderr,
+                )
+                return 4
 
         window = None
         if attempt.bundle_ref:
             try:
                 s_rec = recorder.read_record(attempt.bundle_ref)
                 window = s_rec.collection_window
-            except Exception:
+            except KeyError:
                 pass
+            except Exception as exc:
+                print(
+                    f"research analyze: integrity violation in record for attempt "
+                    f"{attempt.attempt_id}: {exc}",
+                    file=sys.stderr,
+                )
+                return 4
 
         if trace is not None:
             # F5: Production path calls evaluate_arms end-to-end
@@ -809,11 +849,20 @@ def cmd_analyze(
 
     labels: list[EvaluationLabel] = []
     for attempt in attempts:
-        try:
-            lbl = recorder.read_label(attempt.attempt_id)
-            labels.append(lbl)
-        except Exception:
-            pass
+        lbl_dir = recorder._label_dir(attempt.attempt_id)
+        if lbl_dir.is_dir() and any(lbl_dir.glob("rev_*.enc")):
+            try:
+                lbl = recorder.read_label(attempt.attempt_id)
+                labels.append(lbl)
+            except KeyError:
+                pass
+            except Exception as exc:
+                print(
+                    f"research analyze: integrity violation in label for attempt "
+                    f"{attempt.attempt_id}: {exc}",
+                    file=sys.stderr,
+                )
+                return 4
 
     try:
         analysis = analyze_batch(
@@ -878,10 +927,16 @@ def main(argv: list[str] | None = None) -> int:
     analyze.add_argument("--experiment", required=True)
     analyze.add_argument(
         "--mode",
-        choices=["development", "holdout"],
+        choices=["development"],
         default="development",
+        help="Analysis mode (E5 supports 'development' only; holdout guarded by E6)",
     )
-    analyze.add_argument("--profile", required=False, type=Path, default=None)
+    analyze.add_argument(
+        "--profile",
+        required=True,
+        type=Path,
+        help="Frozen research profile JSON (must match stored provenance)",
+    )
 
     args = parser.parse_args(argv)
     default_key_dir = (

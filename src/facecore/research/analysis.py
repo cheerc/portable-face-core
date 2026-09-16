@@ -273,7 +273,7 @@ class BatchAnalysis:
         if self.triggers:
             lines.append("Triggers:")
             for trig, att_ids in sorted(self.triggers.items()):
-                lines.append(f"  [{trig}]: {', '.join(att_ids)}")
+                lines.append(f"  [{trig}]: {len(att_ids)} attempts")
         return "\n".join(lines)
 
 
@@ -308,6 +308,9 @@ def _classify_failure_layer(
     profile: ResearchProfile | None,
 ) -> tuple[str, str | None]:
     """Classify the earliest blocking layer for an enrolled failure (§6)."""
+    if out_b is not None and out_b.refusal is not None:
+        return "refused", out_b.refusal
+
     if (
         attempt.operational_status in ("open_error", "setup_error", "error")
         or attempt.error_code is not None
@@ -438,39 +441,56 @@ def analyze_batch(
             elif l_rec.kind == "uncertain":
                 uncertain += 1
 
-    # Step 3: Outcomes grouped by attempt and arm (outcomes cannot expand attempted)
+    # Step 3: Outcomes grouped by attempt and run
+    outcomes_by_attempt: dict[str, list[ArmOutcome]] = {
+        att_id: [] for att_id in attempt_map
+    }
+    for outcome in outcomes:
+        if outcome.attempt_id in attempt_map:
+            outcomes_by_attempt[outcome.attempt_id].append(outcome)
+
     canonical_outcomes: dict[str, dict[str, ArmOutcome]] = {
         att_id: {} for att_id in attempt_map
     }
-    for outcome in outcomes:
-        att_id = outcome.attempt_id
-        if att_id not in attempt_map:
-            continue
-        arm_id = outcome.arm_id
-        if arm_id not in canonical_outcomes[att_id]:
-            canonical_outcomes[att_id][arm_id] = outcome
-        elif (
-            canonical_outcomes[att_id][arm_id].refusal is not None
-            and outcome.refusal is None
-        ):
-            # Prefer non-refused run as canonical live outcome
-            canonical_outcomes[att_id][arm_id] = outcome
+    for att_id, att_outs in outcomes_by_attempt.items():
+        runs: dict[str, dict[str, ArmOutcome]] = {}
+        for o in att_outs:
+            runs.setdefault(o.run_id, {})[o.arm_id] = o
+
+        # Find clean paired run (both A and B non-refused)
+        chosen_run: dict[str, ArmOutcome] | None = None
+        for r_id, arm_map in runs.items():
+            if "A" in arm_map and "B" in arm_map:
+                if arm_map["A"].refusal is None and arm_map["B"].refusal is None:
+                    chosen_run = arm_map
+                    break
+        if chosen_run is None and runs:
+            chosen_run = next(iter(runs.values()))
+        if chosen_run:
+            canonical_outcomes[att_id] = dict(chosen_run)
 
     # Step 4: Paired completeness
-    # Both A and B must exist, both full extent, neither refused
+    # Requires identical run_id, identical profile_digest, full extent, neither refused
     paired_complete_set: set[str] = set()
-    for att_id in attempt_map:
-        outs = canonical_outcomes[att_id]
-        if "A" in outs and "B" in outs:
-            p_a = outs["A"]
-            p_b = outs["B"]
-            if (
-                p_a.collection_extent == "full"
-                and p_b.collection_extent == "full"
-                and p_a.refusal is None
-                and p_b.refusal is None
-            ):
-                paired_complete_set.add(att_id)
+    for att_id, att_outs in outcomes_by_attempt.items():
+        runs = {}
+        for o in att_outs:
+            runs.setdefault(o.run_id, {})[o.arm_id] = o
+
+        for r_id, arm_map in runs.items():
+            if "A" in arm_map and "B" in arm_map:
+                p_a = arm_map["A"]
+                p_b = arm_map["B"]
+                if (
+                    p_a.run_id == p_b.run_id
+                    and p_a.profile_digest == p_b.profile_digest
+                    and p_a.collection_extent == "full"
+                    and p_b.collection_extent == "full"
+                    and p_a.refusal is None
+                    and p_b.refusal is None
+                ):
+                    paired_complete_set.add(att_id)
+                    break
 
     paired_complete = len(paired_complete_set)
 
@@ -486,11 +506,19 @@ def analyze_batch(
         invalid_input = 0
         error = 0
         cancelled = 0
-        refused = 0
         no_result = 0
         time_to_correct: list[float] = []
         time_to_wrong: list[float] = []
         nondecision: list[float] = []
+
+        # Count refusals across ALL runs for this arm without collapsing
+        refused = sum(
+            1
+            for o in outcomes
+            if o.attempt_id in attempt_map
+            and o.arm_id == arm_id
+            and o.refusal is not None
+        )
 
         for att_id, att in attempt_map.items():
             out = canonical_outcomes[att_id].get(arm_id)
@@ -629,6 +657,16 @@ def analyze_batch(
         if is_t01:
             triggers_dict.setdefault(TRIGGER_T01, []).append(att_id)
 
+        # T02: Live vs decision replay discrepancy
+        if att_id in traces:
+            live_res = traces[att_id].terminal_result
+            if live_res is not None and out_b is not None and out_b.refusal is None:
+                if (
+                    live_res.status.value != out_b.terminal
+                    or live_res.matched_identity != out_b.matched_identity
+                ):
+                    triggers_dict.setdefault(TRIGGER_T02, []).append(att_id)
+
         # T06: A correct, B unsuccessful
         if (
             lbl is not None
@@ -652,15 +690,20 @@ def analyze_batch(
         ):
             triggers_dict.setdefault(TRIGGER_T08, []).append(att_id)
 
-        # T10: Any enrolled not correctly matched by B
+        # T10: Any enrolled not correctly matched by B (refusal excluded)
         if lbl is not None and lbl.kind == "enrolled":
-            b_cor = (
-                out_b is not None
-                and out_b.terminal == SessionStatus.matched.value
-                and out_b.matched_identity == lbl.identity_id
+            b_refused = (out_b is not None and out_b.refusal is not None) or any(
+                o.arm_id == "B" and o.refusal is not None
+                for o in outcomes_by_attempt.get(att_id, ())
             )
-            if not b_cor:
-                triggers_dict.setdefault(TRIGGER_T10, []).append(att_id)
+            if not b_refused:
+                b_cor = (
+                    out_b is not None
+                    and out_b.terminal == SessionStatus.matched.value
+                    and out_b.matched_identity == lbl.identity_id
+                )
+                if not b_cor:
+                    triggers_dict.setdefault(TRIGGER_T10, []).append(att_id)
 
     triggers = {k: tuple(v) for k, v in triggers_dict.items()}
     hard_triggers_tripped = any(k in HARD_TRIGGERS for k in triggers)
@@ -679,16 +722,38 @@ def analyze_batch(
         detail: str | None = None
 
         if lbl is not None and lbl.kind == "enrolled":
-            b_cor = (
-                out_b is not None
-                and out_b.terminal == SessionStatus.matched.value
-                and out_b.matched_identity == lbl.identity_id
+            b_refused = (out_b is not None and out_b.refusal is not None) or any(
+                o.arm_id == "B" and o.refusal is not None
+                for o in outcomes_by_attempt.get(att_id, ())
             )
-            if not b_cor:
-                layer, detail = _classify_failure_layer(
-                    att, lbl, trace, out_b, profile
+            if b_refused:
+                layer = "refused"
+                detail = (
+                    out_b.refusal
+                    if out_b and out_b.refusal
+                    else next(
+                        (
+                            o.refusal
+                            for o in outcomes_by_attempt.get(att_id, ())
+                            if o.refusal
+                        ),
+                        "refused",
+                    )
                 )
                 layer_breakdown[layer] = layer_breakdown.get(layer, 0) + 1
+            else:
+                b_cor = (
+                    out_b is not None
+                    and out_b.terminal == SessionStatus.matched.value
+                    and out_b.matched_identity == lbl.identity_id
+                )
+                if not b_cor:
+                    layer, detail = _classify_failure_layer(
+                        att, lbl, trace, out_b, profile
+                    )
+                    layer_breakdown[layer] = (
+                        layer_breakdown.get(layer, 0) + 1
+                    )
 
         att_triggers = tuple(
             trig for trig, att_list in triggers.items() if att_id in att_list
