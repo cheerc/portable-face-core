@@ -8,7 +8,7 @@ Source of truth:
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 import hashlib
 import json
@@ -277,3 +277,49 @@ class SessionResult:
             model_generation=data["model_generation"],
             gallery_digest=data["gallery_digest"],
         )
+
+
+@dataclass(frozen=True)
+class FrameDiagnostics:
+    """Detailed per-frame capture, detection, and quality diagnostics (truth-free)."""
+
+    sequence: int
+    original_shape: tuple[int, int, int]
+    normalized_shape: tuple[int, int, int]
+    orientation: int
+    mirrored: bool
+    face_count: int
+    detector_confidence: float | None
+    face_box: tuple[float, float, float, float] | None
+    landmarks: tuple[tuple[float, float], ...] | None
+    landmark_confidence_is_constant: bool = True
+    shorter_side_px: int | None = None
+    sharpness: float | None = None
+    mean_luma: float | None = None
+    clipped_fraction: float | None = None
+    yaw_deg: float | None = None
+    pitch_deg: float | None = None
+    quality_status: str | None = None
+    quality_reason_codes: tuple[str, ...] = ()
+    detection_missing_reason: str | None = None
+    quality_missing_reason: str | None = None
+    scoring_missing_reason: str | None = None
+    stage_durations_ms: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class DecisionEvent:
+    """Session engine decision transition event."""
+
+    sequence: int
+    event_type: str
+    accepted: bool
+    reset_reason: str | None
+    support_before: int
+    support_after: int
+    candidate_before: str | None
+    candidate_after: str | None
+    terminal_status: str | None
+    terminal_identity: str | None
+    deadline_remaining_ms: float
+
