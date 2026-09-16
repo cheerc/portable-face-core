@@ -327,3 +327,162 @@ def test_time_advances_past_one_day(tmp_path: Path) -> None:
     assert _recorder(tmp_path, later).list_attempts(
         experiment_id="exp-e1-001"
     )
+
+
+# ---------------------------------------------------------------------------
+# E1 Rework Findings: F1 (at-rest privacy) & F2-F6 (hygiene & fail-closed)
+# ---------------------------------------------------------------------------
+
+
+def test_at_rest_bytes_contain_no_sensitive_literals(
+    tmp_path: Path,
+    assert_no_leak: Any,
+) -> None:
+    """F1 + Commander mandate: assert raw on-disk bytes contain no plaintext."""
+    from facecore.research.experiment import EvaluationLabel
+
+    now = _utc("2026-09-16T10:00:01Z")
+    recorder = _recorder(tmp_path, now)
+    recorder.begin_attempt(
+        _manifest(tmp_path),
+        _attempt("attempt-at-rest"),
+        _consent("sess-at-rest"),
+    )
+    recorder.write_label(
+        EvaluationLabel(
+            attempt_id="attempt-at-rest",
+            revision=1,
+            kind="enrolled",
+            identity_id="person-secret-truth",
+            actor_ref="operator-synth",
+            labeled_at="2026-09-16T11:00:00Z",
+        )
+    )
+    # The raw bytes of ALL files in store must not contain participant_id
+    # or ground-truth identity literals.
+    assert_no_leak(
+        tmp_path / "store",
+        ["part-synth-001", "person-secret-truth"],
+    )
+
+
+def test_list_attempts_corrupt_file_fails_closed(tmp_path: Path) -> None:
+    """F4: list_attempts must fail closed on corrupt files, never silently skip."""
+    from facecore.contracts.crypto import StoreCorruptionError
+
+    now = _utc("2026-09-16T10:00:01Z")
+    recorder = _recorder(tmp_path, now)
+    recorder.begin_attempt(_manifest(tmp_path), _attempt(), _consent())
+    # Inject corrupt file into the experiment attempts directory.
+    bad_file = tmp_path / "store" / "_attempts" / "exp-e1-001" / "corrupt.enc"
+    bad_file.write_bytes(b"not-valid-wire-blob")
+    with pytest.raises((StoreCorruptionError, ValueError)):
+        recorder.list_attempts(experiment_id="exp-e1-001")
+
+
+def test_label_same_revision_overwrite_rejected(tmp_path: Path) -> None:
+    """F5: overwriting an existing label revision must be rejected."""
+    from facecore.research.experiment import EvaluationLabel
+
+    now = _utc("2026-09-16T10:00:01Z")
+    recorder = _recorder(tmp_path, now)
+    recorder.begin_attempt(_manifest(tmp_path), _attempt(), _consent())
+    recorder.write_label(
+        EvaluationLabel(
+            attempt_id="attempt-001",
+            revision=1,
+            kind="enrolled",
+            identity_id="person-01",
+            actor_ref="operator-synth",
+            labeled_at="2026-09-16T11:00:00Z",
+        )
+    )
+    with pytest.raises(ValueError, match="already exists"):
+        recorder.write_label(
+            EvaluationLabel(
+                attempt_id="attempt-001",
+                revision=1,
+                kind="enrolled",
+                identity_id="person-99",
+                actor_ref="operator-synth",
+                labeled_at="2026-09-16T11:05:00Z",
+            )
+        )
+
+
+def test_begin_attempt_manifest_mismatch_rejected(tmp_path: Path) -> None:
+    """F6: begin_attempt must reject mismatched manifest.experiment_id."""
+    from facecore.research.experiment import ExperimentManifest
+
+    now = _utc("2026-09-16T10:00:01Z")
+    recorder = _recorder(tmp_path, now)
+    mismatched_manifest = ExperimentManifest.from_dict(
+        {
+            "identity": {"experiment_id": "exp-DIFFERENT"},
+            "software": {},
+            "gallery": {},
+            "policy": {},
+            "capture": {},
+            "privacy": {},
+            "study": {},
+            "analysis": {},
+        }
+    )
+    with pytest.raises(ValueError, match="experiment_id"):
+        recorder.begin_attempt(mismatched_manifest, _attempt(), _consent())
+
+
+def test_withdraw_attempt_destroys_key(tmp_path: Path) -> None:
+    """F3: withdraw_attempt must destroy the DEK (cryptographic erasure)."""
+    from facecore.contracts.crypto import KeyNotFoundError
+    from facecore.research.keys import ResearchKeyProvider
+
+    now = _utc("2026-09-16T10:00:01Z")
+    recorder = _recorder(tmp_path, now)
+    recorder.begin_attempt(_manifest(tmp_path), _attempt("attempt-w1"), _consent())
+    assert ResearchKeyProvider(tmp_path / "keys").get_key("rk_attempt-w1") is not None
+    recorder.withdraw_attempt("attempt-w1")
+    with pytest.raises(KeyNotFoundError):
+        ResearchKeyProvider(tmp_path / "keys").get_key("rk_attempt-w1")
+
+
+def test_purge_expired_purges_expired_attempts_and_labels(
+    tmp_path: Path,
+) -> None:
+    """F2: purge_expired must clean up expired attempts and their labels."""
+    from facecore.research.experiment import EvaluationLabel
+
+    start = _utc("2026-09-16T10:00:01Z")
+    consent_expiring = ConsentRecord(
+        session_id="sess-expiring",
+        participant_id="part-synth-001",
+        record_consent=True,
+        image_consent=True,
+        consented_at_utc="2026-09-16T10:00:00Z",
+        record_expires_at_utc="2026-09-18T10:00:00Z",
+        image_expires_at_utc="2026-09-17T10:00:00Z",
+    )
+    recorder = _recorder(tmp_path, start)
+    recorder.begin_attempt(
+        _manifest(tmp_path),
+        _attempt("attempt-expiring"),
+        consent_expiring,
+    )
+    recorder.write_label(
+        EvaluationLabel(
+            attempt_id="attempt-expiring",
+            revision=1,
+            kind="enrolled",
+            identity_id="person-01",
+            actor_ref="operator-synth",
+            labeled_at="2026-09-16T11:00:00Z",
+        )
+    )
+    # Clock moves past record_expires_at_utc (3 days later)
+    past_expiry = _utc("2026-09-19T10:00:00Z")
+    recorder_later = _recorder(tmp_path, past_expiry)
+    purged = recorder_later.purge_expired(past_expiry)
+    assert "attempt-expiring" in purged
+    assert recorder_later.list_attempts(experiment_id="exp-e1-001") == []
+    with pytest.raises(KeyError):
+        recorder_later.read_label("attempt-expiring")
