@@ -556,6 +556,30 @@ class ResearchRecorder:
                                 purged.append(attempt_id)
                     except Exception:
                         continue
+        # Purge any case files under _cases that are expired or whose attempt is gone
+        cases_root = self._store / "_cases"
+        if cases_root.is_dir():
+            for exp_dir in sorted(cases_root.iterdir()):
+                if not exp_dir.is_dir():
+                    continue
+                for case_path in sorted(exp_dir.glob("*.enc")):
+                    att_id = case_path.stem
+                    try:
+                        attempt_path, _, meta = self._find_attempt_and_path(
+                            att_id
+                        )
+                        if attempt_path is None or not attempt_path.is_file():
+                            case_path.unlink(missing_ok=True)
+                        elif meta:
+                            exp_str = meta.get("record_expires_at_utc")
+                            if exp_str:
+                                record_exp = _parse_utc(str(exp_str))
+                                if now >= record_exp:
+                                    case_path.unlink(missing_ok=True)
+                    except Exception:
+                        # Fail-closed deletion: unverifiable or corrupt attempt
+                        # cannot justify retaining derived case evidence.
+                        case_path.unlink(missing_ok=True)
         return purged
 
     def _purge_images(self, session_id: str) -> None:
@@ -685,11 +709,13 @@ class ResearchRecorder:
             return  # idempotent: already accepted
         attempt_dir.mkdir(parents=True, exist_ok=True)
         dek = self._keys.get_or_create_record_key(attempt.attempt_id)
+        policy_section = manifest.sections.get("policy", {})
         payload = {
             **attempt.to_dict(),
             "manifest_digest": manifest.digest(),
             "consent_session_id": consent.session_id,
             "record_expires_at_utc": consent.record_expires_at_utc,
+            "profile_digest": policy_section.get("profile_digest"),
         }
         plaintext = json.dumps(payload, sort_keys=True).encode("utf-8")
         aad = build_research_aad(
@@ -763,6 +789,7 @@ class ResearchRecorder:
             "manifest_digest": meta.get("manifest_digest", ""),
             "consent_session_id": meta.get("consent_session_id", ""),
             "record_expires_at_utc": meta.get("record_expires_at_utc", ""),
+            "profile_digest": meta.get("profile_digest"),
         }
         dek = self._keys.get_key(f"rk_{attempt_id}")
         aad = build_research_aad(
@@ -918,6 +945,12 @@ class ResearchRecorder:
         trace_dir = self._trace_dir(attempt_id)
         if trace_dir.is_dir():
             shutil.rmtree(trace_dir, ignore_errors=True)
+        cases_root = self._store / "_cases"
+        if cases_root.is_dir():
+            for exp_dir in cases_root.iterdir():
+                if exp_dir.is_dir():
+                    case_path = exp_dir / f"{attempt_id}.enc"
+                    case_path.unlink(missing_ok=True)
 
     # -- E2: diagnostic trace (Phase 2B §12 E2) -----------------------------
     def append_trace(self, attempt_id: str, entry: FrameTraceEntry) -> None:

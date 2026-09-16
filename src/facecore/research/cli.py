@@ -44,9 +44,17 @@ from facecore.live.contracts import (
 )
 from facecore.live.desktop import DesktopSession
 from facecore.live.session import SessionEngine
+from facecore.research.analysis import analyze_batch, save_case_summaries
+from facecore.research.diagnostics import SessionTrace
+from facecore.research.experiment import EvaluationLabel
 from facecore.research.records import ConsentRecord, FrameScore
 from facecore.research.recorder import ResearchRecorder
-from facecore.research.replay import ReplayRefusal, replay_session
+from facecore.research.replay import (
+    ArmOutcome,
+    ReplayRefusal,
+    evaluate_arms,
+    replay_session,
+)
 
 # Frozen pair-1 model selection (matches production bakeoff wiring):
 # YuNet 2023mar fixed-640 detector + SFace 2021dec fp32 embedder.
@@ -696,6 +704,213 @@ def cmd_delete(*, store: Path, key_dir: Path, session_id: str) -> int:
     return 0 if ok else 4
 
 
+def cmd_analyze(
+    *,
+    store: Path,
+    key_dir: Path,
+    experiment_id: str,
+    mode: str = "development",
+    profile_path: Path | None = None,
+) -> int:
+    """Analyze a batch of attempts using evaluate_arms and analyze_batch (F5).
+
+    Production path:
+    - Lists durable attempts for experiment_id from ResearchRecorder.
+    - End-to-end calls evaluate_arms(trace, profile, window=window) for every
+      attempt with a diagnostic trace.
+    - Loads latest evaluation labels for ground truth.
+    - Executes analyze_batch to compute denominators, arm rates, and triggers.
+    - Encrypts and persists detailed case summaries to AEAD store under _cases.
+    - Emits aggregate summary and run code to stdout (zero sensitive leaks).
+    """
+    if mode != "development":
+        print(
+            f"research analyze: mode {mode!r} is rejected in E5; "
+            "only 'development' is authorized prior to E6",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        store_root = resolve_store(store)
+    except (ValueError, StorePathError) as exc:
+        print(f"research analyze: {exc}", file=sys.stderr)
+        return 2
+
+    if not store_root.is_dir():
+        print(
+            f"research analyze: store {store_root} does not exist",
+            file=sys.stderr,
+        )
+        return 4
+
+    if profile_path is None:
+        print(
+            "research analyze: --profile is required and must match stored provenance",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        profile_data = json.loads(profile_path.read_text(encoding="utf-8"))
+        profile = ResearchProfile.from_dict(profile_data)
+    except Exception as exc:
+        print(
+            f"research analyze: invalid profile at {profile_path}: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
+    profile_digest = profile.profile_digest()
+
+    recorder = ResearchRecorder(
+        store_root=store_root, key_dir=key_dir, clock=_now_utc
+    )
+
+    try:
+        attempts = recorder.list_attempts(experiment_id=experiment_id)
+    except Exception as exc:
+        print(
+            f"research analyze: failed to list attempts: {exc}", file=sys.stderr
+        )
+        return 4
+
+    if not attempts:
+        print(
+            f"research analyze: no attempts found for experiment {experiment_id!r}",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Verify profile against provenance (record/trace)
+    for attempt in attempts:
+        if attempt.bundle_ref:
+            try:
+                s_rec = recorder.read_record(attempt.bundle_ref)
+                if (
+                    s_rec.result.profile_digest
+                    and s_rec.result.profile_digest != profile_digest
+                ):
+                    print(
+                        f"research analyze: profile digest {profile_digest} "
+                        "does not match stored record digest "
+                        f"{s_rec.result.profile_digest}",
+                        file=sys.stderr,
+                    )
+                    return 4
+            except KeyError:
+                pass
+            except Exception as exc:
+                print(
+                    f"research analyze: failed to verify record provenance: {exc}",
+                    file=sys.stderr,
+                )
+                return 4
+
+        # Check attempt metadata (covers bundle-less attempts!)
+        _, _, meta = recorder._find_attempt_and_path(attempt.attempt_id)
+        stored_prof_digest = meta.get("profile_digest")
+        if stored_prof_digest and stored_prof_digest != profile_digest:
+            print(
+                f"research analyze: profile digest {profile_digest} does not match "
+                f"attempt manifest policy profile digest {stored_prof_digest}",
+                file=sys.stderr,
+            )
+            return 4
+        elif not stored_prof_digest and not attempt.bundle_ref:
+            trace_dir = recorder._trace_dir(attempt.attempt_id)
+            if trace_dir.is_dir() and any(trace_dir.glob("frame_*.enc")):
+                print(
+                    f"research analyze: attempt {attempt.attempt_id} lacks verifiable "
+                    "profile provenance; refusing unverified analysis",
+                    file=sys.stderr,
+                )
+                return 4
+
+    outcomes: list[ArmOutcome] = []
+    traces: dict[str, SessionTrace] = {}
+
+    for attempt in attempts:
+        trace = None
+        trace_dir = recorder._trace_dir(attempt.attempt_id)
+        if trace_dir.is_dir() and any(trace_dir.glob("frame_*.enc")):
+            try:
+                trace = recorder.read_trace(attempt.attempt_id)
+                traces[attempt.attempt_id] = trace
+            except KeyError:
+                pass
+            except Exception as exc:
+                print(
+                    f"research analyze: integrity violation in trace for attempt "
+                    f"{attempt.attempt_id}: {exc}",
+                    file=sys.stderr,
+                )
+                return 4
+
+        window = None
+        if attempt.bundle_ref:
+            try:
+                s_rec = recorder.read_record(attempt.bundle_ref)
+                window = s_rec.collection_window
+            except KeyError:
+                pass
+            except Exception as exc:
+                print(
+                    f"research analyze: integrity violation in record for attempt "
+                    f"{attempt.attempt_id}: {exc}",
+                    file=sys.stderr,
+                )
+                return 4
+
+        if trace is not None:
+            # F5: Production path calls evaluate_arms end-to-end
+            arm_a, arm_b = evaluate_arms(trace, profile, window=window)
+            outcomes.extend([arm_a, arm_b])
+
+    labels: list[EvaluationLabel] = []
+    for attempt in attempts:
+        lbl_dir = recorder._label_dir(attempt.attempt_id)
+        if lbl_dir.is_dir() and any(lbl_dir.glob("rev_*.enc")):
+            try:
+                lbl = recorder.read_label(attempt.attempt_id)
+                labels.append(lbl)
+            except KeyError:
+                pass
+            except Exception as exc:
+                print(
+                    f"research analyze: integrity violation in label for attempt "
+                    f"{attempt.attempt_id}: {exc}",
+                    file=sys.stderr,
+                )
+                return 4
+
+    try:
+        analysis = analyze_batch(
+            attempts,
+            outcomes,
+            labels,
+            traces=traces,
+            profile=profile,
+            mode=mode,
+        )
+    except Exception as exc:
+        print(f"research analyze: analyze_batch failed: {exc}", file=sys.stderr)
+        return 4
+
+    try:
+        save_case_summaries(recorder, experiment_id, analysis.cases)
+    except Exception as exc:
+        print(
+            f"research analyze: failed to save encrypted cases: {exc}",
+            file=sys.stderr,
+        )
+        return 4
+
+    print(analysis.render_summary())
+    print(f"Run code: {experiment_id}-{mode}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Isolated research entry point (never the production CLI)."""
     parser = argparse.ArgumentParser(prog="facecore.research.cli")
@@ -725,6 +940,23 @@ def main(argv: list[str] | None = None) -> int:
     delete.add_argument("--store", required=True, type=Path)
     delete.add_argument("--key-dir", required=False, type=Path, default=None)
     delete.add_argument("--session", required=True)
+
+    analyze = sub.add_parser("analyze")
+    analyze.add_argument("--store", required=True, type=Path)
+    analyze.add_argument("--key-dir", required=False, type=Path, default=None)
+    analyze.add_argument("--experiment", required=True)
+    analyze.add_argument(
+        "--mode",
+        choices=["development"],
+        default="development",
+        help="Analysis mode (E5 supports 'development' only; holdout guarded by E6)",
+    )
+    analyze.add_argument(
+        "--profile",
+        required=True,
+        type=Path,
+        help="Frozen research profile JSON (must match stored provenance)",
+    )
 
     args = parser.parse_args(argv)
     default_key_dir = (
@@ -762,6 +994,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "delete":
         return cmd_delete(
             store=args.store, key_dir=key_dir, session_id=args.session
+        )
+    if args.command == "analyze":
+        return cmd_analyze(
+            store=args.store,
+            key_dir=key_dir,
+            experiment_id=args.experiment,
+            mode=args.mode,
+            profile_path=args.profile,
         )
     return 2
 

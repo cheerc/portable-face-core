@@ -143,6 +143,7 @@ src/
     ├── research/
     │   ├── __init__.py
     │   ├── __main__.py
+    │   ├── analysis.py
     │   ├── cli.py
     │   ├── diagnostics.py
     │   ├── experiment.py

@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+from facecore.research.analysis import (
+    ArmAnalysis,
+    BatchAnalysis,
+    CaseSummary,
+    analyze_batch,
+    format_rate,
+)
 from facecore.research.keys import ResearchKeyProvider
 from facecore.research.recorder import (
     MAX_FRAME_BYTES,
@@ -31,7 +38,10 @@ from facecore.research.report import (
 )
 
 __all__ = [
+    "ArmAnalysis",
     "ArmOutcome",
+    "BatchAnalysis",
+    "CaseSummary",
     "ClockRollbackError",
     "ConsentRecord",
     "FrameScore",
@@ -44,9 +54,11 @@ __all__ = [
     "ResearchRecorder",
     "ResearchReport",
     "ResearchSessionRecord",
+    "analyze_batch",
     "build_research_aad",
     "describe_replay",
     "evaluate_arms",
+    "format_rate",
     "replay_observations",
     "replay_session",
     "summarize",
