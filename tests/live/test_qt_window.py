@@ -352,6 +352,53 @@ class TestQtResearchWindow:
         )
         window.close()
 
+    def test_minimal_ux_controls_and_countdown(
+        self, qt_app: QApplication, tmp_path: Path
+    ) -> None:
+        """E7-B r2 F4: plan §12 minimal UX controls exist and render countdown."""
+        recorder = _recorder(tmp_path)
+        manifest = _manifest()
+        attempt = _attempt("attempt-ux")
+        consent = _consent("qt-session-ux")
+        recorder.begin_attempt(manifest, attempt, consent)
+        desktop = DesktopSession(
+            engine=SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test"),
+            source=FakeCapture(frames=[_packet(1)]),
+            scorer=_matching_scorer,
+            session_id="qt-session-ux",
+            label_recorder=recorder,
+            label_attempt_id=attempt.attempt_id,
+        )
+        window = QtResearchWindow(
+            desktop,
+            consent=consent,
+            recorder=recorder,
+            attempt_id=attempt.attempt_id,
+            device_id="cam-test-ux",
+            offscreen=True,
+            clock_ns=lambda: 0,
+        )
+        # Check controls exist per plan §12 E7 minimal set
+        assert hasattr(window, "device_label")
+        assert "cam-test-ux" in window.device_label.text()
+        assert hasattr(window, "ttl_label")
+        assert "30" in window.ttl_label.text() or "2026" in window.ttl_label.text()
+        assert hasattr(window, "countdown_label")
+        assert hasattr(window, "saved_state_label")
+        assert hasattr(window, "delete_button")
+        assert hasattr(window, "guide_label")
+
+        # Countdown rendering
+        QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
+        countdown_text = window.countdown_label.text()
+        assert "5000" in countdown_text or "5.0" in countdown_text
+
+        # Delete action closes session and purges attempt
+        QTest.mouseClick(window.delete_button, Qt.MouseButton.LeftButton)
+        assert desktop.state in ("closed", "terminal")
+        assert recorder.list_attempts(experiment_id="exp-qt") == []
+        window.close()
+
 
 def test_research_ui_extra_and_notice_are_declared() -> None:
     pyproject = Path(__file__).parents[2] / "pyproject.toml"

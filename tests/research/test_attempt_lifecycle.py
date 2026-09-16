@@ -25,7 +25,7 @@ import pytest
 
 from facecore.live.contracts import SessionResult, SessionStatus
 from facecore.research.records import ConsentRecord
-from facecore.research.recorder import ResearchRecorder
+from facecore.research.recorder import ClockRollbackError, ResearchRecorder
 
 
 def _utc(s: str) -> datetime:
@@ -444,6 +444,52 @@ def test_withdraw_attempt_destroys_key(tmp_path: Path) -> None:
     recorder.withdraw_attempt("attempt-w1")
     with pytest.raises(KeyNotFoundError):
         ResearchKeyProvider(tmp_path / "keys").get_key("rk_attempt-w1")
+
+
+def test_withdraw_attempt_deletes_crop_mapping_sidecar(tmp_path: Path) -> None:
+    """E7-B r2 F3: withdrawal removes derived crop geometry ciphertext."""
+    recorder = _recorder(tmp_path, _utc("2026-09-16T10:00:01Z"))
+    attempt_id = "attempt-crop-withdraw"
+    recorder.begin_attempt(_manifest(tmp_path), _attempt(attempt_id), _consent())
+    recorder.record_crop_mapping(
+        attempt_id,
+        {
+            "x": 0,
+            "y": 0,
+            "size": 16,
+            "frame_w": 16,
+            "frame_h": 16,
+            "mirrored_preview": False,
+        },
+    )
+    mapping_path = tmp_path / "store" / "_crop_mappings" / f"{attempt_id}.enc"
+    assert mapping_path.is_file()
+    recorder.withdraw_attempt(attempt_id)
+    assert not mapping_path.exists()
+
+
+def test_crop_mapping_write_honors_clock_rollback(tmp_path: Path) -> None:
+    """E7-B r2 F3: derived geometry cannot bypass rollback protection."""
+    current = [_utc("2026-09-16T10:00:01Z")]
+    recorder = ResearchRecorder(
+        store_root=tmp_path / "store",
+        key_dir=tmp_path / "keys",
+        clock=lambda: current[0],
+    )
+    attempt_id = "attempt-crop-clock"
+    recorder.begin_attempt(_manifest(tmp_path), _attempt(attempt_id), _consent())
+    mapping = {
+        "x": 0,
+        "y": 0,
+        "size": 16,
+        "frame_w": 16,
+        "frame_h": 16,
+        "mirrored_preview": False,
+    }
+    recorder.record_crop_mapping(attempt_id, mapping)
+    current[0] = _utc("2026-09-16T09:59:59Z")
+    with pytest.raises(ClockRollbackError):
+        recorder.record_crop_mapping(attempt_id, mapping)
 
 
 def test_purge_expired_purges_expired_attempts_and_labels(

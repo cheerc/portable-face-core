@@ -324,6 +324,35 @@ class TestCliAttemptPreplacement:
         assert [a.attempt_id for a in attempts] == ["att-sess-e3-openfail"]
         assert attempts[0].operational_status == "open_error"
 
+    def test_fixed_fake_cli_closes_incomplete_collection_without_crash(
+        self, tmp_path: Path, capsys: Any
+    ) -> None:
+        """E7-B r2 F1: seven fake frames leave an explicit incomplete window."""
+        profile_path = _profile_dict(tmp_path)
+        store = tmp_path / "store"
+        key_dir = tmp_path / "research_keys"
+        rc = cmd_live(
+            profile_path=profile_path,
+            store=store,
+            key_dir=key_dir,
+            device="fake",
+            session_id="sess-e7-fixed-fake",
+            record_consent=True,
+            image_consent=True,
+            fixed_seconds=True,
+        )
+
+        assert rc == 0
+        lines = capsys.readouterr().out.splitlines()
+        payload = json.loads(lines[-1])
+        assert payload["window"] == "fixed-window-incomplete"
+        recorder = ResearchRecorder(
+            store_root=store, key_dir=key_dir, clock=datetime.now
+        )
+        record = recorder.read_record("sess-e7-fixed-fake")
+        assert record.collection_window is not None
+        assert record.collection_window.collection_complete is False
+
 
 class TestTraceSinkLiveWiring:
     """Production path drives diagnostic/event sinks and trace append."""
