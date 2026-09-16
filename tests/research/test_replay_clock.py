@@ -706,6 +706,262 @@ class TestWindowProvenanceFromCollectionWindow:
         assert loaded_trace.session_start_ns == 1_000_000_000
         assert loaded_trace.deadline_ns == 6_000_000_000
 
+    def test_collection_window_rejects_pre_start_entries(self) -> None:
+        # P1a: Entries captured before window.collection_start_ns must not enter
+        # arm evaluation.
+        profile = _profile(required_support=1)
+        observations = [
+            _obs(1, 500_000_000, 510_000_000, quality_rank=99.0),
+            _obs(2, 1_500_000_000, 1_510_000_000, quality_rank=20.0),
+            _obs(3, 2_500_000_000, 2_510_000_000, quality_rank=30.0),
+        ]
+        trace = _trace(observations, session_start_ns=0)
+        window = CollectionWindow(
+            session_id="sess-e4-prestart",
+            collection_start_ns=1_000_000_000,
+            collection_deadline_ns=5_000_000_000,
+            collection_end_ns=3_000_000_000,
+            collection_stop_reason="deadline_reached",
+            collection_complete=True,
+            frames_sampled=2,
+        )
+        arm_a, arm_b = evaluate_arms(trace, profile, window=window)
+        # Sequence 1 is before start_ns (1.0s), must not be selected by Arm A or Arm B
+        assert 1 not in arm_a.selected_sequences
+        assert 1 not in arm_b.selected_sequences
+        has_flag = "frame_before_window" in arm_b.decision_codes
+        assert has_flag or arm_b.refusal is not None
+
+    def test_collection_window_frame_count_mismatch_not_full(self) -> None:
+        # P1a: If legal entries count differs from window.frames_sampled,
+        # extent cannot be full.
+        profile = _profile(required_support=1)
+        observations = [
+            _obs(1, 100_000_000, 110_000_000),
+            _obs(2, 200_000_000, 210_000_000),
+            _obs(3, 300_000_000, 310_000_000),
+        ]
+        trace = _trace(observations, session_start_ns=0)
+        window = CollectionWindow(
+            session_id="sess-e4-mismatch",
+            collection_start_ns=0,
+            collection_deadline_ns=5_000_000_000,
+            collection_end_ns=1_000_000_000,
+            collection_stop_reason="deadline_reached",
+            collection_complete=True,
+            frames_sampled=2,  # Window claims 2, but trace has 3 legal entries
+        )
+        arm_a, arm_b = evaluate_arms(trace, profile, window=window)
+        assert arm_a.collection_extent == "incomplete"
+        assert arm_b.collection_extent == "incomplete"
+        has_mismatch = "frame_count_mismatch" in arm_b.decision_codes
+        assert has_mismatch or arm_b.refusal is not None
+
+    def test_read_trace_fails_closed_on_tampered_linked_record(
+        self, tmp_path: Path
+    ) -> None:
+        # P1b: Corrupted or tampered linked session record must raise
+        # StoreCorruptionError, never silently fall back to entries[0].
+        from facecore.contracts.crypto import StoreCorruptionError
+        from facecore.live.contracts import SessionResult
+        from facecore.research.experiment import AttemptRecord, ExperimentManifest
+        from facecore.research.recorder import ResearchRecorder
+        from facecore.research.records import CollectionWindow, ConsentRecord
+
+        now = _utc("2026-09-16T10:00:00Z")
+        rec = ResearchRecorder(
+            store_root=tmp_path / "store",
+            key_dir=tmp_path / "keys",
+            clock=lambda: now,
+        )
+        manifest = ExperimentManifest.from_dict(
+            {
+                "identity": {"experiment_id": "exp-e4-tamper"},
+                "software": {},
+                "gallery": {},
+                "policy": {},
+                "capture": {},
+                "privacy": {},
+                "study": {},
+                "analysis": {},
+            }
+        )
+        attempt = AttemptRecord(
+            experiment_id="exp-e4-tamper",
+            attempt_id="att-e4-tamper-001",
+            participant_id="part-tamper",
+            visit_id="visit-001",
+            condition_id="cond-001",
+            attempt_index=1,
+            retry_of=None,
+            consent_ref="consent-tamper",
+            requested_at_utc="2026-09-16T10:00:00Z",
+            accepted_at_utc="2026-09-16T10:00:01Z",
+            started_at_utc="2026-09-16T10:00:02Z",
+            ended_at_utc=None,
+            operational_status="accepted",
+            error_code=None,
+            bundle_ref=None,
+        )
+        consent = ConsentRecord(
+            session_id="sess-e4-tamper",
+            participant_id="part-tamper",
+            record_consent=True,
+            image_consent=True,
+            consented_at_utc="2026-09-16T10:00:00Z",
+            record_expires_at_utc="2026-10-16T10:00:00Z",
+            image_expires_at_utc="2026-09-23T10:00:00Z",
+        )
+        rec.begin_attempt(manifest, attempt, consent)
+        rec.begin("sess-e4-tamper", consent)
+
+        trace = _trace([_obs(1, 4_800_000_000, 4_810_000_000)], session_start_ns=0)
+        rec.append_trace("att-e4-tamper-001", trace.entries[0])
+
+        dummy_result = SessionResult(
+            session_id="sess-e4-tamper",
+            schema_version="v1",
+            status=SessionStatus.matched,
+            matched_identity="person-01",
+            reason_codes=("ok",),
+            elapsed_ms=100.0,
+            frames_sampled=1,
+            frames_usable=1,
+            frames_rejected=0,
+            frames_dropped=0,
+            support_sequences=(1,),
+            profile_digest="0" * 64,
+            model_generation="gen-e4",
+            gallery_digest="gal-e4",
+        )
+        window = CollectionWindow(
+            session_id="sess-e4-tamper",
+            collection_start_ns=1_000_000_000,
+            collection_deadline_ns=6_000_000_000,
+            collection_end_ns=5_000_000_000,
+            collection_stop_reason="deadline_reached",
+            collection_complete=True,
+            frames_sampled=1,
+        )
+        rec.commit(dummy_result, collection_window=window)
+        rec.finish_attempt(
+            "att-e4-tamper-001",
+            result=dummy_result,
+            operational_status="completed",
+            error_code=None,
+        )
+
+        # Tamper with the committed record.enc blob
+        record_enc = tmp_path / "store" / "sess-e4-tamper" / "record.enc"
+        data = bytearray(record_enc.read_bytes())
+        data[-1] ^= 0xFF
+        record_enc.write_bytes(bytes(data))
+
+        # read_trace must fail closed, raising StoreCorruptionError
+        with pytest.raises((StoreCorruptionError, ValueError)):
+            rec.read_trace("att-e4-tamper-001")
+
+    def test_read_trace_fails_closed_on_expired_linked_record(
+        self, tmp_path: Path
+    ) -> None:
+        # P1b: Expired linked record must raise KeyError/expire fail-closed,
+        # never fall back to derived unauthenticated timestamps.
+        from datetime import timedelta
+        from facecore.live.contracts import SessionResult
+        from facecore.research.experiment import AttemptRecord, ExperimentManifest
+        from facecore.research.recorder import ResearchRecorder
+        from facecore.research.records import CollectionWindow, ConsentRecord
+
+        clock_time = _utc("2026-09-16T10:00:00Z")
+        rec = ResearchRecorder(
+            store_root=tmp_path / "store",
+            key_dir=tmp_path / "keys",
+            clock=lambda: clock_time,
+        )
+        manifest = ExperimentManifest.from_dict(
+            {
+                "identity": {"experiment_id": "exp-e4-exp"},
+                "software": {},
+                "gallery": {},
+                "policy": {},
+                "capture": {},
+                "privacy": {},
+                "study": {},
+                "analysis": {},
+            }
+        )
+        attempt = AttemptRecord(
+            experiment_id="exp-e4-exp",
+            attempt_id="att-e4-exp-001",
+            participant_id="part-exp",
+            visit_id="visit-001",
+            condition_id="cond-001",
+            attempt_index=1,
+            retry_of=None,
+            consent_ref="consent-exp",
+            requested_at_utc="2026-09-16T10:00:00Z",
+            accepted_at_utc="2026-09-16T10:00:01Z",
+            started_at_utc="2026-09-16T10:00:02Z",
+            ended_at_utc=None,
+            operational_status="accepted",
+            error_code=None,
+            bundle_ref=None,
+        )
+        consent = ConsentRecord(
+            session_id="sess-e4-exp",
+            participant_id="part-exp",
+            record_consent=True,
+            image_consent=True,
+            consented_at_utc="2026-09-16T10:00:00Z",
+            record_expires_at_utc="2026-10-16T10:00:00Z",
+            image_expires_at_utc="2026-09-23T10:00:00Z",
+        )
+        rec.begin_attempt(manifest, attempt, consent)
+        rec.begin("sess-e4-exp", consent)
+
+        trace = _trace([_obs(1, 4_800_000_000, 4_810_000_000)], session_start_ns=0)
+        rec.append_trace("att-e4-exp-001", trace.entries[0])
+
+        dummy_result = SessionResult(
+            session_id="sess-e4-exp",
+            schema_version="v1",
+            status=SessionStatus.matched,
+            matched_identity="person-01",
+            reason_codes=("ok",),
+            elapsed_ms=100.0,
+            frames_sampled=1,
+            frames_usable=1,
+            frames_rejected=0,
+            frames_dropped=0,
+            support_sequences=(1,),
+            profile_digest="0" * 64,
+            model_generation="gen-e4",
+            gallery_digest="gal-e4",
+        )
+        window = CollectionWindow(
+            session_id="sess-e4-exp",
+            collection_start_ns=1_000_000_000,
+            collection_deadline_ns=6_000_000_000,
+            collection_end_ns=5_000_000_000,
+            collection_stop_reason="deadline_reached",
+            collection_complete=True,
+            frames_sampled=1,
+        )
+        rec.commit(dummy_result, collection_window=window)
+        rec.finish_attempt(
+            "att-e4-exp-001",
+            result=dummy_result,
+            operational_status="completed",
+            error_code=None,
+        )
+
+        # Advance clock past record_expires_at_utc (30 days)
+        clock_time = clock_time + timedelta(days=31)
+
+        # read_trace must raise KeyError due to expired session record
+        with pytest.raises(KeyError):
+            rec.read_trace("att-e4-exp-001")
+
 
 class TestTraceAtRestPrivacy:
     """New arm payloads carry no pixels/embeddings; byte-level leak check."""
