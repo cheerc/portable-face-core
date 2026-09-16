@@ -1075,3 +1075,218 @@ class TestReworkFindingsRED:
 
         recorder.withdraw_attempt("s1")
         assert not case_file.is_file(), f"case file survived: {case_file}"
+
+
+class TestReworkR2FindingsRED:
+    """Rework r2 RED tests for the 4 findings in Lead dispatch."""
+
+    def test_refused_run_quarantines_attempt_out_of_paired_complete(
+        self,
+    ) -> None:
+        attempts = [_attempt("s1")]
+        labels = [
+            EvaluationLabel(
+                "s1", 1, "enrolled", "p1", "evaluator", "2026-09-16T08:10:00Z"
+            )
+        ]
+        outcomes = [
+            _arm_outcome(
+                "s1", "A", "matched", matched_identity="p1", run_id="run-001"
+            ),
+            _arm_outcome(
+                "s1", "B", "matched", matched_identity="p1", run_id="run-001"
+            ),
+            _arm_outcome(
+                "s1", "A", "refused", run_id="run-002", refusal="tampered"
+            ),
+            _arm_outcome(
+                "s1", "B", "refused", run_id="run-002", refusal="tampered"
+            ),
+        ]
+        report = analyze_batch(attempts, outcomes, labels)
+        assert report.paired_complete == 0, (
+            "expected paired_complete=0 for refused attempt, "
+            f"got {report.paired_complete}"
+        )
+        assert "T03" in report.triggers, (
+            f"expected T03 on refused attempt, got {report.triggers}"
+        )
+        assert report.hard_triggers_tripped is True
+
+    def test_missing_evidence_emits_blocking_t03(self) -> None:
+        attempts = [_attempt("s_missing")]
+        labels = [
+            EvaluationLabel(
+                "s_missing",
+                1,
+                "enrolled",
+                "p1",
+                "evaluator",
+                "2026-09-16T08:10:00Z",
+            )
+        ]
+        outcomes = [
+            _arm_outcome("s_missing", "A", "timeout"),
+            _arm_outcome("s_missing", "B", "timeout"),
+        ]
+        report = analyze_batch(attempts, outcomes, labels, traces={})
+        case = report.cases[0]
+        assert case.earliest_blocking_layer == FAILURE_LAYER_UNRESOLVED
+        assert "T03" in report.triggers, (
+            f"expected T03 on missing evidence, got {report.triggers}"
+        )
+        assert report.hard_triggers_tripped is True
+
+    def test_purge_expired_deletes_case_files_directly(
+        self, tmp_path: Path
+    ) -> None:
+        from datetime import datetime, timezone
+        from facecore.research.analysis import save_case_summaries
+        from facecore.research.recorder import ResearchRecorder
+
+        store_dir = tmp_path / "store"
+        key_dir = tmp_path / "keys"
+        store_dir.mkdir()
+        key_dir.mkdir()
+
+        def clock() -> datetime:
+            return datetime(2026, 9, 16, 8, 0, 0, tzinfo=timezone.utc)
+
+        recorder = ResearchRecorder(store_dir, key_dir, clock=clock)
+
+        case = CaseSummary(
+            attempt_id="s_exp",
+            participant_id="p1",
+            visit_id="v1",
+            truth_kind="enrolled",
+            truth_identity="p1",
+            operational_status="completed",
+            arm_a_terminal="matched",
+            arm_b_terminal="matched",
+            earliest_blocking_layer="none",
+            threshold_detail=None,
+            triggers=(),
+            evidence_locator="loc-01",
+            recommended_action="none",
+        )
+        saved = save_case_summaries(recorder, "exp-e5", [case])
+        case_file = saved[0]
+        assert case_file.is_file()
+
+        # purge_expired at future time must guarantee case files are deleted
+        exp_time = datetime(2026, 11, 16, 8, 0, 0, tzinfo=timezone.utc)
+        recorder.purge_expired(exp_time)
+        assert not case_file.is_file(), (
+            f"case file {case_file} survived purge_expired!"
+        )
+
+    def test_bundle_less_attempt_profile_verification_fails_closed(
+        self, tmp_path: Path
+    ) -> None:
+        from datetime import datetime, timezone
+        from facecore.research.cli import cmd_analyze
+        from facecore.research.experiment import ExperimentManifest
+        from facecore.research.records import ConsentRecord
+        from facecore.research.recorder import ResearchRecorder
+
+        store_dir = tmp_path / "store"
+        key_dir = tmp_path / "keys"
+        store_dir.mkdir()
+        key_dir.mkdir()
+
+        def clock() -> datetime:
+            return datetime(2026, 9, 16, 8, 0, 0, tzinfo=timezone.utc)
+
+        recorder = ResearchRecorder(store_dir, key_dir, clock=clock)
+
+        frozen_profile = ResearchProfile(
+            schema_version="v1",
+            profile_version="prof-frozen-001",
+            timeout_ms=5000,
+            sample_interval_ms=200,
+            max_frames=25,
+            queue_limit=1,
+            required_support=3,
+            min_support_interval_ms=200,
+            match_threshold=0.45,
+            review_threshold=0.30,
+            margin_threshold=0.10,
+            detector_version="det-1",
+            quality_policy_version="qual-1",
+            continuity_max_center_delta_ratio=0.50,
+        )
+        frozen_digest = frozen_profile.profile_digest()
+
+        manifest_data = {
+            "identity": {
+                "experiment_id": "exp-e5",
+                "schema_version": "v2",
+                "owner": "lead-test",
+                "custodian": "custodian-test",
+            },
+            "software": {"code_sha": "0" * 40, "generation": "gen-e5"},
+            "gallery": {"gallery_digest": "gal-e5"},
+            "policy": {
+                "profile_version": "prof-frozen-001",
+                "profile_digest": frozen_digest,
+            },
+            "capture": {"device": "fake"},
+            "privacy": {"record_ttl_days": 30},
+            "study": {"participants": ["p1"]},
+            "analysis": {"arms": ["A", "B"]},
+        }
+        manifest = ExperimentManifest.from_dict(manifest_data)
+        consent = ConsentRecord(
+            session_id="s1",
+            participant_id="p1",
+            record_consent=True,
+            image_consent=True,
+            consented_at_utc="2026-09-16T08:00:00Z",
+            record_expires_at_utc="2026-10-16T08:00:00Z",
+            image_expires_at_utc="2026-09-23T08:00:00Z",
+        )
+        # BUNDLE-LESS attempt (bundle_ref=None)
+        att = _attempt(
+            "s1", participant_id="p1", visit_id="v1", bundle_ref=None
+        )
+        recorder.begin_attempt(manifest, att, consent)
+
+        trace = _trace_with_scores("s1", [{"p1": 0.85, "p2": 0.20}])
+        for entry in trace.entries:
+            recorder.append_trace("s1", entry)
+
+        lbl = EvaluationLabel(
+            "s1", 1, "enrolled", "p1", "evaluator", "2026-09-16T08:10:00Z"
+        )
+        recorder.write_label(lbl)
+
+        # Invented profile with different thresholds
+        invented_profile = ResearchProfile(
+            schema_version="v1",
+            profile_version="prof-invented-999",
+            timeout_ms=5000,
+            sample_interval_ms=200,
+            max_frames=25,
+            queue_limit=1,
+            required_support=3,
+            min_support_interval_ms=200,
+            match_threshold=0.99,
+            review_threshold=0.90,
+            margin_threshold=0.50,
+            detector_version="det-1",
+            quality_policy_version="qual-1",
+            continuity_max_center_delta_ratio=0.50,
+        )
+        invented_path = tmp_path / "invented.json"
+        invented_path.write_text(json.dumps(invented_profile.to_dict()))
+
+        rc = cmd_analyze(
+            store=store_dir,
+            key_dir=key_dir,
+            experiment_id="exp-e5",
+            mode="development",
+            profile_path=invented_path,
+        )
+        assert rc != 0, (
+            f"expected fail-closed on unverified bundle-less profile, got {rc}"
+        )
