@@ -254,7 +254,9 @@ class LiveController:
             )
         self._scored_observations.append(observation)
         if self._frame_sink is not None:
-            self._frame_sink(score_packet)
+            # E7-B Appendix A.7: staging/preview keep the original full
+            # frame plus mapping; only the scorer input is transformed.
+            self._frame_sink(packet)
         self._append_live_trace(observation)
         if self._fixed_seconds and self._inference_terminal is not None:
             # Fixed-window: B already locked. This frame belongs to the
@@ -371,6 +373,11 @@ class LiveController:
         if self._scored_observations:
             return self._scored_observations[-1].captured_ns
         return None
+
+    @property
+    def last_consumed_ns(self) -> int | None:
+        """Newest consumed capture stamp (session-clock domain, read-only)."""
+        return self._last_sampled_ns()
 
     def _finalize_collection(self) -> None:
         """Seal collector evidence without rewriting the B terminal."""

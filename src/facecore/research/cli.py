@@ -507,7 +507,10 @@ def cmd_live(
                 staged_errors.append(f"{packet.sequence}:{type(exc).__name__}")
         if qt_window is not None:
             try:
-                qt_window.set_frame(packet.rgb)
+                # A.7: the preview renders the original full frame; the
+                # scorer-side transform owns the mapping write, so the sink
+                # must not re-crop (that double-crop diverges the mapping).
+                qt_window.render_full_frame(packet.rgb)
             except Exception as exc:
                 staged_errors.append(f"crop:{type(exc).__name__}")
 
@@ -521,8 +524,6 @@ def cmd_live(
         fixed_seconds=fixed_seconds,
         trace_recorder=recorder if is_true_path else None,
         trace_attempt_id=resolved_attempt_id if is_true_path else None,
-        label_recorder=recorder if ui == "qt" else None,
-        label_attempt_id=resolved_attempt_id if ui == "qt" else None,
     )
     import time as _time
 
@@ -530,6 +531,25 @@ def cmd_live(
     # true path (fake path keeps its synthetic zero-origin stamps, so its
     # start stays 0 and its envelope stays consistent).
     start_ns = _time.monotonic_ns() if is_true_path else 0
+    # S2: the Qt countdown reads the session clock, not wall time. The Qt
+    # smoke path keeps the synthetic zero-origin stamps, so the countdown
+    # clock tracks synthetic session time: session start plus the elapsed
+    # synthetic capture span consumed so far. The window updates it after
+    # each processing tick (see _qt_advance_ns below).
+    _qt_elapsed_ns = 0
+    _qt_last_consumed_ns = start_ns
+
+    def _qt_clock_ns() -> int:
+        return start_ns + _qt_elapsed_ns
+
+    def _qt_advance_ns() -> None:
+        nonlocal _qt_elapsed_ns, _qt_last_consumed_ns
+        consumed = desktop.controller_consumed_ns
+        if consumed is not None and consumed > _qt_last_consumed_ns:
+            _qt_elapsed_ns += consumed - _qt_last_consumed_ns
+            _qt_last_consumed_ns = consumed
+
+    qt_clock_ns: Callable[[], int] = _qt_clock_ns
     qt_app: Any = None
     if ui == "qt":
         try:
@@ -553,7 +573,8 @@ def cmd_live(
             attempt_id=resolved_attempt_id,
             device_id=device,
             offscreen=qt_offscreen,
-            clock_ns=lambda: start_ns,
+            clock_ns=qt_clock_ns,
+            clock_advance=_qt_advance_ns,
         )
     try:
         if qt_window is None:

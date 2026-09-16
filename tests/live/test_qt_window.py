@@ -352,6 +352,36 @@ class TestQtResearchWindow:
         )
         window.close()
 
+    def test_preview_overlay_draws_square_guide_on_full_frame(
+        self, qt_app: QApplication, tmp_path: Path
+    ) -> None:
+        """E7-B r4 S3 RED: guide overlay uses the same crop mapping."""
+        recorder = _recorder(tmp_path)
+        recorder.begin_attempt(_manifest(), _attempt("attempt-overlay"), _consent())
+        desktop = DesktopSession(
+            engine=SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test"),
+            source=FakeCapture(frames=[_packet(1, width=5, height=3)]),
+            scorer=_matching_scorer,
+            session_id="qt-session-overlay",
+        )
+        window = QtResearchWindow(
+            desktop,
+            consent=_consent("qt-session-overlay"),
+            recorder=recorder,
+            attempt_id="attempt-overlay",
+            offscreen=True,
+            clock_ns=lambda: 0,
+        )
+        frame = _packet(1, width=5, height=3).rgb
+        mapping = window.set_frame(frame)
+        assert window.preview_image is not None
+        # Overlay keeps the full source shape, not the cropped square.
+        assert (window.preview_image.width(), window.preview_image.height()) == (5, 3)
+        # Guide rectangle matches the persisted mapping exactly.
+        assert (mapping.x, mapping.y, mapping.size) == (1, 0, 3)
+        assert window.guide_label.text().find("x=1 y=0 S=3") >= 0
+        window.close()
+
     def test_minimal_ux_controls_and_countdown(
         self, qt_app: QApplication, tmp_path: Path
     ) -> None:
@@ -392,6 +422,42 @@ class TestQtResearchWindow:
         QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
         countdown_text = window.countdown_label.text()
         assert "5000" in countdown_text or "5.0" in countdown_text
+
+    def test_countdown_ticks_down_with_live_clock(
+        self, qt_app: QApplication, tmp_path: Path
+    ) -> None:
+        """E7-B r4 S2 RED: countdown must not freeze at the start value."""
+        recorder = _recorder(tmp_path)
+        manifest = _manifest()
+        attempt = _attempt("attempt-countdown")
+        consent = _consent("qt-session-countdown")
+        recorder.begin_attempt(manifest, attempt, consent)
+        desktop = DesktopSession(
+            engine=SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test"),
+            source=FakeCapture(frames=[_packet(1)]),
+            scorer=_matching_scorer,
+            session_id="qt-session-countdown",
+            label_recorder=recorder,
+            label_attempt_id=attempt.attempt_id,
+        )
+        now_ns = [0]
+        window = QtResearchWindow(
+            desktop,
+            consent=consent,
+            recorder=recorder,
+            attempt_id=attempt.attempt_id,
+            device_id="cam-test-countdown",
+            offscreen=True,
+            clock_ns=lambda: now_ns[0],
+        )
+        QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
+        first = window.countdown_label.text()
+        now_ns[0] = 2_000_000_000
+        window.process_once()
+        second = window.countdown_label.text()
+        assert first != second
+        assert "3000" in second
+        window.close()
 
         # Delete action closes session and purges attempt
         QTest.mouseClick(window.delete_button, Qt.MouseButton.LeftButton)

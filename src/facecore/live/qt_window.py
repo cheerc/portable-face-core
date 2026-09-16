@@ -201,6 +201,7 @@ else:
             mirrored_preview: bool = False,
             offscreen: bool = False,
             clock_ns: Callable[[], int] = time.monotonic_ns,
+            clock_advance: Callable[[], None] | None = None,
         ) -> None:
             super().__init__()
             self.desktop = desktop
@@ -210,6 +211,7 @@ else:
             self.device_id = device_id
             self._mirrored_preview = mirrored_preview
             self._clock_ns = clock_ns
+            self._clock_advance = clock_advance
             self._crop_mapping: CropMapping | None = None
             self._preview_image: QImage | None = None
             self._timer = QTimer(self)
@@ -392,6 +394,8 @@ else:
                 # swallowed UI noise: surface the status and propagate so
                 # the CLI refuses the commit instead of masking drift.
                 raise
+            if self._clock_advance is not None:
+                self._clock_advance()
             self._set_countdown()
             if result is not None:
                 self._update_terminal(result)
@@ -462,13 +466,13 @@ else:
         def set_frame(self, frame: np.ndarray) -> CropMapping:
             """Update preview and persist the shared crop mapping sidecar.
 
-            The scorer-side capture adapter owns the first mapping write;
-            this preview sink reuses the persisted mapping (idempotent when
-            identical) so a duplicate write never masks geometry drift, and
-            surfaces the persisted mapping for the guide overlay.
+            Direct-drive path (tests, manual use): computes the mapping from
+            the given frame, persists it, and renders the overlay.
             """
-            cropped, mapping = crop_frame(
-                frame, mirrored_preview=self._mirrored_preview
+            mapping = center_square_crop(
+                int(frame.shape[1]),
+                int(frame.shape[0]),
+                mirrored_preview=self._mirrored_preview,
             )
             if self.recorder is not None and self.attempt_id is not None:
                 record_mapping = getattr(self.recorder, "record_crop_mapping")
@@ -478,10 +482,35 @@ else:
                     raise ValueError(
                         "preview mapping diverged from persisted capture mapping"
                     )
-            self._crop_mapping = mapping
+            return self.render_full_frame(frame, mapping)
+
+        def render_full_frame(
+            self, frame: np.ndarray, mapping: CropMapping | None = None
+        ) -> CropMapping:
+            """Render the original full frame with the guide overlay.
+
+            A.7 first round: the preview shows the full source frame with
+            the square guide drawn from the same mapping the scorer
+            consumed. Never re-crops: the scorer-side capture adapter owns
+            the mapping, and this sink only reads it back for the overlay.
+            """
+            resolved = mapping
+            if resolved is None:
+                resolved = center_square_crop(
+                    int(frame.shape[1]),
+                    int(frame.shape[0]),
+                    mirrored_preview=self._mirrored_preview,
+                )
+            if self.recorder is not None and self.attempt_id is not None:
+                persisted = getattr(self.recorder, "read_crop_mapping")(self.attempt_id)
+                if persisted != resolved.to_dict():
+                    raise ValueError(
+                        "preview mapping diverged from persisted capture mapping"
+                    )
+            self._crop_mapping = resolved
             self._set_guide()
             self._refresh_saved_state()
-            shown = preview_frame(cropped, mapping)
+            shown = self._overlay_guide(frame, resolved)
             height, width = shown.shape[:2]
             image = QImage(
                 shown.data,
@@ -492,7 +521,24 @@ else:
             ).copy()
             self._preview_image = image
             self.preview_label.setPixmap(QPixmap.fromImage(image))
-            return mapping
+            return resolved
+
+        def _overlay_guide(
+            self, frame: np.ndarray, mapping: CropMapping
+        ) -> np.ndarray:
+            """Draw the square guide over the full frame (same mapping)."""
+            # Overlay contract: render the full source frame and outline the
+            # exact crop rectangle instead of showing only the cropped pixmap.
+            overlay = np.ascontiguousarray(frame).copy()
+            x0, y0, size = mapping.x, mapping.y, mapping.size
+            x1, y1 = x0 + size, y0 + size
+            overlay[y0:y1, x0 : x0 + 1, :] = (0, 255, 0)
+            overlay[y0:y1, x1 - 1 : x1, :] = (0, 255, 0)
+            overlay[y0 : y0 + 1, x0:x1, :] = (0, 255, 0)
+            overlay[y1 - 1 : y1, x0:x1, :] = (0, 255, 0)
+            if mapping.mirrored_preview:
+                overlay = np.ascontiguousarray(overlay[:, ::-1, :])
+            return overlay
 
         def closeEvent(self, event: Any) -> None:
             self._timer.stop()

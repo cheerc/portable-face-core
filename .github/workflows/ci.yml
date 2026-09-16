@@ -67,3 +67,8 @@ jobs:
         run: pip install -e .[dev,research-ui]
       - name: Run offscreen synthetic Qt smoke
         run: python -m pytest tests/live/test_qt_window.py -q
+      - name: Run Qt lifecycle regression (staging fail-closed)
+        run: >-
+          python -m pytest
+          tests/research/test_cli_lifecycle.py::test_staging_failure_refuses_commit_and_marks_error
+          -q

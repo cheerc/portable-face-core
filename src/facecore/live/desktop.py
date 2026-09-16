@@ -310,6 +310,11 @@ class DesktopSession:
         """Scored observations in sample order (t-3 ledger source)."""
         return self._controller.scored_observations
 
+    @property
+    def controller_consumed_ns(self) -> int | None:
+        """Newest consumed capture stamp (session-clock domain, read-only)."""
+        return self._controller.last_consumed_ns
+
     def cancel_collection(self, now_ns: int) -> SessionResult:
         """E3: stop the fixed-window collector immediately (incomplete)."""
         if self._state != "running":
