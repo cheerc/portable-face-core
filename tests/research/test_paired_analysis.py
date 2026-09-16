@@ -27,6 +27,7 @@ import pytest
 from facecore.live.contracts import (
     FrameDiagnostics,
     ResearchProfile,
+    SessionResult,
     SessionStatus,
 )
 from facecore.research.analysis import (
@@ -695,3 +696,359 @@ class TestCLIAnalyzeIntegration:
 
         # Secret values must not leak in plaintext anywhere
         assert_no_plaintext_leak(tmp_path, ["p1", "gal-e5"])
+
+
+class TestReworkFindingsRED:
+    """Rework r1 RED tests demonstrating dual reviewer findings."""
+
+    def test_tampered_trace_fails_closed_in_cmd_analyze(
+        self, tmp_path: Path
+    ) -> None:
+        from datetime import datetime, timezone
+        from facecore.research.cli import cmd_analyze
+        from facecore.research.experiment import ExperimentManifest
+        from facecore.research.records import ConsentRecord
+        from facecore.research.recorder import ResearchRecorder
+
+        store_dir = tmp_path / "store"
+        key_dir = tmp_path / "keys"
+        store_dir.mkdir()
+        key_dir.mkdir()
+
+        def clock() -> datetime:
+            return datetime(2026, 9, 16, 8, 0, 0, tzinfo=timezone.utc)
+
+        recorder = ResearchRecorder(store_dir, key_dir, clock=clock)
+
+        manifest_data = {
+            "identity": {
+                "experiment_id": "exp-e5",
+                "schema_version": "v2",
+                "owner": "lead-test",
+                "custodian": "custodian-test",
+            },
+            "software": {"code_sha": "0" * 40, "generation": "gen-e5"},
+            "gallery": {"gallery_digest": "gal-e5"},
+            "policy": {
+                "profile_version": "prof-e5",
+                "profile_digest": "prof-000",
+            },
+            "capture": {"device": "fake"},
+            "privacy": {"record_ttl_days": 30},
+            "study": {"participants": ["p1"]},
+            "analysis": {"arms": ["A", "B"]},
+        }
+        manifest = ExperimentManifest.from_dict(manifest_data)
+        consent = ConsentRecord(
+            session_id="s1",
+            participant_id="p1",
+            record_consent=True,
+            image_consent=True,
+            consented_at_utc="2026-09-16T08:00:00Z",
+            record_expires_at_utc="2026-10-16T08:00:00Z",
+            image_expires_at_utc="2026-09-23T08:00:00Z",
+        )
+        att = _attempt("s1", participant_id="p1", visit_id="v1")
+        recorder.begin_attempt(manifest, att, consent)
+        trace = _trace_with_scores("s1", [{"p1": 0.85, "p2": 0.20}])
+        for entry in trace.entries:
+            recorder.append_trace("s1", entry)
+
+        # Corrupt 1 byte in the encrypted trace file
+        trace_file = store_dir / "_traces" / "s1" / "frame_0001.enc"
+        raw = bytearray(trace_file.read_bytes())
+        raw[-1] ^= 0xFF
+        trace_file.write_bytes(bytes(raw))
+
+        # Tampered trace MUST fail closed (rc != 0)
+        rc = cmd_analyze(
+            store=store_dir,
+            key_dir=key_dir,
+            experiment_id="exp-e5",
+            mode="development",
+        )
+        assert rc != 0, f"expected fail-closed non-zero exit code, got {rc}"
+
+    def test_live_vs_replay_divergence_trips_t02(self) -> None:
+        attempts = [_attempt("s1")]
+        labels = [
+            EvaluationLabel(
+                "s1", 1, "enrolled", "p1", "evaluator", "2026-09-16T08:10:00Z"
+            )
+        ]
+        live_result = SessionResult(
+            session_id="s1",
+            schema_version="v1",
+            status=SessionStatus.matched,
+            matched_identity="p1",
+            reason_codes=("live_matched",),
+            elapsed_ms=1000.0,
+            frames_sampled=5,
+            frames_usable=5,
+            frames_rejected=0,
+            frames_dropped=0,
+            support_sequences=(1,),
+            profile_digest="prof-" + "0" * 59,
+            model_generation="gen-e5",
+            gallery_digest="gal-e5",
+        )
+        trace = _trace_with_scores("s1", [{"p1": 0.85, "p2": 0.20}])
+        trace_with_live = SessionTrace(
+            schema_version="v2",
+            attempt_id="s1",
+            manifest_digest="man-e5",
+            session_start_ns=0,
+            deadline_ns=5_000_000_000,
+            session_end_ns=1_000_000_000,
+            collection_stop_reason="deadline_reached",
+            is_complete=True,
+            entries=trace.entries,
+            terminal_result=live_result,
+        )
+        outcomes = [
+            _arm_outcome("s1", "A", "matched", matched_identity="p1"),
+            _arm_outcome("s1", "B", "timeout"),
+        ]
+        report = analyze_batch(
+            attempts, outcomes, labels, traces={"s1": trace_with_live}
+        )
+        assert "T02" in report.triggers, f"expected T02, got {report.triggers}"
+        assert report.hard_triggers_tripped is True
+
+    def test_per_run_refusals_not_erased_and_paired_requires_same_run_profile(
+        self,
+    ) -> None:
+        attempts = [_attempt("s1")]
+        labels = [
+            EvaluationLabel(
+                "s1", 1, "enrolled", "p1", "evaluator", "2026-09-16T08:10:00Z"
+            )
+        ]
+        outcomes = [
+            _arm_outcome(
+                "s1", "A", "matched", matched_identity="p1", run_id="run-001"
+            ),
+            _arm_outcome(
+                "s1", "B", "matched", matched_identity="p1", run_id="run-001"
+            ),
+            _arm_outcome(
+                "s1", "A", "refused", run_id="run-002", refusal="tampered"
+            ),
+            _arm_outcome(
+                "s1", "B", "refused", run_id="run-002", refusal="tampered"
+            ),
+        ]
+        report = analyze_batch(attempts, outcomes, labels)
+        assert report.arm_a.refused >= 1
+        assert report.arm_b.refused >= 1
+
+    def test_paired_complete_refuses_mismatched_run_or_profile(self) -> None:
+        attempts = [_attempt("s1")]
+        labels = [
+            EvaluationLabel(
+                "s1", 1, "enrolled", "p1", "evaluator", "2026-09-16T08:10:00Z"
+            )
+        ]
+        outcomes = [
+            _arm_outcome(
+                "s1", "A", "matched", matched_identity="p1", run_id="run-a"
+            ),
+            _arm_outcome(
+                "s1", "B", "matched", matched_identity="p1", run_id="run-b"
+            ),
+        ]
+        report = analyze_batch(attempts, outcomes, labels)
+        assert report.paired_complete == 0
+
+    def test_refused_replay_not_classified_as_temporal_or_t10(self) -> None:
+        attempts = [_attempt("s1")]
+        labels = [
+            EvaluationLabel(
+                "s1", 1, "enrolled", "p1", "evaluator", "2026-09-16T08:10:00Z"
+            )
+        ]
+        outcomes = [
+            _arm_outcome("s1", "A", "matched", matched_identity="p1"),
+            _arm_outcome("s1", "B", "refused", refusal="tampered"),
+        ]
+        traces = {"s1": _trace_with_scores("s1", [{"p1": 0.85, "p2": 0.20}])}
+        report = analyze_batch(attempts, outcomes, labels, traces=traces)
+        case = report.cases[0]
+        assert case.earliest_blocking_layer in ("refused", "UNRESOLVED_EVIDENCE")
+        assert "T10" not in case.triggers
+
+    def test_cli_analyze_rejects_holdout_mode(self, tmp_path: Path) -> None:
+        from datetime import datetime, timezone
+        from facecore.research.cli import cmd_analyze
+        from facecore.research.experiment import ExperimentManifest
+        from facecore.research.records import ConsentRecord
+        from facecore.research.recorder import ResearchRecorder
+
+        store_dir = tmp_path / "store"
+        key_dir = tmp_path / "keys"
+        store_dir.mkdir()
+        key_dir.mkdir()
+
+        def clock() -> datetime:
+            return datetime(2026, 9, 16, 8, 0, 0, tzinfo=timezone.utc)
+
+        recorder = ResearchRecorder(store_dir, key_dir, clock=clock)
+        manifest_data = {
+            "identity": {
+                "experiment_id": "exp-e5",
+                "schema_version": "v2",
+                "owner": "lead-test",
+                "custodian": "custodian-test",
+            },
+            "software": {"code_sha": "0" * 40, "generation": "gen-e5"},
+            "gallery": {"gallery_digest": "gal-e5"},
+            "policy": {
+                "profile_version": "prof-e5",
+                "profile_digest": "prof-000",
+            },
+            "capture": {"device": "fake"},
+            "privacy": {"record_ttl_days": 30},
+            "study": {"participants": ["p1"]},
+            "analysis": {"arms": ["A", "B"]},
+        }
+        manifest = ExperimentManifest.from_dict(manifest_data)
+        consent = ConsentRecord(
+            session_id="s1",
+            participant_id="p1",
+            record_consent=True,
+            image_consent=True,
+            consented_at_utc="2026-09-16T08:00:00Z",
+            record_expires_at_utc="2026-10-16T08:00:00Z",
+            image_expires_at_utc="2026-09-23T08:00:00Z",
+        )
+        att = _attempt("s1", participant_id="p1", visit_id="v1")
+        recorder.begin_attempt(manifest, att, consent)
+
+        rc = cmd_analyze(
+            store=store_dir,
+            key_dir=key_dir,
+            experiment_id="exp-e5",
+            mode="holdout",
+        )
+        assert rc == 2, f"expected rc 2 rejecting holdout in E5, got {rc}"
+
+    def test_cli_analyze_verifies_profile_against_provenance(
+        self, tmp_path: Path
+    ) -> None:
+        from datetime import datetime, timezone
+        from facecore.research.cli import cmd_analyze
+        from facecore.research.experiment import ExperimentManifest
+        from facecore.research.records import ConsentRecord
+        from facecore.research.recorder import ResearchRecorder
+
+        store_dir = tmp_path / "store"
+        key_dir = tmp_path / "keys"
+        store_dir.mkdir()
+        key_dir.mkdir()
+
+        def clock() -> datetime:
+            return datetime(2026, 9, 16, 8, 0, 0, tzinfo=timezone.utc)
+
+        recorder = ResearchRecorder(store_dir, key_dir, clock=clock)
+
+        manifest_data = {
+            "identity": {
+                "experiment_id": "exp-e5",
+                "schema_version": "v2",
+                "owner": "lead-test",
+                "custodian": "custodian-test",
+            },
+            "software": {"code_sha": "0" * 40, "generation": "gen-e5"},
+            "gallery": {"gallery_digest": "gal-e5"},
+            "policy": {
+                "profile_version": "prof-frozen-001",
+                "profile_digest": "expected-frozen-digest",
+            },
+            "capture": {"device": "fake"},
+            "privacy": {"record_ttl_days": 30},
+            "study": {"participants": ["p1"]},
+            "analysis": {"arms": ["A", "B"]},
+        }
+        manifest = ExperimentManifest.from_dict(manifest_data)
+        consent = ConsentRecord(
+            session_id="s1",
+            participant_id="p1",
+            record_consent=True,
+            image_consent=True,
+            consented_at_utc="2026-09-16T08:00:00Z",
+            record_expires_at_utc="2026-10-16T08:00:00Z",
+            image_expires_at_utc="2026-09-23T08:00:00Z",
+        )
+        att = _attempt("s1", participant_id="p1", visit_id="v1")
+        recorder.begin_attempt(manifest, att, consent)
+
+        rc = cmd_analyze(
+            store=store_dir,
+            key_dir=key_dir,
+            experiment_id="exp-e5",
+            mode="development",
+        )
+        assert rc != 0, "expected non-zero exit code when profile unverified"
+
+    def test_stdout_summary_does_not_leak_attempt_ids(self) -> None:
+        attempts = [_attempt("att-secret-123")]
+        labels = [
+            EvaluationLabel(
+                "att-secret-123",
+                1,
+                "enrolled",
+                "p1",
+                "evaluator",
+                "2026-09-16T08:10:00Z",
+            )
+        ]
+        outcomes = [
+            _arm_outcome(
+                "att-secret-123", "A", "matched", matched_identity="p2"
+            ),
+            _arm_outcome(
+                "att-secret-123", "B", "matched", matched_identity="p2"
+            ),
+        ]
+        report = analyze_batch(attempts, outcomes, labels)
+        summary = report.render_summary()
+        assert "att-secret-123" not in summary, f"attempt id leaked: {summary}"
+
+    def test_case_summary_deleted_on_withdraw_attempt(
+        self, tmp_path: Path
+    ) -> None:
+        from datetime import datetime, timezone
+        from facecore.research.analysis import save_case_summaries
+        from facecore.research.recorder import ResearchRecorder
+
+        store_dir = tmp_path / "store"
+        key_dir = tmp_path / "keys"
+        store_dir.mkdir()
+        key_dir.mkdir()
+
+        def clock() -> datetime:
+            return datetime(2026, 9, 16, 8, 0, 0, tzinfo=timezone.utc)
+
+        recorder = ResearchRecorder(store_dir, key_dir, clock=clock)
+
+        case = CaseSummary(
+            attempt_id="s1",
+            participant_id="p1",
+            visit_id="v1",
+            truth_kind="enrolled",
+            truth_identity="p1",
+            operational_status="completed",
+            arm_a_terminal="matched",
+            arm_b_terminal="matched",
+            earliest_blocking_layer="none",
+            threshold_detail=None,
+            triggers=(),
+            evidence_locator="loc-01",
+            recommended_action="none",
+        )
+        saved = save_case_summaries(recorder, "exp-e5", [case])
+        case_file = saved[0]
+        assert case_file.is_file()
+
+        recorder.withdraw_attempt("s1")
+        assert not case_file.is_file(), f"case file survived: {case_file}"
