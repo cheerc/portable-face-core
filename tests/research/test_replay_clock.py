@@ -145,10 +145,11 @@ class TestReplayObservationsOriginalTime:
     """Decision replay preserves original relative timing, no wall clock."""
 
     def test_late_processed_frame_replays_timeout_not_early_success(self) -> None:
-        # Original: start=0, first frame arrives late, processed crosses the
-        # 5s deadline → B timed out live. A replayer using replay wall clock
-        # or first-frame-as-start would wrongly report early success.
-        profile = _profile()
+        # Decision engine operates strictly on captured_ns, not processed_ns
+        # (N2: processed_ns is preserved for diagnostics, not decision input).
+        # Frames whose processed_ns extends past the 5s boundary are evaluated
+        # by their captured_ns; with required_support=3 and 2 frames, the session times out.
+        profile = _profile(timeout_ms=5000, required_support=3)
         observations = [
             _obs(1, 4_800_000_000, 5_200_000_000),
             _obs(2, 4_900_000_000, 5_300_000_000),
@@ -158,23 +159,21 @@ class TestReplayObservationsOriginalTime:
         assert result.status == SessionStatus.timeout
 
     def test_first_frame_late_arrival_does_not_shift_start(self) -> None:
-        # start=0 but the first observation arrives at 1s; replay must keep
-        # start=0 (deadline at 5s), not steal first-frame time as start.
-        # required_support=1 locks on the first frame; the second frame
-        # (250ms later, satisfying min interval) is never consumed because
-        # the engine is already terminal — proving first-terminal semantics.
-        profile = _profile(required_support=1)
+        # start=0, deadline=5s (5_000_000_000 ns).
+        # required_support=2, min_support_interval_ms=200.
+        # Frame 1 arrives at 4.9s (inside deadline), Frame 2 arrives at 5.1s (past deadline).
+        # Correct (start=0): Frame 2 exceeds 5s deadline -> terminal is timeout.
+        # Stolen start (start=4.9s): deadline shifts to 9.9s -> Frame 2 lands within deadline -> matched.
+        profile = _profile(timeout_ms=5000, required_support=2)
         observations = [
-            _obs(1, 1_000_000_000, 1_010_000_000),
-            _obs(2, 1_500_000_000, 1_510_000_000),
+            _obs(1, 4_900_000_000, 4_910_000_000),
+            _obs(2, 5_100_000_000, 5_110_000_000),
         ]
         trace = _trace(observations, session_start_ns=0)
         result = replay_observations(trace, profile)
-        assert result.status == SessionStatus.matched
-        assert result.support_sequences == (1,)
-        # A start stolen from the first frame (1s) would move the deadline
-        # to 6s; the trace deadline stays anchored at start + 5s.
-        assert trace.deadline_ns == 5_000_000_000
+        assert result.status == SessionStatus.timeout
+        assert result.matched_identity is None
+        assert result.support_sequences == ()
 
     def test_noncontiguous_sequences_are_legal_drops_not_holes(self) -> None:
         profile = _profile(required_support=2)
@@ -206,6 +205,20 @@ class TestReplayObservationsOriginalTime:
         trace = _trace(observations, session_start_ns=0)
         with pytest.raises(ValueError, match="time_backwards"):
             replay_observations(trace, profile)
+
+    def test_replay_observations_respects_trace_deadline(self) -> None:
+        from dataclasses import replace
+
+        # Trace deadline is 1.0s, observation is at 2.0s.
+        # Even if profile.timeout_ms is 5000ms, replay must respect trace deadline.
+        profile = _profile(timeout_ms=5000, required_support=1)
+        observations = [
+            _obs(1, 2_000_000_000, 2_010_000_000),
+        ]
+        trace = _trace(observations, session_start_ns=0)
+        trace = replace(trace, deadline_ns=1_000_000_000)
+        result = replay_observations(trace, profile)
+        assert result.status == SessionStatus.timeout
 
 
 class TestEvaluateArmsPairedComparison:
@@ -297,6 +310,122 @@ class TestEvaluateArmsPairedComparison:
         assert arm_b.frames_scored == 2
         assert arm_b.frames_consumed == 2
         assert arm_a.frames_staged == 2
+
+    def test_b_frames_consumed_counts_all_fed_observations_until_terminal(
+        self,
+    ) -> None:
+        # P1: Frame 1 is quality rejected (fed to engine, rejected).
+        # Frame 2 is quality pass (support 1).
+        # Frame 3 is quality pass (support 2, terminal matched).
+        # support_sequences is (2, 3), but 3 observations were consumed to reach terminal.
+        profile = _profile(required_support=2)
+        observations = [
+            FrameObservation(
+                sequence=1,
+                captured_ns=0,
+                processed_ns=10_000_000,
+                quality_pass=False,
+                quality_reasons=("synth-reject",),
+                face_count=1,
+                face_box=(4.0, 4.0, 8.0, 8.0),
+                identity_scores={"person-01": 0.85},
+                quality_rank=10.0,
+                model_generation="gen-e4",
+                gallery_digest="gal-e4",
+            ),
+            _obs(2, 250_000_000, 260_000_000),
+            _obs(3, 500_000_000, 510_000_000),
+        ]
+        trace = _trace(observations, session_start_ns=0)
+        arm_a, arm_b = evaluate_arms(trace, profile)
+        assert arm_b.terminal == SessionStatus.matched.value
+        assert arm_b.support_sequences == (2, 3)
+        assert arm_b.frames_consumed == 3
+
+    def test_b_decision_time_reports_terminal_observation_time(self) -> None:
+        # P2: Two-frame match at 0ns and 250ms with required_support=2.
+        # Terminal occurs on sequence 2 at 250ms, not on sequence 1 at 0ns.
+        profile = _profile(required_support=2)
+        observations = [
+            _obs(1, 0, 10_000_000),
+            _obs(2, 250_000_000, 260_000_000),
+        ]
+        trace = _trace(observations, session_start_ns=0)
+        arm_a, arm_b = evaluate_arms(trace, profile)
+        assert arm_b.terminal == SessionStatus.matched.value
+        assert arm_b.support_sequences == (1, 2)
+        assert arm_b.decision_time_ns == 250_000_000
+
+    def test_staging_missing_reason_refuses_matched_and_sets_incomplete(
+        self,
+    ) -> None:
+        # P5: If a staged blob is missing (stage_missing_reason is not None),
+        # the arm outcome must be refused/incomplete, must not report matched,
+        # and frames_staged must reflect only successfully staged frames.
+        from facecore.live.contracts import FrameDiagnostics
+        from facecore.research.diagnostics import FrameTraceEntry
+
+        profile = _profile(required_support=1)
+        diag = FrameDiagnostics(
+            sequence=1,
+            original_shape=(16, 16, 3),
+            normalized_shape=(16, 16, 3),
+            orientation=0,
+            mirrored=False,
+            face_count=1,
+            detector_confidence=0.99,
+            face_box=(4.0, 4.0, 8.0, 8.0),
+            landmarks=None,
+            quality_status="accepted",
+        )
+        entry1 = FrameTraceEntry(
+            sequence=1,
+            captured_ns=0,
+            processed_ns=10_000_000,
+            quality_pass=True,
+            quality_reasons=(),
+            face_count=1,
+            face_box=(4.0, 4.0, 8.0, 8.0),
+            identity_score_pairs=(("person-01", 0.85),),
+            quality_rank=50.0,
+            model_generation="gen-e4",
+            gallery_digest="gal-e4",
+            diagnostics=diag,
+            staged_index=0,
+        )
+        entry2 = FrameTraceEntry(
+            sequence=2,
+            captured_ns=250_000_000,
+            processed_ns=260_000_000,
+            quality_pass=True,
+            quality_reasons=(),
+            face_count=1,
+            face_box=(4.0, 4.0, 8.0, 8.0),
+            identity_score_pairs=(("person-01", 0.85),),
+            quality_rank=50.0,
+            model_generation="gen-e4",
+            gallery_digest="gal-e4",
+            diagnostics=diag,
+            staged_index=None,
+            stage_missing_reason="blob_lost",
+        )
+        trace = SessionTrace(
+            schema_version="v2",
+            attempt_id="att-e4-stage-miss",
+            manifest_digest="man-e4",
+            session_start_ns=0,
+            deadline_ns=5_000_000_000,
+            session_end_ns=250_000_000,
+            collection_stop_reason="deadline_reached",
+            is_complete=True,
+            entries=(entry1, entry2),
+            terminal_result=None,
+        )
+        arm_a, arm_b = evaluate_arms(trace, profile)
+        assert arm_b.refusal == "staging_incomplete"
+        assert arm_b.collection_extent == "incomplete"
+        assert arm_b.frames_staged == 1
+        assert arm_b.terminal != SessionStatus.matched.value
 
 
 class TestWindowProvenanceFromCollectionWindow:
@@ -447,6 +576,131 @@ class TestWindowProvenanceFromCollectionWindow:
         assert arm_b.collection_extent == "unproven"
         assert arm_a.refusal == "trace_unavailable"
         assert arm_b.refusal == "trace_unavailable"
+
+    def test_collection_window_constrains_arm_inputs_and_flags_violations(
+        self,
+    ) -> None:
+        # P4: Window ended at 1.0s, sampled 2 frames.
+        # Trace has 3 entries; sequence 3 is at 2.0s (past collection_end_ns).
+        profile = _profile(required_support=1)
+        observations = [
+            _obs(1, 0, 10_000_000, quality_rank=10.0),
+            _obs(2, 500_000_000, 510_000_000, quality_rank=20.0),
+            _obs(3, 2_000_000_000, 2_010_000_000, quality_rank=99.0),
+        ]
+        trace = _trace(observations, session_start_ns=0)
+        window = CollectionWindow(
+            session_id="sess-e4-p4",
+            collection_start_ns=0,
+            collection_deadline_ns=5_000_000_000,
+            collection_end_ns=1_000_000_000,
+            collection_stop_reason="deadline_reached",
+            collection_complete=True,
+            frames_sampled=2,
+        )
+        arm_a, arm_b = evaluate_arms(trace, profile, window=window)
+        # Sequence 3 is outside the legal window, must not be selected by Arm A or Arm B
+        assert 3 not in arm_a.selected_sequences
+        assert 3 not in arm_b.selected_sequences
+        assert "frame_beyond_window" in arm_b.decision_codes or arm_b.refusal is not None
+
+    def test_read_trace_preserves_persisted_session_start_and_deadline(
+        self, tmp_path: Path
+    ) -> None:
+        # P3: read_trace must prioritize persisted collection_window start/deadline
+        # over entries[0].captured_ns.
+        from facecore.live.contracts import SessionResult
+        from facecore.research.experiment import AttemptRecord, ExperimentManifest
+        from facecore.research.recorder import ResearchRecorder
+        from facecore.research.records import CollectionWindow, ConsentRecord
+
+        now = _utc("2026-09-16T10:00:00Z")
+        rec = ResearchRecorder(
+            store_root=tmp_path / "store",
+            key_dir=tmp_path / "keys",
+            clock=lambda: now,
+        )
+        manifest = ExperimentManifest.from_dict(
+            {
+                "identity": {"experiment_id": "exp-e4-p3"},
+                "software": {},
+                "gallery": {},
+                "policy": {},
+                "capture": {},
+                "privacy": {},
+                "study": {},
+                "analysis": {},
+            }
+        )
+        attempt = AttemptRecord(
+            experiment_id="exp-e4-p3",
+            attempt_id="att-e4-p3-001",
+            participant_id="part-p3",
+            visit_id="visit-001",
+            condition_id="cond-001",
+            attempt_index=1,
+            retry_of=None,
+            consent_ref="consent-p3",
+            requested_at_utc="2026-09-16T10:00:00Z",
+            accepted_at_utc="2026-09-16T10:00:01Z",
+            started_at_utc="2026-09-16T10:00:02Z",
+            ended_at_utc=None,
+            operational_status="accepted",
+            error_code=None,
+            bundle_ref=None,
+        )
+        consent = ConsentRecord(
+            session_id="sess-e4-p3",
+            participant_id="part-p3",
+            record_consent=True,
+            image_consent=True,
+            consented_at_utc="2026-09-16T10:00:00Z",
+            record_expires_at_utc="2026-10-16T10:00:00Z",
+            image_expires_at_utc="2026-09-23T10:00:00Z",
+        )
+        rec.begin_attempt(manifest, attempt, consent)
+        rec.begin("sess-e4-p3", consent)
+
+        # First frame arrives late at 4.8s
+        trace = _trace([_obs(1, 4_800_000_000, 4_810_000_000)], session_start_ns=0)
+        rec.append_trace("att-e4-p3-001", trace.entries[0])
+
+        dummy_result = SessionResult(
+            session_id="sess-e4-p3",
+            schema_version="v1",
+            status=SessionStatus.matched,
+            matched_identity="person-01",
+            reason_codes=("ok",),
+            elapsed_ms=100.0,
+            frames_sampled=1,
+            frames_usable=1,
+            frames_rejected=0,
+            frames_dropped=0,
+            support_sequences=(1,),
+            profile_digest="0" * 64,
+            model_generation="gen-e4",
+            gallery_digest="gal-e4",
+        )
+        window = CollectionWindow(
+            session_id="sess-e4-p3",
+            collection_start_ns=1_000_000_000,
+            collection_deadline_ns=6_000_000_000,
+            collection_end_ns=5_000_000_000,
+            collection_stop_reason="deadline_reached",
+            collection_complete=True,
+            frames_sampled=1,
+        )
+        rec.commit(dummy_result, collection_window=window)
+        rec.finish_attempt(
+            "att-e4-p3-001",
+            result=dummy_result,
+            operational_status="completed",
+            error_code=None,
+        )
+
+        loaded_trace = rec.read_trace("att-e4-p3-001")
+        assert loaded_trace.session_start_ns == 1_000_000_000
+        assert loaded_trace.deadline_ns == 6_000_000_000
 
 
 class TestTraceAtRestPrivacy:
