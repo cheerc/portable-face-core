@@ -1009,26 +1009,15 @@ class ResearchRecorder:
         terminal_result: SessionResult | None = None
 
         if record and record.bundle_ref:
-            try:
-                s_rec = self.read_record(record.bundle_ref)
-                terminal_result = s_rec.result
-                if s_rec.collection_window is not None:
-                    cw = s_rec.collection_window
-                    start_ns = cw.collection_start_ns
-                    deadline_ns = cw.collection_deadline_ns
-                    end_ns = cw.collection_end_ns
-                    collection_stop = cw.collection_stop_reason
-                    is_complete = cw.collection_complete
-            except Exception:
-                sess_dir = self._sess_dir(record.bundle_ref)
-                m_path = sess_dir / "manifest.json"
-                if m_path.is_file():
-                    try:
-                        m_data = json.loads(m_path.read_text())
-                        if "result" in m_data:
-                            terminal_result = SessionResult.from_dict(m_data["result"])
-                    except Exception:
-                        pass
+            s_rec = self.read_record(record.bundle_ref)
+            terminal_result = s_rec.result
+            if s_rec.collection_window is not None:
+                cw = s_rec.collection_window
+                start_ns = cw.collection_start_ns
+                deadline_ns = cw.collection_deadline_ns
+                end_ns = cw.collection_end_ns
+                collection_stop = cw.collection_stop_reason
+                is_complete = cw.collection_complete
 
         if start_ns is None:
             start_ns = entries[0].captured_ns if entries else 0

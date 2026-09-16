@@ -484,13 +484,16 @@ def evaluate_arms(
         )
         return blank, arm_b
 
-    # P4: Constrain arm input to the legal collection window
+    # P4 & P1a: Constrain arm input to the legal collection window
     violations: list[str] = []
     legal_entries: list[FrameTraceEntry] = []
     for entry in trace.entries:
         is_violation = False
         if window is not None:
-            if (
+            if entry.captured_ns < window.collection_start_ns:
+                violations.append("frame_before_window")
+                is_violation = True
+            elif (
                 window.collection_end_ns is not None
                 and entry.captured_ns > window.collection_end_ns
             ):
@@ -501,6 +504,13 @@ def evaluate_arms(
                 is_violation = True
         if not is_violation:
             legal_entries.append(entry)
+
+    if window is not None and len(legal_entries) != window.frames_sampled:
+        violations.append("frame_count_mismatch")
+        extent = "incomplete"
+
+    if violations and extent == "full":
+        extent = "incomplete"
 
     legal_observations = _observations_from_entries(legal_entries)
     run_id = f"run-{trace.attempt_id}-001"
