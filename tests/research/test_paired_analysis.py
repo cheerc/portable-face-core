@@ -1292,3 +1292,61 @@ class TestReworkR2FindingsRED:
         assert rc != 0, (
             f"expected fail-closed on unverified bundle-less profile, got {rc}"
         )
+
+
+class TestReworkR3FindingsRED:
+    """Rework r3 RED tests for corrupt attempt ledger under purge_expired."""
+
+    def test_corrupt_attempt_ledger_purges_case_fail_closed(
+        self, tmp_path: Path
+    ) -> None:
+        from datetime import datetime, timezone
+        from facecore.research.analysis import save_case_summaries
+        from facecore.research.recorder import ResearchRecorder
+
+        store_dir = tmp_path / "store"
+        key_dir = tmp_path / "keys"
+        store_dir.mkdir()
+        key_dir.mkdir()
+
+        def clock() -> datetime:
+            return datetime(2026, 9, 16, 8, 0, 0, tzinfo=timezone.utc)
+
+        recorder = ResearchRecorder(store_dir, key_dir, clock=clock)
+
+        # Create an attempt file that is corrupt / undecryptable
+        att_dir = store_dir / "_attempts" / "exp-e5"
+        att_dir.mkdir(parents=True)
+        corrupt_att_file = att_dir / "s_corrupt.enc"
+        corrupt_att_file.write_bytes(
+            b"\x00\x00corrupt-junk-data-cannot-decrypt"
+        )
+
+        # Create a case file for this attempt
+        case = CaseSummary(
+            attempt_id="s_corrupt",
+            participant_id="p1",
+            visit_id="v1",
+            truth_kind="enrolled",
+            truth_identity="p1",
+            operational_status="completed",
+            arm_a_terminal="matched",
+            arm_b_terminal="matched",
+            earliest_blocking_layer="none",
+            threshold_detail=None,
+            triggers=(),
+            evidence_locator="loc-01",
+            recommended_action="none",
+        )
+        saved = save_case_summaries(recorder, "exp-e5", [case])
+        case_file = saved[0]
+        assert case_file.is_file()
+
+        # Calling purge_expired must NOT crash with StoreCorruptionError,
+        # and MUST delete the unverified case file (fail-closed deletion)!
+        exp_time = datetime(2026, 11, 16, 8, 0, 0, tzinfo=timezone.utc)
+        recorder.purge_expired(exp_time)
+
+        assert not case_file.is_file(), (
+            f"case file {case_file} survived purge_expired on corrupt attempt!"
+        )
