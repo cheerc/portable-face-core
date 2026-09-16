@@ -384,9 +384,15 @@ def test_record_tamper_forces_error_exit(tmp_path: Path) -> None:
 
 
 def test_staging_failure_refuses_commit_and_marks_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
-    """E7-B r2 F5: staging errors must fail closed, never commit as success."""
+    """E7-B r2 F5: staging errors must fail closed, never commit as success.
+
+    Environment split (r3): without the optional research-ui extra the Qt
+    route is unavailable (rc=2, nothing committable); the fail-closed
+    staging path (rc=4 + error attempt) is covered by qt-smoke.
+    """
+    pytest.importorskip("PySide6.QtWidgets")
     profile_path = _profile_dict(tmp_path)
     profile_path.write_text(
         json.dumps(
