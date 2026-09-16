@@ -47,3 +47,4 @@ select = ["E", "F"]
 python_version = "3.14"
 strict = true
 mypy_path = "src"
+

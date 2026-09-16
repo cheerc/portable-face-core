@@ -20,14 +20,11 @@ from typing import Any
 import numpy as np
 import pytest
 
-try:
-    from PySide6.QtCore import Qt
-    from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication
-except ImportError:  # Default CI runs non-Qt tests without the optional extra.
-    QApplication = Any  # type: ignore[misc,assignment]
-    QTest = None
-    Qt = None
+# Qt helpers are imported in the fixture so the default verify job can run
+# geometry/parser tests without the optional research-ui dependency.
+QApplication: Any
+QTest: Any
+Qt: Any
 
 from facecore.live.capture import FakeCapture
 from facecore.live.contracts import (
@@ -169,10 +166,17 @@ def _recorder(tmp_path: Path) -> ResearchRecorder:
 
 @pytest.fixture(scope="module")
 def qt_app() -> Any:
-    pytest.importorskip("PySide6")
+    pytest.importorskip("PySide6.QtWidgets")
+    global QApplication, QTest, Qt
+    from PySide6.QtCore import Qt as ActualQt
+    from PySide6.QtTest import QTest as ActualQTest
+    from PySide6.QtWidgets import QApplication as ActualQApplication
+
+    QApplication = ActualQApplication
+    QTest = ActualQTest
+    Qt = ActualQt
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    assert QApplication is not Any
-    return QApplication.instance() or QApplication([])
+    return ActualQApplication.instance() or ActualQApplication([])
 
 
 class TestSquareCaptureGeometry:
@@ -394,3 +398,11 @@ def test_cli_qt_flags_route_without_opening_camera(
     assert rc == 17
     assert called["ui"] == "qt"
     assert called["qt_offscreen"] is True
+
+
+def test_default_mypy_allows_optional_qt_module() -> None:
+    """Default verify stays independent from the research-ui extra."""
+    pyproject = Path(__file__).parents[2] / "pyproject.toml"
+    text = pyproject.read_text()
+    assert 'module = "PySide6.*"' in text
+    assert "ignore_missing_imports = true" in text
