@@ -418,6 +418,49 @@ class TestQtResearchWindow:
         assert recorder.list_attempts(experiment_id="exp-qt") == []
         window.close()
 
+    def test_delete_failure_does_not_report_success(
+        self, qt_app: QApplication, tmp_path: Path
+    ) -> None:
+        """E7-B r6 U2 RED: recorder delete False must not mark deleted."""
+
+        class _FailingDeleteRecorder(ResearchRecorder):
+            def delete(self, session_id: str) -> bool:
+                return False
+
+        now = datetime(2026, 9, 16, 8, tzinfo=timezone.utc)
+        recorder = _FailingDeleteRecorder(
+            tmp_path / "store", tmp_path / "keys", clock=lambda: now
+        )
+        manifest = _manifest()
+        attempt = _attempt("attempt-delete-fail")
+        consent = _consent("qt-session-delete-fail")
+        recorder.begin_attempt(manifest, attempt, consent)
+        desktop = DesktopSession(
+            engine=SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test"),
+            source=FakeCapture(frames=[_packet(1)]),
+            scorer=_matching_scorer,
+            session_id="qt-session-delete-fail",
+            label_recorder=recorder,
+            label_attempt_id=attempt.attempt_id,
+        )
+        window = QtResearchWindow(
+            desktop,
+            consent=consent,
+            recorder=recorder,
+            attempt_id=attempt.attempt_id,
+            device_id="cam-test-delete-fail",
+            offscreen=True,
+            clock_ns=lambda: 0,
+        )
+        window.show()
+        QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
+        window.process_until_terminal()
+        assert desktop.terminal is not None
+        QTest.mouseClick(window.delete_button, Qt.MouseButton.LeftButton)
+        assert desktop.deleted is False
+        assert "delete failed" in window.status_label.text()
+        window.close()
+
     def test_minimal_ux_controls_and_countdown(
         self, qt_app: QApplication, tmp_path: Path
     ) -> None:
