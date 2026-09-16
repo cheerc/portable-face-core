@@ -388,9 +388,32 @@ def test_staging_failure_refuses_commit_and_marks_error(
 ) -> None:
     """E7-B r2 F5: staging errors must fail closed, never commit as success."""
     profile_path = _profile_dict(tmp_path)
+    profile_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "profile_version": "t8-cli-v1",
+                "timeout_ms": 5000,
+                "sample_interval_ms": 200,
+                "max_frames": 25,
+                "queue_limit": 1,
+                "required_support": 2,
+                "min_support_interval_ms": 1,
+                "match_threshold": 0.10,
+                "review_threshold": 0.05,
+                "margin_threshold": 0.01,
+                "detector_version": "yunet-test",
+                "quality_policy_version": "q-test-v1",
+                "continuity_max_center_delta_ratio": 0.50,
+            }
+        )
+    )
     store = tmp_path / "store"
     key_dir = tmp_path / "research_keys"
     # Inject frame-dimension change: frame 1 is 16x16, frame 2 is 16x20.
+    # required_support=2 keeps the session alive past frame 1 (frame 1
+    # alone cannot terminate) so the contradictory second mapping is
+    # actually consumed and must refuse the commit.
     f1 = FramePacket(
         sequence=1, captured_ns=0, rgb=np.zeros((16, 16, 3), dtype=np.uint8)
     )
@@ -399,7 +422,12 @@ def test_staging_failure_refuses_commit_and_marks_error(
         captured_ns=200_000_000,
         rgb=np.zeros((16, 20, 3), dtype=np.uint8),
     )
-    capture = FakeCapture(frames=[f1, f2])
+    f3 = FramePacket(
+        sequence=3,
+        captured_ns=400_000_000,
+        rgb=np.zeros((16, 16, 3), dtype=np.uint8),
+    )
+    capture = FakeCapture(frames=[f1, f2, f3])
 
     rc = cmd_live(
         profile_path=profile_path,

@@ -599,6 +599,21 @@ class ResearchRecorder:
                                 purged.append(attempt_id)
                     except Exception:
                         continue
+        # Crop mappings share the attempt record TTL: any mapping whose
+        # attempt is withdrawn or already purged must not survive on disk.
+        crop_root = self._store / self._CROP_MAPPINGS_DIR
+        if crop_root.is_dir():
+            for crop_path in sorted(crop_root.glob("*.enc")):
+                crop_attempt_id = crop_path.stem
+                try:
+                    attempt_path, _, _ = self._find_attempt_and_path(crop_attempt_id)
+                    if attempt_path is not None and attempt_path.is_file():
+                        continue
+                    crop_path.unlink(missing_ok=True)
+                except Exception:
+                    # Fail-closed deletion: unverifiable geometry ciphertext
+                    # cannot justify retention once its attempt is gone.
+                    crop_path.unlink(missing_ok=True)
         # Purge any case files under _cases that are expired or whose attempt is gone
         cases_root = self._store / "_cases"
         if cases_root.is_dir():
@@ -740,7 +755,10 @@ class ResearchRecorder:
 
         The first mapping is immutable: a later frame with a different geometry
         is refused instead of silently rewriting the manifest-sidecar evidence.
+        Shares the fail-closed clock guard and deletion chain with labels and
+        traces (spec §6).
         """
+        self._check_clock(self._clock())
         required = {"x", "y", "size", "frame_w", "frame_h", "mirrored_preview"}
         if set(crop_mapping) != required:
             raise ValueError(
@@ -1463,6 +1481,8 @@ class ResearchRecorder:
         trace_dir = self._trace_dir(attempt_id)
         if trace_dir.is_dir():
             shutil.rmtree(trace_dir, ignore_errors=True)
+        crop_mapping_path = self._crop_mapping_path(attempt_id)
+        crop_mapping_path.unlink(missing_ok=True)
         cases_root = self._store / "_cases"
         if cases_root.is_dir():
             for exp_dir in cases_root.iterdir():

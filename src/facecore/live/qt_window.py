@@ -23,6 +23,7 @@ from typing import Any
 
 import numpy as np
 
+from facecore.live.contracts import FramePacket
 from facecore.live.desktop import DesktopSession
 from facecore.research.records import ConsentRecord
 
@@ -118,9 +119,7 @@ def crop_frame(
     if frame.dtype != np.uint8:
         raise ValueError("frame must use uint8 pixels")
     height, width = frame.shape[:2]
-    mapping = center_square_crop(
-        width, height, mirrored_preview=mirrored_preview
-    )
+    mapping = center_square_crop(width, height, mirrored_preview=mirrored_preview)
     cropped = frame[
         mapping.y : mapping.y + mapping.size,
         mapping.x : mapping.x + mapping.size,
@@ -139,6 +138,23 @@ def preview_frame(frame: np.ndarray, mapping: CropMapping) -> np.ndarray:
     if mapping.mirrored_preview:
         return np.ascontiguousarray(frame[:, ::-1, :])
     return np.ascontiguousarray(frame)
+
+
+def crop_packet(
+    packet: FramePacket, *, mirrored_preview: bool = False
+) -> tuple[FramePacket, CropMapping]:
+    """Apply center-square crop to a FramePacket without mutating sequence/time."""
+    cropped, mapping = crop_frame(packet.rgb, mirrored_preview=mirrored_preview)
+    return (
+        FramePacket(
+            sequence=packet.sequence,
+            captured_ns=packet.captured_ns,
+            rgb=cropped,
+            orientation=packet.orientation,
+            mirrored=packet.mirrored,
+        ),
+        mapping,
+    )
 
 
 _QT_WINDOW_FACTORY: Any
@@ -218,10 +234,24 @@ else:
             layout = QVBoxLayout(root)
             self.watermark_label = QLabel(self.desktop.watermark)
             self.watermark_label.setObjectName("researchWatermark")
+            self.device_label = QLabel(f"裝置 · device: {self.device_id}")
+            self.device_label.setObjectName("device")
+            self.ttl_label = QLabel(
+                f"TTL: record {self.consent.record_expires_at_utc} · "
+                f"image {self.consent.image_expires_at_utc}"
+            )
+            self.ttl_label.setObjectName("ttl")
             self.status_label = QLabel()
             self.status_label.setObjectName("status")
+            remaining_ms = self.desktop.countdown_ms_remaining(self._clock_ns())
+            self.countdown_label = QLabel(f"倒數 · countdown: {remaining_ms} ms")
+            self.countdown_label.setObjectName("countdown")
+            self.saved_state_label = QLabel("未保存 · not saved")
+            self.saved_state_label.setObjectName("savedState")
             self.identity_label = QLabel()
             self.identity_label.setObjectName("identity")
+            self.guide_label = QLabel("方形引導框 · square guide: 待採集")
+            self.guide_label.setObjectName("guide")
             self.preview_label = QLabel("synthetic preview")
             self.preview_label.setMinimumSize(240, 240)
             self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -237,10 +267,12 @@ else:
             controls = QHBoxLayout()
             self.start_button = QPushButton("Start")
             self.cancel_button = QPushButton("Cancel")
+            self.delete_button = QPushButton("Delete")
             self.enrolled_label_button = QPushButton("Label enrolled")
             self.unknown_label_button = QPushButton("Label unknown")
             self.start_button.clicked.connect(self.start_clicked)
             self.cancel_button.clicked.connect(self.cancel_clicked)
+            self.delete_button.clicked.connect(self.delete_clicked)
             self.enrolled_label_button.clicked.connect(
                 lambda _checked=False: self.label_enrolled()
             )
@@ -249,17 +281,24 @@ else:
             )
             controls.addWidget(self.start_button)
             controls.addWidget(self.cancel_button)
+            controls.addWidget(self.delete_button)
             controls.addWidget(self.enrolled_label_button)
             controls.addWidget(self.unknown_label_button)
 
             layout.addWidget(self.watermark_label)
+            layout.addWidget(self.device_label)
+            layout.addWidget(self.ttl_label)
             layout.addWidget(self.status_label)
+            layout.addWidget(self.countdown_label)
+            layout.addWidget(self.saved_state_label)
             layout.addWidget(self.identity_label)
+            layout.addWidget(self.guide_label)
             layout.addWidget(self.preview_label)
             layout.addLayout(consent_row)
             layout.addLayout(controls)
             self.setCentralWidget(root)
             self.cancel_button.setEnabled(False)
+            self.delete_button.setEnabled(True)
             self.enrolled_label_button.setEnabled(False)
             self.unknown_label_button.setEnabled(False)
 
@@ -273,6 +312,33 @@ else:
 
         def _set_status(self, text: str) -> None:
             self.status_label.setText(text)
+
+        def _set_countdown(self) -> None:
+            remaining = self.desktop.countdown_ms_remaining(self._clock_ns())
+            self.countdown_label.setText(f"倒數 · countdown: {remaining} ms")
+
+        def _refresh_saved_state(self) -> None:
+            if self.recorder is not None and self.attempt_id is not None:
+                read_mapping = getattr(self.recorder, "read_crop_mapping")
+                try:
+                    read_mapping(self.attempt_id)
+                except Exception:
+                    self.saved_state_label.setText("未保存 · not saved")
+                    return
+                self.saved_state_label.setText("已保存 · saved")
+                return
+            self.saved_state_label.setText("未保存 · not saved")
+
+        def _set_guide(self) -> None:
+            if self._crop_mapping is None:
+                self.guide_label.setText("方形引導框 · square guide: 待採集")
+                return
+            mapping = self._crop_mapping
+            self.guide_label.setText(
+                "方形引導框 · square guide: "
+                f"x={mapping.x} y={mapping.y} S={mapping.size} "
+                f"({mapping.frame_w}x{mapping.frame_h})"
+            )
 
         def start_clicked(self) -> None:
             """Start the existing DesktopSession after both consent checks."""
@@ -294,6 +360,7 @@ else:
             self.start_button.setEnabled(False)
             self.cancel_button.setEnabled(True)
             self._set_status("採集中 · collecting")
+            self._set_countdown()
             self._timer.start()
 
         def cancel_clicked(self) -> None:
@@ -316,12 +383,16 @@ else:
                 self._timer.stop()
                 return
             try:
-                result = self.desktop.run_until_terminal(max_steps=1)
+                result = self.desktop.run_until_terminal(max_steps=50)
             except Exception as exc:
                 self._set_status(f"processing failed: {type(exc).__name__}")
                 self.desktop.close()
                 self._timer.stop()
-                return
+                # Geometry/staging failures are fail-closed signals, not
+                # swallowed UI noise: surface the status and propagate so
+                # the CLI refuses the commit instead of masking drift.
+                raise
+            self._set_countdown()
             if result is not None:
                 self._update_terminal(result)
             if self.desktop.state != "running":
@@ -350,6 +421,24 @@ else:
             self.enrolled_label_button.setEnabled(identity is not None)
             self.unknown_label_button.setEnabled(True)
 
+        def delete_clicked(self) -> None:
+            """Delete the attempt chain and close the session (operator action)."""
+            self._timer.stop()
+            try:
+                self.desktop.close()
+            except Exception as exc:
+                self._set_status(f"delete failed: {type(exc).__name__}")
+                return
+            if self.recorder is not None and self.attempt_id is not None:
+                try:
+                    withdraw = getattr(self.recorder, "withdraw_attempt")
+                    withdraw(self.attempt_id)
+                except Exception as exc:
+                    self._set_status(f"delete failed: {type(exc).__name__}")
+                    return
+            self._set_status("已刪除 · deleted")
+            self._refresh_saved_state()
+
         def label_enrolled(self, identity: str | None = None) -> None:
             """Persist an enrolled evaluator label without feeding inference."""
             if identity is None:
@@ -360,6 +449,7 @@ else:
             self.enrolled_label_button.setEnabled(False)
             self.unknown_label_button.setEnabled(False)
             self._set_status("已標註 · labeled")
+            self._refresh_saved_state()
 
         def label_unknown(self) -> None:
             """Persist an unenrolled label without displaying a guessed name."""
@@ -367,16 +457,30 @@ else:
             self.enrolled_label_button.setEnabled(False)
             self.unknown_label_button.setEnabled(False)
             self._set_status("已標註 unknown · labeled")
+            self._refresh_saved_state()
 
         def set_frame(self, frame: np.ndarray) -> CropMapping:
-            """Update preview and persist the shared crop mapping sidecar."""
+            """Update preview and persist the shared crop mapping sidecar.
+
+            The scorer-side capture adapter owns the first mapping write;
+            this preview sink reuses the persisted mapping (idempotent when
+            identical) so a duplicate write never masks geometry drift, and
+            surfaces the persisted mapping for the guide overlay.
+            """
             cropped, mapping = crop_frame(
                 frame, mirrored_preview=self._mirrored_preview
             )
-            self._crop_mapping = mapping
             if self.recorder is not None and self.attempt_id is not None:
                 record_mapping = getattr(self.recorder, "record_crop_mapping")
                 record_mapping(self.attempt_id, mapping.to_dict())
+                persisted = getattr(self.recorder, "read_crop_mapping")(self.attempt_id)
+                if persisted != mapping.to_dict():
+                    raise ValueError(
+                        "preview mapping diverged from persisted capture mapping"
+                    )
+            self._crop_mapping = mapping
+            self._set_guide()
+            self._refresh_saved_state()
             shown = preview_frame(cropped, mapping)
             height, width = shown.shape[:2]
             image = QImage(

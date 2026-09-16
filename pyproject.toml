@@ -51,4 +51,3 @@ mypy_path = "src"
 [[tool.mypy.overrides]]
 module = "PySide6.*"
 ignore_missing_imports = true
-

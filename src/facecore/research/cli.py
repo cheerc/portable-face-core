@@ -371,17 +371,20 @@ def cmd_live(
         model_generation = "cli-fake-gen-1"
         gallery_digest = "cli-fake-gallery"
         engine = SessionEngine(profile, gallery_digest, model_generation)
-        frames = [
-            FramePacket(
-                sequence=seq,
-                captured_ns=seq * 200_000_000,
-                rgb=np.ascontiguousarray(
-                    np.full((16, 16, 3), 120 + (seq % 40), dtype=np.uint8)
-                ),
-            )
-            for seq in range(1, 8)
-        ]
-        source = FakeCapture(frames=frames)
+        if capture_factory is not None:
+            source = capture_factory(device)
+        else:
+            frames = [
+                FramePacket(
+                    sequence=seq,
+                    captured_ns=seq * 200_000_000,
+                    rgb=np.ascontiguousarray(
+                        np.full((16, 16, 3), 120 + (seq % 40), dtype=np.uint8)
+                    ),
+                )
+                for seq in range(1, 8)
+            ]
+            source = FakeCapture(frames=frames)
         scorer = _fake_scorer(model_generation, gallery_digest)
         is_true_path = False
     else:
@@ -473,9 +476,28 @@ def cmd_live(
         return 4
     # t-3: true path stages each sampled frame encrypted as it is scored;
     # fake path keeps envelope-only behavior. Qt also receives frames for its
-    # preview/crop mapping, while inference always uses DesktopSession.
+    # preview/crop mapping.
+    #
+    # E7-B Appendix A.2-A.3: the center-square mapping is applied to the
+    # scorer input (capture adapter), while mirror stays preview-only.
+    # The default transform is identity so the headless fake path is
+    # untouched; Qt/offscreen synthetic smoke wires the square crop.
+    from facecore.live.qt_window import crop_packet as _crop_packet
+
     staged_errors: list[str] = []
     qt_window: Any = None
+
+    def _square_capture_transform(packet: FramePacket) -> FramePacket:
+        cropped_packet, mapping = _crop_packet(packet)
+        try:
+            recorder.record_crop_mapping(resolved_attempt_id, mapping.to_dict())
+        except ValueError as exc:
+            # Geometry mismatch across frames: same-frame evidence would be
+            # unreconstructible, so the scorer input is refused fail-closed.
+            raise ValueError(f"capture geometry changed mid-session: {exc}") from exc
+        except Exception as exc:
+            staged_errors.append(f"crop:{type(exc).__name__}")
+        return cropped_packet
 
     def _stage_frame(packet: FramePacket) -> None:
         if is_true_path:
@@ -495,6 +517,7 @@ def cmd_live(
         scorer=scorer,
         session_id=session_id,
         frame_sink=_stage_frame if (is_true_path or ui == "qt") else None,
+        frame_transform=_square_capture_transform if ui == "qt" else None,
         fixed_seconds=fixed_seconds,
         trace_recorder=recorder if is_true_path else None,
         trace_attempt_id=resolved_attempt_id if is_true_path else None,
@@ -552,16 +575,39 @@ def cmd_live(
         return 2
     # Pump frames into the recorder's staging area as they are sampled.
     # (Desktop owns inference; recorder owns encrypted staging.)
-    if qt_window is None:
-        terminal = desktop.run_until_terminal(max_steps=50)
-    elif qt_offscreen:
-        qt_window.process_until_terminal(max_steps=200)
-        terminal = desktop.terminal
+    try:
+        if qt_window is None:
+            terminal = desktop.run_until_terminal(max_steps=50)
+        elif qt_offscreen:
+            qt_window.process_until_terminal(max_steps=200)
+            terminal = desktop.terminal
+        else:
+            qt_window.show()
+            assert qt_app is not None
+            qt_app.exec()
+            terminal = desktop.terminal
+    except (ValueError, RuntimeError) as exc:
+        # Capture-geometry drift (e.g. frame-dimension change) refuses the
+        # scorer input fail-closed mid-session. Terminal should be None
+        # here; close safely and refuse the commit.
+        terminal = None
+        capture_failure: Exception | None = exc
     else:
-        qt_window.show()
-        assert qt_app is not None
-        qt_app.exec()
-        terminal = desktop.terminal
+        capture_failure = None
+    if capture_failure is not None:
+        print(f"research live: capture failed: {capture_failure}", file=sys.stderr)
+        desktop.close()
+        recorder.abort(session_id, reason="capture_failed")
+        try:
+            recorder.finish_attempt(
+                resolved_attempt_id,
+                result=None,
+                operational_status="error",
+                error_code="capture_failed",
+            )
+        except Exception:
+            pass
+        return 4
     if terminal is None:
         print("research live: no terminal reached", file=sys.stderr)
         desktop.close()
@@ -572,6 +618,26 @@ def cmd_live(
                 result=None,
                 operational_status="error",
                 error_code="no_terminal",
+            )
+        except Exception:
+            pass
+        return 4
+    # R4 (fail-closed): any capture/staging failure refuses the commit.
+    # Staging errors carry geometry/staging integrity evidence, so a
+    # successful bundle must never mask them.
+    if staged_errors:
+        print(
+            "research live: staging failed: " + ";".join(sorted(set(staged_errors))),
+            file=sys.stderr,
+        )
+        desktop.close()
+        recorder.abort(session_id, reason="staging_failed")
+        try:
+            recorder.finish_attempt(
+                resolved_attempt_id,
+                result=None,
+                operational_status="error",
+                error_code="staging_failed",
             )
         except Exception:
             pass
@@ -638,8 +704,12 @@ def cmd_live(
         print(f"research live: finish_attempt failed: {exc}", file=sys.stderr)
         desktop.close()
         return 4
+    # R3: the fixed-window collector may end running after B locks. Only a
+    # terminal session accepts an evaluator label; an incomplete collector
+    # closes without labeling instead of raising.
     if qt_window is None:
-        desktop.label_terminal(None)
+        if desktop.state == "terminal":
+            desktop.label_terminal(None)
         desktop.close()
     else:
         qt_window.close()
@@ -850,7 +920,7 @@ def cmd_analyze(
                     },
                     detected_at_utc=_now_utc().isoformat(),
                 )
-    )
+            )
             print(
                 f"research analyze: profile digest {profile_digest} does not match "
                 f"frozen candidate profile digest {freeze.profile_digest}",

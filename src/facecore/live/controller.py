@@ -56,6 +56,7 @@ class LiveController:
         sample_interval_ns: int = 200_000_000,
         max_frames: int = 25,
         frame_sink: Callable[[FramePacket], None] | None = None,
+        frame_transform: Callable[[FramePacket], FramePacket] | None = None,
         fixed_seconds: bool = False,
         trace_recorder: object | None = None,
         trace_attempt_id: str | None = None,
@@ -65,6 +66,9 @@ class LiveController:
         Called with each sampled packet AFTER scoring succeeds and BEFORE
         engine observe, so encrypted staging (recorder.append_frame) sees
         exactly the frames the engine scored. None keeps prior behavior.
+
+        frame_transform (E7-B): optional input transformation applied before
+        the scorer (e.g. square capture geometry per Appendix A).
 
         fixed_seconds (E3): when True, B inference terminal locks but the
         collector continues to the original deadline for arm A + trace.
@@ -93,6 +97,7 @@ class LiveController:
             profile.max_frames if fixed_seconds else max_frames
         )
         self._frame_sink = frame_sink
+        self._frame_transform = frame_transform
         self._fixed_seconds = fixed_seconds
         self._trace_recorder = trace_recorder
         self._trace_attempt_id = trace_attempt_id
@@ -203,9 +208,19 @@ class LiveController:
         assert self._session_start_ns is not None
         # Advance the sample gate from this packet's capture clock.
         self._next_sample_ns = packet.captured_ns + self._sample_interval_ns
+        score_packet = (
+            self._frame_transform(packet)
+            if self._frame_transform is not None
+            else packet
+        )
         try:
-            observation = self._scorer(packet)
+            observation = self._scorer(score_packet)
         except Exception as exc:
+            # A transform failure (e.g. capture geometry drift) refuses the
+            # scorer input: propagate so the caller fails closed instead of
+            # committing a bundle with unreconstructible geometry.
+            if score_packet is not packet:
+                raise
             self._terminal = self._engine.finish(
                 self._controller_now_ns(), reason="timeout"
             )
@@ -239,7 +254,7 @@ class LiveController:
             )
         self._scored_observations.append(observation)
         if self._frame_sink is not None:
-            self._frame_sink(packet)
+            self._frame_sink(score_packet)
         self._append_live_trace(observation)
         if self._fixed_seconds and self._inference_terminal is not None:
             # Fixed-window: B already locked. This frame belongs to the

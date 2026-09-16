@@ -20,7 +20,7 @@ Only synthetic payloads; never real faces; camera-free.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -347,7 +347,9 @@ class TestCliAttemptPreplacement:
         payload = json.loads(lines[-1])
         assert payload["window"] == "fixed-window-incomplete"
         recorder = ResearchRecorder(
-            store_root=store, key_dir=key_dir, clock=datetime.now
+            store_root=store,
+            key_dir=key_dir,
+            clock=lambda: datetime.now(timezone.utc),
         )
         record = recorder.read_record("sess-e7-fixed-fake")
         assert record.collection_window is not None
