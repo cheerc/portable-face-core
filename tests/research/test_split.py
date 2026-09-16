@@ -469,7 +469,10 @@ class TestSplitInvariants:
             requested_at_utc="2026-09-16T09:01:00+08:00",
         )
         recorder.begin_attempt(manifest, after, _consent("s_suffix_after"))
-        assert recorder.list_attempts(experiment_id="exp-e6")[0].attempt_id == "s_suffix_after"
+        assert (
+            recorder.list_attempts(experiment_id="exp-e6")[0].attempt_id
+            == "s_suffix_after"
+        )
 
     def test_candidate_or_hash_swap_rejected_after_freeze(self, tmp_path: Path) -> None:
         store_dir = tmp_path / "store"

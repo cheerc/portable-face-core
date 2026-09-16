@@ -1015,7 +1015,9 @@ class ResearchRecorder:
                     f"visit {attempt.visit_id!r} is not in planned holdout visits "
                     f"{freeze.planned_visit_ids}"
                 )
-            if attempt.requested_at_utc < freeze.frozen_at_utc:
+            if _parse_utc(attempt.requested_at_utc) < _parse_utc(
+                freeze.frozen_at_utc
+            ):
                 self.record_contamination(
                     ContaminationRecord(
                         contamination_id=f"cnt_{uuid4().hex[:12]}",
