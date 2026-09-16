@@ -39,6 +39,7 @@ import os
 from pathlib import Path
 import shutil
 from typing import Any
+from uuid import uuid4
 
 import numpy as np
 
@@ -63,6 +64,13 @@ from facecore.research.records import (
     ConsentRecord,
     FrameScore,
     ResearchSessionRecord,
+)
+from facecore.research.split import (
+    CandidateFreeze,
+    ContaminationRecord,
+    HoldoutRelease,
+    HoldoutSealedError,
+    SplitContaminationError,
 )
 from facecore.storage.cipher import AeadCipher
 
@@ -179,9 +187,7 @@ class ResearchRecorder:
                 f"last_seen={self._last_seen.isoformat()}; new writes halted"
             )
         self._last_seen = now
-        self._atomic_write_json(
-            self._clock_file, {"last_seen_utc": now.isoformat()}
-        )
+        self._atomic_write_json(self._clock_file, {"last_seen_utc": now.isoformat()})
         return now
 
     # -- paths -----------------------------------------------------------
@@ -218,13 +224,11 @@ class ResearchRecorder:
         self.purge_expired(now)
         if not consent.record_consent:
             raise PermissionError(
-                f"record consent absent for session {session_id!r}; "
-                "refusing to stage"
+                f"record consent absent for session {session_id!r}; refusing to stage"
             )
         if consent.session_id != session_id:
             raise ValueError(
-                f"consent session {consent.session_id!r} does not match "
-                f"{session_id!r}"
+                f"consent session {consent.session_id!r} does not match {session_id!r}"
             )
         if session_id in self._active:
             raise ValueError(f"session {session_id!r} already active")
@@ -263,8 +267,7 @@ class ResearchRecorder:
             )
         if state.frame_count >= MAX_FRAMES_PER_SESSION:
             raise ValueError(
-                f"session {session_id!r} already holds "
-                f"{MAX_FRAMES_PER_SESSION} frames"
+                f"session {session_id!r} already holds {MAX_FRAMES_PER_SESSION} frames"
             )
         index = state.frame_count
         payload = json.dumps(
@@ -280,9 +283,7 @@ class ResearchRecorder:
         cipher = AeadCipher(self._keys.get_key(state.image_key_id))
         blob = cipher.encrypt(
             payload,
-            build_research_aad(
-                SCHEMA_VERSION, session_id, "image", index
-            ),
+            build_research_aad(SCHEMA_VERSION, session_id, "image", index),
         )
         self._atomic_write_bytes(
             self._sess_dir(session_id) / self._frame_name(index),
@@ -394,17 +395,32 @@ class ResearchRecorder:
         try:
             manifest = json.loads(manifest_path.read_text())
         except (ValueError, OSError) as exc:
-            raise ValueError(
-                f"session {session_id!r} manifest unreadable"
-            ) from exc
+            raise ValueError(f"session {session_id!r} manifest unreadable") from exc
         if not isinstance(manifest, dict) or manifest.get("status") != "committed":
-            raise ValueError(
-                f"session {session_id!r} manifest not committed"
-            )
+            raise ValueError(f"session {session_id!r} manifest not committed")
         return manifest
 
     def read_record(self, session_id: str) -> ResearchSessionRecord:
         """Decrypt and return the committed session record envelope."""
+        if self.is_holdout_sealed(session_id):
+            exp_id = "unknown"
+            for a in self.list_attempts():
+                if a.bundle_ref == session_id or a.attempt_id == session_id:
+                    exp_id = a.experiment_id
+                    break
+            self.record_contamination(
+                ContaminationRecord(
+                    contamination_id=f"cnt_{uuid4().hex[:12]}",
+                    experiment_id=exp_id,
+                    reason="premature_holdout_read",
+                    details={"action": "read_record", "session_id": session_id},
+                    detected_at_utc=self._clock().isoformat(),
+                )
+            )
+            raise HoldoutSealedError(
+                f"session {session_id!r} belongs to sealed holdout; "
+                "read refused before authorized release"
+            )
         manifest = self._committed_manifest(session_id)
         now = self._clock()
         record_exp = _parse_utc(str(manifest["record_expires_at_utc"]))
@@ -420,9 +436,7 @@ class ResearchRecorder:
         try:
             blob = _blob_from_wire(wire)
         except StoreCorruptionError as exc:
-            raise ValueError(
-                f"session {session_id!r} record blob corrupt"
-            ) from exc
+            raise ValueError(f"session {session_id!r} record blob corrupt") from exc
         try:
             dek = self._keys.get_key(f"rk_{session_id}")
         except KeyNotFoundError as exc:
@@ -430,24 +444,41 @@ class ResearchRecorder:
         try:
             plaintext = AeadCipher(dek).decrypt(
                 blob,
-                build_research_aad(
-                    SCHEMA_VERSION, session_id, "record", "none"
-                ),
+                build_research_aad(SCHEMA_VERSION, session_id, "record", "none"),
             )
         except StoreCorruptionError as exc:
-            raise ValueError(
-                f"session {session_id!r} record tamper rejected"
-            ) from exc
+            raise ValueError(f"session {session_id!r} record tamper rejected") from exc
         try:
             payload = json.loads(plaintext.decode("utf-8"))
             return ResearchSessionRecord.from_dict(payload)
         except (ValueError, KeyError, TypeError) as exc:
-            raise ValueError(
-                f"session {session_id!r} record envelope invalid"
-            ) from exc
+            raise ValueError(f"session {session_id!r} record envelope invalid") from exc
 
     def read_frame(self, session_id: str, index: int) -> FramePacket:
         """Decrypt and rebuild one committed frame packet."""
+        if self.is_holdout_sealed(session_id):
+            exp_id = "unknown"
+            for a in self.list_attempts():
+                if a.bundle_ref == session_id or a.attempt_id == session_id:
+                    exp_id = a.experiment_id
+                    break
+            self.record_contamination(
+                ContaminationRecord(
+                    contamination_id=f"cnt_{uuid4().hex[:12]}",
+                    experiment_id=exp_id,
+                    reason="premature_holdout_read",
+                    details={
+                        "action": "read_frame",
+                        "session_id": session_id,
+                        "index": index,
+                    },
+                    detected_at_utc=self._clock().isoformat(),
+                )
+            )
+            raise HoldoutSealedError(
+                f"session {session_id!r} frame {index} belongs to sealed holdout; "
+                "read refused before authorized release"
+            )
         manifest = self._committed_manifest(session_id)
         now = self._clock()
         image_exp = _parse_utc(str(manifest["image_expires_at_utc"]))
@@ -565,9 +596,7 @@ class ResearchRecorder:
                 for case_path in sorted(exp_dir.glob("*.enc")):
                     att_id = case_path.stem
                     try:
-                        attempt_path, _, meta = self._find_attempt_and_path(
-                            att_id
-                        )
+                        attempt_path, _, meta = self._find_attempt_and_path(att_id)
                         if attempt_path is None or not attempt_path.is_file():
                             case_path.unlink(missing_ok=True)
                         elif meta:
@@ -664,6 +693,12 @@ class ResearchRecorder:
     _ATTEMPTS_DIR = "_attempts"
     _LABELS_DIR = "_labels"
     _TRACES_DIR = "_traces"
+    _SPLITS_DIR = "_splits"
+
+    def _split_dir(self, experiment_id: str) -> Path:
+        if not experiment_id or "/" in experiment_id:
+            raise ValueError(f"invalid experiment_id {experiment_id!r}")
+        return self._store / self._SPLITS_DIR / experiment_id
 
     def _attempt_dir(self, experiment_id: str) -> Path:
         if not experiment_id or "/" in experiment_id:
@@ -679,6 +714,227 @@ class ResearchRecorder:
         if not attempt_id or "/" in attempt_id:
             raise ValueError(f"invalid attempt_id {attempt_id!r}")
         return self._store / self._TRACES_DIR / attempt_id
+
+    # -- E6: prospective holdout & candidate freeze custody (Phase 2B §12 E6) --
+    def record_freeze(self, freeze: CandidateFreeze) -> None:
+        """Persist a CandidateFreeze under recorder custody (immutable, auditable)."""
+        self._check_clock(self._clock())
+        split_dir = self._split_dir(freeze.experiment_id)
+        freeze_file = split_dir / "freeze.json"
+        if freeze_file.is_file():
+            try:
+                existing_data = json.loads(freeze_file.read_text(encoding="utf-8"))
+                existing_freeze = CandidateFreeze.from_dict(existing_data)
+                if existing_freeze.digest() == freeze.digest():
+                    return  # idempotent
+            except Exception as exc:
+                self.record_contamination(
+                    ContaminationRecord(
+                        contamination_id=f"cnt_{uuid4().hex[:12]}",
+                        experiment_id=freeze.experiment_id,
+                        reason="freeze_corrupt_existing",
+                        details={"error": str(exc)},
+                        detected_at_utc=self._clock().isoformat(),
+                    )
+                )
+                raise SplitContaminationError(
+                    f"candidate freeze for experiment {freeze.experiment_id!r} "
+                    "is unreadable; refusing replacement"
+                ) from exc
+            self.record_contamination(
+                ContaminationRecord(
+                    contamination_id=f"cnt_{uuid4().hex[:12]}",
+                    experiment_id=freeze.experiment_id,
+                    reason="freeze_overwrite_attempt",
+                    details={"new_freeze_id": freeze.freeze_id},
+                    detected_at_utc=self._clock().isoformat(),
+                )
+            )
+            raise SplitContaminationError(
+                "candidate freeze already exists for experiment "
+                f"{freeze.experiment_id!r}; overwriting or swapping frozen "
+                "candidate is prohibited"
+            )
+
+        # Invariant check: already-used development visits cannot be marked as holdout
+        existing_attempts = self.list_attempts(freeze.experiment_id)
+        for att in existing_attempts:
+            if att.visit_id in freeze.planned_visit_ids:
+                self.record_contamination(
+                    ContaminationRecord(
+                        contamination_id=f"cnt_{uuid4().hex[:12]}",
+                        experiment_id=freeze.experiment_id,
+                        reason="already_used_development_visit",
+                        attempt_id=att.attempt_id,
+                        visit_id=att.visit_id,
+                        details={"planned_visit_ids": list(freeze.planned_visit_ids)},
+                        detected_at_utc=self._clock().isoformat(),
+                    )
+                )
+                raise SplitContaminationError(
+                    f"visit {att.visit_id!r} already has recorded attempts in "
+                    f"experiment {freeze.experiment_id!r}; candidate freeze must "
+                    "precede collection"
+                )
+
+        split_dir.mkdir(parents=True, exist_ok=True)
+        self._atomic_write_json(freeze_file, freeze.to_dict())
+
+    def get_freeze(self, experiment_id: str) -> CandidateFreeze | None:
+        freeze_file = self._split_dir(experiment_id) / "freeze.json"
+        if not freeze_file.is_file():
+            return None
+        try:
+            data = json.loads(freeze_file.read_text(encoding="utf-8"))
+            return CandidateFreeze.from_dict(data)
+        except Exception:
+            return None
+
+    def record_release(
+        self, release: HoldoutRelease, *, experiment_id: str | None = None
+    ) -> None:
+        """Persist authorized HoldoutRelease under recorder custody."""
+        self._check_clock(self._clock())
+        if experiment_id is None:
+            splits_root = self._store / self._SPLITS_DIR
+            if splits_root.is_dir():
+                for exp_dir in sorted(splits_root.iterdir()):
+                    if not exp_dir.is_dir():
+                        continue
+                    frz = self.get_freeze(exp_dir.name)
+                    if frz and frz.freeze_id == release.freeze_id:
+                        experiment_id = exp_dir.name
+                        break
+        if experiment_id is None:
+            raise SplitContaminationError(
+                "cannot record release: no candidate freeze found matching "
+                f"freeze_id {release.freeze_id!r}"
+            )
+
+        freeze = self.get_freeze(experiment_id)
+        if (
+            freeze is None
+            or freeze.freeze_id != release.freeze_id
+            or freeze.digest() != release.freeze_digest
+            or release.experiment_id != experiment_id
+        ):
+            self.record_contamination(
+                ContaminationRecord(
+                    contamination_id=f"cnt_{uuid4().hex[:12]}",
+                    experiment_id=experiment_id,
+                    reason="release_freeze_mismatch",
+                    details={"release_freeze_id": release.freeze_id},
+                    detected_at_utc=self._clock().isoformat(),
+                )
+            )
+            raise SplitContaminationError(
+                f"release {release.release_id!r} does not match candidate freeze "
+                f"for experiment {experiment_id!r}"
+            )
+
+        split_dir = self._split_dir(experiment_id)
+        release_file = split_dir / "release.json"
+        if release_file.is_file():
+            try:
+                existing_data = json.loads(release_file.read_text(encoding="utf-8"))
+                existing_rel = HoldoutRelease.from_dict(existing_data)
+                if existing_rel.digest() == release.digest():
+                    return  # idempotent
+            except Exception as exc:
+                self.record_contamination(
+                    ContaminationRecord(
+                        contamination_id=f"cnt_{uuid4().hex[:12]}",
+                        experiment_id=experiment_id,
+                        reason="release_corrupt_existing",
+                        details={"error": str(exc)},
+                        detected_at_utc=self._clock().isoformat(),
+                    )
+                )
+                raise SplitContaminationError(
+                    f"holdout release for experiment {experiment_id!r} is "
+                    "unreadable; refusing replacement"
+                ) from exc
+            self.record_contamination(
+                ContaminationRecord(
+                    contamination_id=f"cnt_{uuid4().hex[:12]}",
+                    experiment_id=experiment_id,
+                    reason="release_overwrite_attempt",
+                    details={"new_release_id": release.release_id},
+                    detected_at_utc=self._clock().isoformat(),
+                )
+            )
+            raise SplitContaminationError(
+                f"holdout release already exists for experiment {experiment_id!r}"
+            )
+
+        split_dir.mkdir(parents=True, exist_ok=True)
+        self._atomic_write_json(release_file, release.to_dict())
+
+    def get_release(self, experiment_id: str) -> HoldoutRelease | None:
+        release_file = self._split_dir(experiment_id) / "release.json"
+        if not release_file.is_file():
+            return None
+        try:
+            data = json.loads(release_file.read_text(encoding="utf-8"))
+            return HoldoutRelease.from_dict(data)
+        except Exception:
+            return None
+
+    def record_contamination(self, contamination: ContaminationRecord) -> None:
+        """Audit record an integrity or contamination event (data preserved)."""
+        split_dir = self._split_dir(contamination.experiment_id)
+        split_dir.mkdir(parents=True, exist_ok=True)
+        log_file = split_dir / "contamination.jsonl"
+        line = json.dumps(contamination.to_dict(), sort_keys=True) + "\n"
+        with log_file.open("a", encoding="utf-8") as f:
+            f.write(line)
+
+    def list_contamination(self, experiment_id: str) -> list[ContaminationRecord]:
+        """Return all recorded contamination/audit events for an experiment."""
+        log_file = self._split_dir(experiment_id) / "contamination.jsonl"
+        if not log_file.is_file():
+            return []
+        records: list[ContaminationRecord] = []
+        for line in log_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    records.append(ContaminationRecord.from_dict(json.loads(line)))
+                except Exception:
+                    pass
+        return records
+
+    def is_holdout_sealed(self, attempt_or_session_id: str) -> bool:
+        """Return whether target is sealed before authorized release."""
+        _, record, _ = self._find_attempt_and_path(attempt_or_session_id)
+        if record is None:
+            for a in self.list_attempts():
+                if a.bundle_ref == attempt_or_session_id:
+                    record = a
+                    break
+
+        if record is None:
+            return False
+
+        freeze = self.get_freeze(record.experiment_id)
+        is_holdout = (record.split == "holdout") or (
+            freeze is not None and record.visit_id in freeze.planned_visit_ids
+        )
+        if not is_holdout:
+            return False
+
+        release = self.get_release(record.experiment_id)
+        if release is None:
+            return True
+        # A release is an authorization proof only when its immutable linkage
+        # still matches the persisted freeze; malformed/mismatched release data
+        # remains sealed rather than silently unlocking content.
+        return (
+            freeze is None
+            or release.freeze_id != freeze.freeze_id
+            or release.freeze_digest != freeze.digest()
+            or release.experiment_id != record.experiment_id
+        )
 
     def begin_attempt(
         self,
@@ -703,6 +959,137 @@ class ResearchRecorder:
                 f"record consent absent for attempt {attempt.attempt_id!r}; "
                 "refusing to accept Start"
             )
+
+        # Check candidate freeze & split invariants
+        freeze = self.get_freeze(attempt.experiment_id)
+        if attempt.split == "holdout":
+            # Check an explicitly cross-split visit before planned-visit membership,
+            # so the audit identifies the primary invariant that was violated.
+            existing_attempts = self.list_attempts(attempt.experiment_id)
+            for ex_att in existing_attempts:
+                if ex_att.visit_id == attempt.visit_id and ex_att.split != "holdout":
+                    self.record_contamination(
+                        ContaminationRecord(
+                            contamination_id=f"cnt_{uuid4().hex[:12]}",
+                            experiment_id=attempt.experiment_id,
+                            reason="cross_split_visit",
+                            attempt_id=attempt.attempt_id,
+                            visit_id=attempt.visit_id,
+                            details={"existing_attempt_id": ex_att.attempt_id},
+                            detected_at_utc=self._clock().isoformat(),
+                        )
+                    )
+                    raise SplitContaminationError(
+                        f"cross-split violation: visit {attempt.visit_id!r} already "
+                        f"recorded in {ex_att.split!r}; same visit cannot appear "
+                        "in both development and holdout"
+                    )
+            if freeze is None:
+                self.record_contamination(
+                    ContaminationRecord(
+                        contamination_id=f"cnt_{uuid4().hex[:12]}",
+                        experiment_id=attempt.experiment_id,
+                        reason="holdout_without_freeze",
+                        attempt_id=attempt.attempt_id,
+                        visit_id=attempt.visit_id,
+                        detected_at_utc=self._clock().isoformat(),
+                    )
+                )
+                raise SplitContaminationError(
+                    f"cannot record holdout attempt {attempt.attempt_id!r} "
+                    f"without candidate freeze for experiment {attempt.experiment_id!r}"
+                )
+            if attempt.visit_id not in freeze.planned_visit_ids:
+                self.record_contamination(
+                    ContaminationRecord(
+                        contamination_id=f"cnt_{uuid4().hex[:12]}",
+                        experiment_id=attempt.experiment_id,
+                        reason="unplanned_holdout_visit",
+                        attempt_id=attempt.attempt_id,
+                        visit_id=attempt.visit_id,
+                        details={"planned_visit_ids": list(freeze.planned_visit_ids)},
+                        detected_at_utc=self._clock().isoformat(),
+                    )
+                )
+                raise SplitContaminationError(
+                    f"visit {attempt.visit_id!r} is not in planned holdout visits "
+                    f"{freeze.planned_visit_ids}"
+                )
+            if attempt.requested_at_utc < freeze.frozen_at_utc:
+                self.record_contamination(
+                    ContaminationRecord(
+                        contamination_id=f"cnt_{uuid4().hex[:12]}",
+                        experiment_id=attempt.experiment_id,
+                        reason="retroactive_holdout_collection",
+                        attempt_id=attempt.attempt_id,
+                        visit_id=attempt.visit_id,
+                        details={
+                            "requested_at_utc": attempt.requested_at_utc,
+                            "frozen_at_utc": freeze.frozen_at_utc,
+                        },
+                        detected_at_utc=self._clock().isoformat(),
+                    )
+                )
+                raise SplitContaminationError(
+                    f"attempt requested at {attempt.requested_at_utc} "
+                    "precedes candidate "
+                    f"freeze at {freeze.frozen_at_utc}; candidate freeze must "
+                    "precede visit collection"
+                )
+
+        # Cross-split invariant: same visit cannot cross split
+        existing_attempts = self.list_attempts(attempt.experiment_id)
+        for ex_att in existing_attempts:
+            if ex_att.visit_id == attempt.visit_id:
+                ex_is_holdout = ex_att.split == "holdout" or (
+                    freeze is not None and ex_att.visit_id in freeze.planned_visit_ids
+                )
+                curr_is_holdout = attempt.split == "holdout" or (
+                    freeze is not None and attempt.visit_id in freeze.planned_visit_ids
+                )
+                if ex_is_holdout != curr_is_holdout:
+                    self.record_contamination(
+                        ContaminationRecord(
+                            contamination_id=f"cnt_{uuid4().hex[:12]}",
+                            experiment_id=attempt.experiment_id,
+                            reason="cross_split_visit",
+                            attempt_id=attempt.attempt_id,
+                            visit_id=attempt.visit_id,
+                            details={
+                                "existing_attempt_id": ex_att.attempt_id,
+                                "existing_split": ex_att.split,
+                                "current_split": attempt.split,
+                            },
+                            detected_at_utc=self._clock().isoformat(),
+                        )
+                    )
+                    raise SplitContaminationError(
+                        f"cross-split violation: visit {attempt.visit_id!r} already "
+                        f"recorded in {ex_att.split!r}; same visit cannot appear "
+                        "in both development and holdout"
+                    )
+
+        if (
+            freeze
+            and attempt.split == "development"
+            and attempt.visit_id in freeze.planned_visit_ids
+        ):
+            self.record_contamination(
+                ContaminationRecord(
+                    contamination_id=f"cnt_{uuid4().hex[:12]}",
+                    experiment_id=attempt.experiment_id,
+                    reason="cross_split_visit",
+                    attempt_id=attempt.attempt_id,
+                    visit_id=attempt.visit_id,
+                    details={"planned_holdout_visit": attempt.visit_id},
+                    detected_at_utc=self._clock().isoformat(),
+                )
+            )
+            raise SplitContaminationError(
+                f"cross-split violation: visit {attempt.visit_id!r} is reserved "
+                "for holdout; cannot record as development"
+            )
+
         attempt_dir = self._attempt_dir(attempt.experiment_id)
         attempt_path = attempt_dir / f"{attempt.attempt_id}.enc"
         if attempt_path.is_file():
@@ -716,6 +1103,7 @@ class ResearchRecorder:
             "consent_session_id": consent.session_id,
             "record_expires_at_utc": consent.record_expires_at_utc,
             "profile_digest": policy_section.get("profile_digest"),
+            "split": attempt.split,
         }
         plaintext = json.dumps(payload, sort_keys=True).encode("utf-8")
         aad = build_research_aad(
@@ -724,9 +1112,7 @@ class ResearchRecorder:
         blob = AeadCipher(dek).encrypt(plaintext, aad)
         self._atomic_write_bytes(attempt_path, _blob_to_wire(blob))
 
-    def _decrypt_attempt(
-        self, path: Path
-    ) -> tuple[AttemptRecord, dict[str, Any]]:
+    def _decrypt_attempt(self, path: Path) -> tuple[AttemptRecord, dict[str, Any]]:
         attempt_id = path.stem
         try:
             wire = path.read_bytes()
@@ -741,9 +1127,7 @@ class ResearchRecorder:
             raise StoreCorruptionError(
                 f"key missing for attempt {attempt_id!r}"
             ) from exc
-        aad = build_research_aad(
-            STUDY_SCHEMA_VERSION, attempt_id, "attempt", "none"
-        )
+        aad = build_research_aad(STUDY_SCHEMA_VERSION, attempt_id, "attempt", "none")
         try:
             plaintext = AeadCipher(dek).decrypt(blob, aad)
         except StoreCorruptionError as exc:
@@ -769,9 +1153,7 @@ class ResearchRecorder:
     ) -> None:
         """Update a durable attempt with its operational outcome."""
         if operational_status not in ATTEMPT_STATUSES:
-            raise ValueError(
-                f"unknown operational_status {operational_status!r}"
-            )
+            raise ValueError(f"unknown operational_status {operational_status!r}")
         path, record, meta = self._find_attempt_and_path(attempt_id)
         if path is None or record is None:
             raise KeyError(f"attempt {attempt_id!r} not found")
@@ -780,9 +1162,7 @@ class ResearchRecorder:
             operational_status=operational_status,
             error_code=error_code,
             ended_at_utc=self._clock().isoformat(),
-            bundle_ref=(
-                result.session_id if result is not None else record.bundle_ref
-            ),
+            bundle_ref=(result.session_id if result is not None else record.bundle_ref),
         )
         payload = {
             **updated.to_dict(),
@@ -792,34 +1172,38 @@ class ResearchRecorder:
             "profile_digest": meta.get("profile_digest"),
         }
         dek = self._keys.get_key(f"rk_{attempt_id}")
-        aad = build_research_aad(
-            STUDY_SCHEMA_VERSION, attempt_id, "attempt", "none"
-        )
+        aad = build_research_aad(STUDY_SCHEMA_VERSION, attempt_id, "attempt", "none")
         plaintext = json.dumps(payload, sort_keys=True).encode("utf-8")
         blob = AeadCipher(dek).encrypt(plaintext, aad)
         self._atomic_write_bytes(path, _blob_to_wire(blob))
 
-    def list_attempts(
-        self, *, experiment_id: str
-    ) -> list[AttemptRecord]:
-        """List all durable attempts for one experiment."""
-        attempt_dir = self._attempt_dir(experiment_id)
-        if not attempt_dir.is_dir():
+    def list_attempts(self, experiment_id: str | None = None) -> list[AttemptRecord]:
+        """List all durable attempts for one experiment (or all experiments)."""
+        attempts_root = self._store / self._ATTEMPTS_DIR
+        if not attempts_root.is_dir():
             return []
+
+        if experiment_id is not None:
+            attempt_dir = self._attempt_dir(experiment_id)
+            if not attempt_dir.is_dir():
+                return []
+            exp_dirs = [attempt_dir]
+        else:
+            exp_dirs = sorted([d for d in attempts_root.iterdir() if d.is_dir()])
+
         results: list[AttemptRecord] = []
-        for path in sorted(attempt_dir.iterdir()):
-            if not path.is_file():
-                continue
-            if path.name.endswith(".tmp"):
-                continue
-            if not path.name.endswith(".enc"):
-                # F4 fail-closed: unrecognized or corrupt non-enc file
-                raise StoreCorruptionError(
-                    f"unrecognized or corrupt attempt file {path.name!r} "
-                    f"in {attempt_dir}"
-                )
-            record, _ = self._decrypt_attempt(path)
-            results.append(record)
+        for attempt_dir in exp_dirs:
+            for path in sorted(attempt_dir.iterdir()):
+                if not path.is_file() or path.name.endswith(".tmp"):
+                    continue
+                if not path.name.endswith(".enc"):
+                    # F4 fail-closed: unrecognized or corrupt non-enc file
+                    raise StoreCorruptionError(
+                        f"unrecognized or corrupt attempt file {path.name!r} "
+                        f"in {attempt_dir}"
+                    )
+                record, _ = self._decrypt_attempt(path)
+                results.append(record)
         return results
 
     def _find_attempt(self, attempt_id: str) -> AttemptRecord | None:
@@ -887,19 +1271,32 @@ class ResearchRecorder:
             raise KeyError(f"no labels for attempt {attempt_id!r}")
         return history[-1]
 
-    def read_label_history(
-        self, attempt_id: str
-    ) -> list[EvaluationLabel]:
+    def read_label_history(self, attempt_id: str) -> list[EvaluationLabel]:
         """Return all label revisions (ascending) for an attempt."""
+        if self.is_holdout_sealed(attempt_id):
+            _, att, _ = self._find_attempt_and_path(attempt_id)
+            exp_id = att.experiment_id if att else "unknown"
+            self.record_contamination(
+                ContaminationRecord(
+                    contamination_id=f"cnt_{uuid4().hex[:12]}",
+                    experiment_id=exp_id,
+                    reason="premature_holdout_read",
+                    attempt_id=attempt_id,
+                    details={"action": "read_label_history"},
+                    detected_at_utc=self._clock().isoformat(),
+                )
+            )
+            raise HoldoutSealedError(
+                f"attempt {attempt_id!r} belongs to sealed holdout; "
+                "read refused before authorized release"
+            )
         label_dir = self._label_dir(attempt_id)
         if not label_dir.is_dir():
             raise KeyError(f"no labels for attempt {attempt_id!r}")
         try:
             dek = self._keys.get_key(f"rk_{attempt_id}")
         except KeyNotFoundError as exc:
-            raise KeyError(
-                f"key not found for attempt {attempt_id!r}"
-            ) from exc
+            raise KeyError(f"key not found for attempt {attempt_id!r}") from exc
         labels: list[EvaluationLabel] = []
         for path in sorted(label_dir.glob("rev_*.enc")):
             rev_part = path.stem.split("_")[1]
@@ -984,6 +1381,23 @@ class ResearchRecorder:
 
     def read_trace(self, attempt_id: str) -> SessionTrace:
         """Read and decrypt all frame trace entries for an attempt."""
+        if self.is_holdout_sealed(attempt_id):
+            _, att, _ = self._find_attempt_and_path(attempt_id)
+            exp_id = att.experiment_id if att else "unknown"
+            self.record_contamination(
+                ContaminationRecord(
+                    contamination_id=f"cnt_{uuid4().hex[:12]}",
+                    experiment_id=exp_id,
+                    reason="premature_holdout_read",
+                    attempt_id=attempt_id,
+                    details={"action": "read_trace"},
+                    detected_at_utc=self._clock().isoformat(),
+                )
+            )
+            raise HoldoutSealedError(
+                f"attempt {attempt_id!r} belongs to sealed holdout; "
+                "read refused before authorized release"
+            )
         trace_dir = self._trace_dir(attempt_id)
         if not trace_dir.is_dir():
             raise KeyError(f"no traces found for attempt {attempt_id!r}")
@@ -1022,14 +1436,11 @@ class ResearchRecorder:
                 entries.append(FrameTraceEntry.from_dict(data))
             except Exception as exc:
                 raise StoreCorruptionError(
-                    f"invalid trace entry in {path.name!r} "
-                    f"for attempt {attempt_id!r}"
+                    f"invalid trace entry in {path.name!r} for attempt {attempt_id!r}"
                 ) from exc
 
         if not entries:
-            raise KeyError(
-                f"no valid trace entries found for attempt {attempt_id!r}"
-            )
+            raise KeyError(f"no valid trace entries found for attempt {attempt_id!r}")
 
         _, record, meta = self._find_attempt_and_path(attempt_id)
         manifest_digest = meta.get("manifest_digest", "") if meta else ""

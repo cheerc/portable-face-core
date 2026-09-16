@@ -38,6 +38,12 @@ from facecore.research.recorder import (
     build_research_aad,
 )
 from facecore.research.replay import ArmOutcome
+from facecore.research.split import (
+    CandidateFreeze,
+    HoldoutRelease,
+    HoldoutSealedError,
+    SplitContaminationError,
+)
 from facecore.storage.cipher import AeadCipher
 
 # Triggers (§7)
@@ -334,8 +340,7 @@ def _classify_failure_layer(
         return FAILURE_LAYER_UNRESOLVED, None
 
     ever_scored = any(
-        any(k == truth_id for k, _ in e.identity_score_pairs)
-        for e in scored_entries
+        any(k == truth_id for k, _ in e.identity_score_pairs) for e in scored_entries
     )
     if not ever_scored:
         return FAILURE_LAYER_UNRESOLVED, None
@@ -391,9 +396,66 @@ def analyze_batch(
     traces: dict[str, SessionTrace] | None = None,
     profile: ResearchProfile | None = None,
     mode: str = "development",
+    freeze: CandidateFreeze | None = None,
+    release: HoldoutRelease | None = None,
+    analysis_digest: str | None = None,
+    code_sha: str | None = None,
 ) -> BatchAnalysis:
     """Analyze a batch of attempts, paired outcomes, and labels (§5-§9)."""
-    _ = mode
+    if mode == "development":
+        for a in attempts:
+            if a.split == "holdout" or (
+                freeze is not None and a.visit_id in freeze.planned_visit_ids
+            ):
+                raise SplitContaminationError(
+                    f"attempt {a.attempt_id} is holdout; holdout attempts must not be "
+                    "included in development analysis"
+                )
+    elif mode == "holdout":
+        if release is None:
+            raise HoldoutSealedError(
+                "cannot run content analysis on holdout prior to authorized release"
+            )
+        if freeze is None:
+            raise SplitContaminationError("holdout analysis requires candidate freeze")
+        if profile is None:
+            raise SplitContaminationError(
+                "holdout analysis requires the frozen profile for "
+                "provenance verification"
+            )
+        if profile.profile_digest() != freeze.profile_digest:
+            raise SplitContaminationError(
+                f"profile digest mismatch: candidate {profile.profile_digest()} != "
+                f"frozen {freeze.profile_digest}"
+            )
+        if analysis_digest is not None and analysis_digest != freeze.analysis_digest:
+            raise SplitContaminationError(
+                f"analysis digest mismatch: candidate {analysis_digest} != "
+                f"frozen {freeze.analysis_digest}"
+            )
+        if code_sha is not None and code_sha != freeze.code_sha:
+            raise SplitContaminationError(
+                f"code SHA mismatch: candidate {code_sha} != frozen {freeze.code_sha}"
+            )
+        if release.freeze_id != freeze.freeze_id:
+            raise SplitContaminationError(
+                f"release freeze_id {release.freeze_id} does not match "
+                f"candidate freeze {freeze.freeze_id}"
+            )
+        if release.freeze_digest != freeze.digest():
+            raise SplitContaminationError(
+                "release freeze digest does not match candidate freeze"
+            )
+        for a in attempts:
+            if a.visit_id not in freeze.planned_visit_ids:
+                raise SplitContaminationError(
+                    f"attempt {a.attempt_id} (visit {a.visit_id}) is not in planned "
+                    f"holdout visits {freeze.planned_visit_ids}; development attempts "
+                    "cannot be mixed into holdout analysis"
+                )
+    else:
+        raise ValueError(f"unsupported analysis mode {mode!r}")
+
     traces = traces or {}
     experiment_id = attempts[0].experiment_id if attempts else "unknown-experiment"
 
@@ -597,9 +659,7 @@ def analyze_batch(
             if truth_known_enrolled > 0
             else None
         )
-        unknown_fa_rate = (
-            (unknown_false_accept / unknown) if unknown > 0 else None
-        )
+        unknown_fa_rate = (unknown_false_accept / unknown) if unknown > 0 else None
 
         # Conditional paired-complete enrolled counts
         cond_count = 0
@@ -695,10 +755,7 @@ def analyze_batch(
                 triggers_dict.setdefault(TRIGGER_T06, []).append(att_id)
 
         # T08: Low usable frames / quality rejection
-        if (
-            out_b is not None
-            and out_b.terminal == SessionStatus.invalid_input.value
-        ):
+        if out_b is not None and out_b.terminal == SessionStatus.invalid_input.value:
             triggers_dict.setdefault(TRIGGER_T08, []).append(att_id)
 
         # T10: Any enrolled not correctly matched by B (refusal excluded)
@@ -758,9 +815,7 @@ def analyze_batch(
                     layer, detail = _classify_failure_layer(
                         att, lbl, trace, out_b, profile
                     )
-                    layer_breakdown[layer] = (
-                        layer_breakdown.get(layer, 0) + 1
-                    )
+                    layer_breakdown[layer] = layer_breakdown.get(layer, 0) + 1
                     if layer == FAILURE_LAYER_UNRESOLVED:
                         triggers_dict.setdefault(TRIGGER_T03, []).append(att_id)
 
@@ -781,9 +836,7 @@ def analyze_batch(
         )
 
         if TRIGGER_T01 in att_triggers:
-            action = (
-                "立即隔離候選改善的放行；保留合規證據、建 incident"
-            )
+            action = "立即隔離候選改善的放行；保留合規證據、建 incident"
         elif TRIGGER_T06 in att_triggers:
             action = "升級有界 RCA 實驗"
         elif TRIGGER_T03 in att_triggers:

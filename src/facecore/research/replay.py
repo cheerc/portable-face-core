@@ -62,6 +62,7 @@ from facecore.live.session import (
 from facecore.research.diagnostics import FrameTraceEntry, SessionTrace
 from facecore.research.recorder import MAX_FRAMES_PER_SESSION, ResearchRecorder
 from facecore.research.records import CollectionWindow
+from facecore.research.split import HoldoutSealedError
 
 Window = Literal["full", "early-stop", "none"]
 
@@ -201,9 +202,7 @@ def replay_session(
     `frame_scores` derive from scored observations — the two denominators
     differ by design, see runbook §9c.
     """
-    recorder = ResearchRecorder(
-        store_root=store_root, key_dir=key_dir, clock=clock
-    )
+    recorder = ResearchRecorder(store_root=store_root, key_dir=key_dir, clock=clock)
     sess_dir = store_root / bundle_id
     if not sess_dir.is_dir():
         raise ReplayRefusal(bundle_id, "missing", "bundle directory not found")
@@ -219,11 +218,11 @@ def replay_session(
             bundle_id, "tampered", f"manifest unreadable: {exc}"
         ) from exc
     if not isinstance(manifest, dict) or manifest.get("status") != "committed":
-        raise ReplayRefusal(
-            bundle_id, "tampered", "manifest status is not committed"
-        )
+        raise ReplayRefusal(bundle_id, "tampered", "manifest status is not committed")
     try:
         record = recorder.read_record(bundle_id)
+    except HoldoutSealedError as exc:
+        raise ReplayRefusal(bundle_id, "sealed", str(exc)) from exc
     except KeyError as exc:
         message = str(exc)
         if "expired" in message:
@@ -267,9 +266,7 @@ def replay_session(
         except ValueError as exc:
             raise ReplayRefusal(bundle_id, "tampered", str(exc)) from exc
 
-    coverage_ns = (
-        frames[-1].captured_ns - frames[0].captured_ns if frames else 0
-    )
+    coverage_ns = frames[-1].captured_ns - frames[0].captured_ns if frames else 0
     window = _window_for(len(frames), coverage_ns, profile)
 
     engine = SessionEngine(profile, gallery_digest, model_generation)
@@ -281,8 +278,7 @@ def replay_session(
             raise ReplayRefusal(
                 bundle_id,
                 "tampered",
-                f"scorer sequence {observation.sequence} != packet "
-                f"{packet.sequence}",
+                f"scorer sequence {observation.sequence} != packet {packet.sequence}",
             )
         if (
             observation.model_generation != model_generation
@@ -330,13 +326,9 @@ def _observations_from_entries(
     last_captured: int | None = None
     for entry in entries:
         if entry.sequence <= last_sequence:
-            raise ValueError(
-                f"duplicate_sequence: {entry.sequence} <= {last_sequence}"
-            )
+            raise ValueError(f"duplicate_sequence: {entry.sequence} <= {last_sequence}")
         if last_captured is not None and entry.captured_ns < last_captured:
-            raise ValueError(
-                f"time_backwards: {entry.captured_ns} < {last_captured}"
-            )
+            raise ValueError(f"time_backwards: {entry.captured_ns} < {last_captured}")
         last_sequence = entry.sequence
         last_captured = entry.captured_ns
         observations.append(
@@ -361,9 +353,7 @@ def _observations_from_trace(trace: SessionTrace) -> list[FrameObservation]:
     return _observations_from_entries(trace.entries)
 
 
-def replay_observations(
-    trace: SessionTrace, profile: ResearchProfile
-) -> SessionResult:
+def replay_observations(trace: SessionTrace, profile: ResearchProfile) -> SessionResult:
     """Re-run the B decision over ORIGINAL observations with ORIGINAL time.
 
     Reuses SessionEngine with the trace's session_start_ns as start (never
@@ -417,9 +407,7 @@ def _replay_observations_internal(
 
     if terminal is None:
         last_ns = (
-            observations[-1].captured_ns
-            if observations
-            else trace.session_start_ns
+            observations[-1].captured_ns if observations else trace.session_start_ns
         )
         terminal = engine.finish(last_ns)
         decision_time_ns = last_ns
@@ -516,12 +504,8 @@ def evaluate_arms(
     run_id = f"run-{trace.attempt_id}-001"
 
     # P5: Staging completeness check
-    staged_count = sum(
-        1 for e in trace.entries if e.stage_missing_reason is None
-    )
-    has_staging_missing = any(
-        e.stage_missing_reason is not None for e in trace.entries
-    )
+    staged_count = sum(1 for e in trace.entries if e.stage_missing_reason is None)
+    has_staging_missing = any(e.stage_missing_reason is not None for e in trace.entries)
 
     arm_refusal: str | None = None
     if has_staging_missing:
@@ -556,9 +540,7 @@ def evaluate_arms(
         terminal=a_terminal,
         matched_identity=a_matched_id,
         collection_extent=extent,
-        decision_time_ns=(
-            best.captured_ns if best is not None else None
-        ),
+        decision_time_ns=(best.captured_ns if best is not None else None),
         decision_codes=tuple(a_codes),
         frames_read=len(trace.entries),
         frames_scored=len(legal_observations),
@@ -578,13 +560,11 @@ def evaluate_arms(
         b_matched_id = None
 
     b_codes = [f"b_{b_result.status.value}"]
-    single_id_inputs = (
-        legal_observations
-        and all(len(obs.identity_scores) <= 1 for obs in legal_observations)
+    single_id_inputs = legal_observations and all(
+        len(obs.identity_scores) <= 1 for obs in legal_observations
     )
     if b_result.status != SessionStatus.matched and (
-        not any(obs.identity_scores for obs in legal_observations)
-        or single_id_inputs
+        not any(obs.identity_scores for obs in legal_observations) or single_id_inputs
     ):
         b_codes.append("none_runner_up")
     if violations:

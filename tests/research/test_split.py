@@ -13,13 +13,15 @@ Invariants & acceptance:
     - candidate/hash swaps after freeze are rejected fail-closed;
     - unreleased holdout data must not be subject to content analysis;
     - legacy read/replay entrypoints (replay_session:180, read_trace:985,
-      read_record:406) must not allow sealed holdout bundles to bypass the research guard;
+      read_record:406) must not allow sealed holdout bundles to bypass the
+      research guard;
     - single-evaluation rule: holdout dataset is evaluated once for confirmation;
       re-evaluating new strategies or candidates on the same holdout is rejected;
     - identical re-run of the same frozen candidate on released holdout is permitted
       for reproducibility and auditing;
     - contamination is audited and recorded; original data is preserved;
-    - pure functions have no hidden disk/network side effects; custody is managed by recorder;
+    - pure functions have no hidden disk/network side effects; custody is
+      managed by recorder;
     - CLI --mode holdout requires valid freeze and authorized release proofs.
 """
 
@@ -37,7 +39,7 @@ from facecore.live.contracts import (
 )
 from facecore.research.analysis import analyze_batch
 from facecore.research.cli import cmd_analyze
-from facecore.research.diagnostics import FrameTraceEntry, SessionTrace
+from facecore.research.diagnostics import FrameTraceEntry
 from facecore.research.experiment import (
     AttemptRecord,
     EvaluationLabel,
@@ -47,14 +49,12 @@ from facecore.research.recorder import ConsentRecord, ResearchRecorder
 from facecore.research.replay import ArmOutcome, ReplayRefusal, replay_session
 from facecore.research.split import (
     CandidateFreeze,
-    ContaminationRecord,
     HoldoutRelease,
     HoldoutSealedError,
     SplitContaminationError,
     authorize_holdout,
     classify_split,
     freeze_candidate,
-    validate_candidate_freeze,
     validate_holdout_release,
 )
 
@@ -65,10 +65,15 @@ def _now_utc():
     return datetime(2026, 9, 16, 8, 0, 0, tzinfo=timezone.utc)
 
 
+TEST_PROFILE_DIGEST = (
+    "6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03"
+)
+
+
 def _manifest(
     experiment_id: str = "exp-e6",
     *,
-    profile_digest: str = "prof-e6-000",
+    profile_digest: str = TEST_PROFILE_DIGEST,
 ) -> ExperimentManifest:
     return ExperimentManifest.from_dict(
         {
@@ -134,19 +139,22 @@ def _consent(session_id: str, participant_id: str = "p1") -> ConsentRecord:
     )
 
 
-def _profile(profile_digest: str = "prof-e6-000") -> ResearchProfile:
+def _profile(profile_digest: str = TEST_PROFILE_DIGEST) -> ResearchProfile:
     # A lightweight profile whose profile_digest matches
     return ResearchProfile(
+        schema_version="v1",
         profile_version="prof-e6",
+        timeout_ms=5000,
+        sample_interval_ms=200,
+        max_frames=25,
+        queue_limit=1,
+        required_support=3,
+        min_support_interval_ms=200,
         match_threshold=0.45,
         review_threshold=0.30,
         margin_threshold=0.10,
-        consecutive_matches=3,
-        timeout_ms=5000,
-        max_frames=25,
-        min_frame_interval_ms=100,
-        min_face_size=(60, 60),
-        min_quality_score=0.4,
+        detector_version="det-e6",
+        quality_policy_version="quality-e6",
     )
 
 
@@ -154,11 +162,14 @@ class TestCandidateFreezeAndAuthorizeHoldout:
     """Pure function contracts for freeze_candidate and authorize_holdout."""
 
     def test_freeze_candidate_pure_function(self) -> None:
-        manifest = _manifest("exp-e6", profile_digest="prof-e6-000")
+        manifest = _manifest(
+            "exp-e6",
+            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+        )
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="prof-e6-000",
+            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future_1", "v_future_2"),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -167,7 +178,10 @@ class TestCandidateFreezeAndAuthorizeHoldout:
         assert freeze.freeze_id.startswith("frz_")
         assert freeze.manifest_digest == manifest.digest()
         assert freeze.code_sha == "c" * 40
-        assert freeze.profile_digest == "prof-e6-000"
+        assert (
+            freeze.profile_digest
+            == "6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03"
+        )
         assert freeze.analysis_digest == "ana-001"
         assert freeze.planned_visit_ids == ("v_future_1", "v_future_2")
         assert freeze.frozen_at_utc == "2026-09-16T09:00:00Z"
@@ -184,12 +198,15 @@ class TestCandidateFreezeAndAuthorizeHoldout:
         assert restored.digest() == freeze.digest()
 
     def test_freeze_candidate_rejects_empty_or_invalid_inputs(self) -> None:
-        manifest = _manifest("exp-e6", profile_digest="prof-e6-000")
+        manifest = _manifest(
+            "exp-e6",
+            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+        )
         with pytest.raises(ValueError, match="code_sha"):
             freeze_candidate(
                 manifest,
                 code_sha="",
-                profile_digest="prof-e6-000",
+                profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
                 analysis_digest="ana-001",
                 planned_visit_ids=("v1",),
             )
@@ -207,7 +224,7 @@ class TestCandidateFreezeAndAuthorizeHoldout:
             freeze_candidate(
                 manifest,
                 code_sha="c" * 40,
-                profile_digest="prof-e6-000",
+                profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
                 analysis_digest="",
                 planned_visit_ids=("v1",),
             )
@@ -216,7 +233,7 @@ class TestCandidateFreezeAndAuthorizeHoldout:
             freeze_candidate(
                 manifest,
                 code_sha="c" * 40,
-                profile_digest="prof-e6-000",
+                profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
                 analysis_digest="ana-001",
                 planned_visit_ids=(),
             )
@@ -225,7 +242,7 @@ class TestCandidateFreezeAndAuthorizeHoldout:
             freeze_candidate(
                 manifest,
                 code_sha="c" * 40,
-                profile_digest="prof-e6-000",
+                profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
                 analysis_digest="ana-001",
                 planned_visit_ids=("v1", "v1"),
             )
@@ -241,11 +258,14 @@ class TestCandidateFreezeAndAuthorizeHoldout:
             )
 
     def test_authorize_holdout_pure_function(self) -> None:
-        manifest = _manifest("exp-e6", profile_digest="prof-e6-000")
+        manifest = _manifest(
+            "exp-e6",
+            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+        )
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="prof-e6-000",
+            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future_1",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -273,11 +293,14 @@ class TestCandidateFreezeAndAuthorizeHoldout:
         assert restored.digest() == release.digest()
 
     def test_authorize_holdout_rejects_empty_decision_id(self) -> None:
-        manifest = _manifest("exp-e6", profile_digest="prof-e6-000")
+        manifest = _manifest(
+            "exp-e6",
+            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+        )
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="prof-e6-000",
+            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future_1",),
         )
@@ -289,11 +312,14 @@ class TestSplitInvariants:
     """Core split invariant enforcement (ADR 0010, Spec §8)."""
 
     def test_classify_split(self) -> None:
-        manifest = _manifest("exp-e6", profile_digest="prof-e6-000")
+        manifest = _manifest(
+            "exp-e6",
+            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+        )
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="prof-e6-000",
+            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
             analysis_digest="ana-001",
             planned_visit_ids=("v_holdout_1", "v_holdout_2"),
         )
@@ -321,7 +347,7 @@ class TestSplitInvariants:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="prof-e6-000",
+            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -359,22 +385,25 @@ class TestSplitInvariants:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="prof-e6-000",
+            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
             analysis_digest="ana-001",
             planned_visit_ids=("v_past",),
             frozen_at_utc="2026-09-16T09:00:00Z",
         )
-        with pytest.raises(SplitContaminationError, match="already has recorded attempts"):
+        with pytest.raises(
+            SplitContaminationError, match="already has recorded attempts"
+        ):
             recorder.record_freeze(freeze)
 
         # Contamination recorded
         contam = recorder.list_contamination("exp-e6")
         assert len(contam) >= 1
-        assert any("retroactive_holdout" in c.reason or "already_used" in c.reason for c in contam)
+        assert any(
+            "retroactive_holdout" in c.reason or "already_used" in c.reason
+            for c in contam
+        )
 
-    def test_freeze_must_precede_future_visit_collection(
-        self, tmp_path: Path
-    ) -> None:
+    def test_freeze_must_precede_future_visit_collection(self, tmp_path: Path) -> None:
         store_dir = tmp_path / "store"
         key_dir = tmp_path / "keys"
         recorder = ResearchRecorder(store_dir, key_dir, clock=_now_utc)
@@ -384,7 +413,7 @@ class TestSplitInvariants:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="prof-e6-000",
+            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -405,9 +434,7 @@ class TestSplitInvariants:
         contam = recorder.list_contamination("exp-e6")
         assert len(contam) >= 1
 
-    def test_candidate_or_hash_swap_rejected_after_freeze(
-        self, tmp_path: Path
-    ) -> None:
+    def test_candidate_or_hash_swap_rejected_after_freeze(self, tmp_path: Path) -> None:
         store_dir = tmp_path / "store"
         key_dir = tmp_path / "keys"
         recorder = ResearchRecorder(store_dir, key_dir, clock=_now_utc)
@@ -416,7 +443,7 @@ class TestSplitInvariants:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="prof-e6-000",
+            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -426,9 +453,9 @@ class TestSplitInvariants:
         # Attempt to record a DIFFERENT freeze for same experiment
         freeze_swapped = freeze_candidate(
             manifest,
-            code_sha="d" * 40,
-            profile_digest="prof-e6-000",
-            analysis_digest="ana-001",
+            code_sha="c" * 40,
+            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            analysis_digest="ana-002",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:30:00Z",
         )
@@ -444,9 +471,7 @@ class TestSplitInvariants:
 class TestRecorderCustodyAndReadTimeGuards:
     """Read-time guards refuse content inspection prior to authorized release."""
 
-    def test_unreleased_holdout_read_record_refused(
-        self, tmp_path: Path
-    ) -> None:
+    def test_unreleased_holdout_read_record_refused(self, tmp_path: Path) -> None:
         store_dir = tmp_path / "store"
         key_dir = tmp_path / "keys"
         recorder = ResearchRecorder(store_dir, key_dir, clock=_now_utc)
@@ -456,7 +481,7 @@ class TestRecorderCustodyAndReadTimeGuards:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="prof-e6-000",
+            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -464,7 +489,7 @@ class TestRecorderCustodyAndReadTimeGuards:
         recorder.record_freeze(freeze)
 
         # Commit an active session for bundle
-        recorder.begin_session("b_holdout", _consent("b_holdout"))
+        recorder.begin("b_holdout", _consent("b_holdout"))
         recorder.commit(
             SessionResult(
                 session_id="b_holdout",
@@ -478,7 +503,7 @@ class TestRecorderCustodyAndReadTimeGuards:
                 frames_rejected=0,
                 frames_dropped=0,
                 support_sequences=(1,),
-                profile_digest="prof-e6-000",
+                profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
                 model_generation="gen-e6",
                 gallery_digest="gal-e6",
             )
@@ -521,7 +546,7 @@ class TestRecorderCustodyAndReadTimeGuards:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="prof-e6-000",
+            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -558,6 +583,9 @@ class TestRecorderCustodyAndReadTimeGuards:
             face_count=1,
             face_box=(4.0, 4.0, 8.0, 8.0),
             identity_score_pairs=(("p1", 0.9),),
+            quality_rank=0.9,
+            model_generation="gen-e6",
+            gallery_digest="gal-e6",
             diagnostics=diag,
             decision_event=None,
             staged_index=1,
@@ -584,9 +612,7 @@ class TestRecorderCustodyAndReadTimeGuards:
         with pytest.raises(HoldoutSealedError, match="sealed holdout"):
             recorder.read_label_history("s_holdout")
 
-    def test_legacy_replay_session_refuses_sealed_bundle(
-        self, tmp_path: Path
-    ) -> None:
+    def test_legacy_replay_session_refuses_sealed_bundle(self, tmp_path: Path) -> None:
         store_dir = tmp_path / "store"
         key_dir = tmp_path / "keys"
         recorder = ResearchRecorder(store_dir, key_dir, clock=_now_utc)
@@ -595,14 +621,14 @@ class TestRecorderCustodyAndReadTimeGuards:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="prof-e6-000",
+            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:00:00Z",
         )
         recorder.record_freeze(freeze)
 
-        recorder.begin_session("b_sealed", _consent("b_sealed"))
+        recorder.begin("b_sealed", _consent("b_sealed"))
         recorder.commit(
             SessionResult(
                 session_id="b_sealed",
@@ -616,7 +642,7 @@ class TestRecorderCustodyAndReadTimeGuards:
                 frames_rejected=0,
                 frames_dropped=0,
                 support_sequences=(),
-                profile_digest="prof-e6-000",
+                profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
                 model_generation="gen-e6",
                 gallery_digest="gal-e6",
             )
@@ -637,7 +663,9 @@ class TestRecorderCustodyAndReadTimeGuards:
                 store_root=store_dir,
                 key_dir=key_dir,
                 clock=_now_utc,
-                profile=_profile("prof-e6-000"),
+                profile=_profile(
+                    "6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03"
+                ),
                 scorer=lambda f: None,  # type: ignore[return-value]
                 model_generation="gen-e6",
                 gallery_digest="gal-e6",
@@ -655,7 +683,7 @@ class TestRecorderCustodyAndReadTimeGuards:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="prof-e6-000",
+            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -680,9 +708,7 @@ class TestRecorderCustodyAndReadTimeGuards:
 class TestHoldoutReleaseAndSingleEvaluation:
     """Release unlocks analysis; single-evaluation rule strictly enforced."""
 
-    def test_authorized_release_unlocks_content_analysis(
-        self, tmp_path: Path
-    ) -> None:
+    def test_authorized_release_unlocks_content_analysis(self, tmp_path: Path) -> None:
         store_dir = tmp_path / "store"
         key_dir = tmp_path / "keys"
         recorder = ResearchRecorder(store_dir, key_dir, clock=_now_utc)
@@ -691,7 +717,7 @@ class TestHoldoutReleaseAndSingleEvaluation:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="prof-e6-000",
+            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -722,7 +748,7 @@ class TestHoldoutReleaseAndSingleEvaluation:
                 attempt_id="s_holdout",
                 run_id="run-1",
                 arm_id="A",
-                profile_digest="prof-e6-000",
+                profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
                 selected_sequences=(1,),
                 support_sequences=(1,),
                 terminal=SessionStatus.matched.value,
@@ -739,7 +765,7 @@ class TestHoldoutReleaseAndSingleEvaluation:
                 attempt_id="s_holdout",
                 run_id="run-1",
                 arm_id="B",
-                profile_digest="prof-e6-000",
+                profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
                 selected_sequences=(1,),
                 support_sequences=(1,),
                 terminal=SessionStatus.matched.value,
@@ -766,7 +792,9 @@ class TestHoldoutReleaseAndSingleEvaluation:
             mode="holdout",
             freeze=freeze,
             release=release,
-            profile=_profile("prof-e6-000"),
+            profile=_profile(
+                "6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03"
+            ),
         )
         assert batch.attempted == 1
         assert batch.truth_known_enrolled == 1
@@ -780,7 +808,7 @@ class TestHoldoutReleaseAndSingleEvaluation:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="prof-e6-000",
+            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -794,7 +822,7 @@ class TestHoldoutReleaseAndSingleEvaluation:
                 attempt_id="s1",
                 run_id="run-1",
                 arm_id="A",
-                profile_digest="prof-e6-000",
+                profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
                 selected_sequences=(),
                 support_sequences=(),
                 terminal=SessionStatus.timeout.value,
@@ -822,7 +850,9 @@ class TestHoldoutReleaseAndSingleEvaluation:
             mode="holdout",
             freeze=freeze,
             release=release,
-            profile=_profile("prof-e6-000"),
+            profile=_profile(
+                "6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03"
+            ),
         )
         # Second run (exact reproduction / audit)
         b2 = analyze_batch(
@@ -832,7 +862,9 @@ class TestHoldoutReleaseAndSingleEvaluation:
             mode="holdout",
             freeze=freeze,
             release=release,
-            profile=_profile("prof-e6-000"),
+            profile=_profile(
+                "6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03"
+            ),
         )
         assert b1.to_dict() == b2.to_dict()
 
@@ -843,7 +875,7 @@ class TestHoldoutReleaseAndSingleEvaluation:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="prof-e6-000",
+            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -855,16 +887,19 @@ class TestHoldoutReleaseAndSingleEvaluation:
 
         # Running with a DIFFERENT profile on the same holdout must be rejected
         new_profile = ResearchProfile(
+            schema_version="v1",
             profile_version="prof-e6-new",
+            timeout_ms=5000,
+            sample_interval_ms=200,
+            max_frames=25,
+            queue_limit=1,
+            required_support=3,
+            min_support_interval_ms=200,
             match_threshold=0.50,  # changed threshold
             review_threshold=0.30,
             margin_threshold=0.10,
-            consecutive_matches=3,
-            timeout_ms=5000,
-            max_frames=25,
-            min_frame_interval_ms=100,
-            min_face_size=(60, 60),
-            min_quality_score=0.4,
+            detector_version="det-e6",
+            quality_policy_version="quality-e6",
         )
         with pytest.raises(SplitContaminationError, match="profile digest"):
             analyze_batch(
@@ -881,13 +916,13 @@ class TestHoldoutReleaseAndSingleEvaluation:
 class TestCLIAnalyzeHoldoutMode:
     """CLI analyze integration testing for holdout and development modes."""
 
-    def test_cli_analyze_holdout_unreleased_fails_closed(
-        self, tmp_path: Path
-    ) -> None:
+    def test_cli_analyze_holdout_unreleased_fails_closed(self, tmp_path: Path) -> None:
         store_dir = tmp_path / "store"
         key_dir = tmp_path / "keys"
         profile_file = tmp_path / "profile.json"
-        prof = _profile("prof-e6-000")
+        prof = _profile(
+            "6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03"
+        )
         profile_file.write_text(json.dumps(prof.to_dict()))
 
         recorder = ResearchRecorder(store_dir, key_dir, clock=_now_utc)
@@ -927,14 +962,18 @@ class TestCLIAnalyzeHoldoutMode:
         store_dir = tmp_path / "store"
         key_dir = tmp_path / "keys"
         profile_file = tmp_path / "profile.json"
-        prof = _profile("prof-e6-000")
+        prof = _profile(
+            "6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03"
+        )
         profile_file.write_text(json.dumps(prof.to_dict()))
 
         recorder = ResearchRecorder(store_dir, key_dir, clock=_now_utc)
         manifest = _manifest("exp-e6", profile_digest=prof.profile_digest())
 
-        freeze = freeze_candidate(
-            manifest,
+        freeze = CandidateFreeze(
+            freeze_id="frz_tampered",
+            experiment_id="exp-e6",
+            manifest_digest=manifest.digest(),
             code_sha="c" * 40,
             profile_digest="prof-DIFFERENT-DIGEST",
             analysis_digest="ana-001",
@@ -942,6 +981,7 @@ class TestCLIAnalyzeHoldoutMode:
             frozen_at_utc="2026-09-16T09:00:00Z",
         )
         # Force write freeze with mismatched digest to simulate tampering
+        (store_dir / "_splits" / "exp-e6").mkdir(parents=True)
         recorder._atomic_write_json(
             store_dir / "_splits" / "exp-e6" / "freeze.json", freeze.to_dict()
         )
@@ -980,7 +1020,9 @@ class TestCLIAnalyzeHoldoutMode:
         store_dir = tmp_path / "store"
         key_dir = tmp_path / "keys"
         profile_file = tmp_path / "profile.json"
-        prof = _profile("prof-e6-000")
+        prof = _profile(
+            "6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03"
+        )
         profile_file.write_text(json.dumps(prof.to_dict()))
 
         recorder = ResearchRecorder(store_dir, key_dir, clock=_now_utc)
@@ -1026,7 +1068,9 @@ class TestCLIAnalyzeHoldoutMode:
         store_dir = tmp_path / "store"
         key_dir = tmp_path / "keys"
         profile_file = tmp_path / "profile.json"
-        prof = _profile("prof-e6-000")
+        prof = _profile(
+            "6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03"
+        )
         profile_file.write_text(json.dumps(prof.to_dict()))
 
         recorder = ResearchRecorder(store_dir, key_dir, clock=_now_utc)
