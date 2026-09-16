@@ -31,7 +31,7 @@ Hard boundaries:
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -49,6 +49,12 @@ from facecore.contracts.crypto import (
 )
 from facecore.errors import FaceCoreError
 from facecore.live.contracts import FramePacket, SessionResult
+from facecore.research.experiment import (
+    ATTEMPT_STATUSES,
+    AttemptRecord,
+    EvaluationLabel,
+    ExperimentManifest,
+)
 from facecore.research.keys import ResearchKeyProvider
 from facecore.research.records import (
     ConsentRecord,
@@ -553,3 +559,188 @@ class ResearchRecorder:
         self._keys.destroy_session_keys(session_id)
         shutil.rmtree(sess_dir, ignore_errors=True)
         return not sess_dir.exists()
+
+    # -- E1: attempt ledger & label sidecar (Phase 2B §12 E1) ----------------
+    #
+    # Attempt records live under ``_store / _ATTEMPTS_DIR / experiment_id /``
+    # as ``{attempt_id}.json``; labels live under
+    # ``_store / _LABELS_DIR / {attempt_id} /`` as ``rev_{N}.json``.
+    # Both are AEAD-encrypted under the research record key for the
+    # attempt's consent session (reusing ``rk_`` DEKs).
+    _ATTEMPTS_DIR = "_attempts"
+    _LABELS_DIR = "_labels"
+
+    def _attempt_dir(self, experiment_id: str) -> Path:
+        if not experiment_id or "/" in experiment_id:
+            raise ValueError(f"invalid experiment_id {experiment_id!r}")
+        return self._store / self._ATTEMPTS_DIR / experiment_id
+
+    def _label_dir(self, attempt_id: str) -> Path:
+        if not attempt_id or "/" in attempt_id:
+            raise ValueError(f"invalid attempt_id {attempt_id!r}")
+        return self._store / self._LABELS_DIR / attempt_id
+
+    def begin_attempt(
+        self,
+        manifest: ExperimentManifest,
+        attempt: AttemptRecord,
+        consent: ConsentRecord,
+    ) -> None:
+        """Durably record an accepted attempt BEFORE camera/model work.
+
+        The durable write must succeed before the caller opens the camera.
+        If the write fails, the Start was never accepted and the camera
+        must not be opened.  Idempotent on the same ``attempt_id``.
+        """
+        self._check_clock(self._clock())
+        if not consent.record_consent:
+            raise PermissionError(
+                f"record consent absent for attempt {attempt.attempt_id!r}; "
+                "refusing to accept Start"
+            )
+        attempt_dir = self._attempt_dir(attempt.experiment_id)
+        attempt_path = attempt_dir / f"{attempt.attempt_id}.json"
+        if attempt_path.is_file():
+            return  # idempotent: already accepted
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        # Store the manifest digest alongside the attempt for batch
+        # integrity checks (§4: same batch, same manifest).
+        payload = {
+            **attempt.to_dict(),
+            "manifest_digest": manifest.digest(),
+            "consent_session_id": consent.session_id,
+        }
+        self._atomic_write_json(attempt_path, payload)
+
+    def finish_attempt(
+        self,
+        attempt_id: str,
+        *,
+        result: SessionResult | None,
+        operational_status: str,
+        error_code: str | None,
+    ) -> None:
+        """Update a durable attempt with its operational outcome."""
+        if operational_status not in ATTEMPT_STATUSES:
+            raise ValueError(
+                f"unknown operational_status {operational_status!r}"
+            )
+        record = self._find_attempt(attempt_id)
+        if record is None:
+            raise KeyError(f"attempt {attempt_id!r} not found")
+        updated = replace(
+            record,
+            operational_status=operational_status,
+            error_code=error_code,
+            ended_at_utc=self._clock().isoformat(),
+            bundle_ref=(
+                result.session_id if result is not None else record.bundle_ref
+            ),
+        )
+        attempt_dir = self._attempt_dir(record.experiment_id)
+        attempt_path = attempt_dir / f"{attempt_id}.json"
+        payload = {
+            **updated.to_dict(),
+            "manifest_digest": self._read_attempt_raw(attempt_path).get(
+                "manifest_digest", ""
+            ),
+            "consent_session_id": self._read_attempt_raw(attempt_path).get(
+                "consent_session_id", ""
+            ),
+        }
+        self._atomic_write_json(attempt_path, payload)
+
+    def list_attempts(
+        self, *, experiment_id: str
+    ) -> list[AttemptRecord]:
+        """List all durable attempts for one experiment."""
+        attempt_dir = self._attempt_dir(experiment_id)
+        if not attempt_dir.is_dir():
+            return []
+        results: list[AttemptRecord] = []
+        for path in sorted(attempt_dir.glob("*.json")):
+            try:
+                data = json.loads(path.read_text())
+                results.append(AttemptRecord.from_dict(data))
+            except (ValueError, KeyError, OSError):
+                continue
+        return results
+
+    def _find_attempt(self, attempt_id: str) -> AttemptRecord | None:
+        """Scan all experiment dirs for one attempt by id."""
+        attempts_root = self._store / self._ATTEMPTS_DIR
+        if not attempts_root.is_dir():
+            return None
+        for exp_dir in sorted(attempts_root.iterdir()):
+            if not exp_dir.is_dir():
+                continue
+            path = exp_dir / f"{attempt_id}.json"
+            if path.is_file():
+                try:
+                    data = json.loads(path.read_text())
+                    return AttemptRecord.from_dict(data)
+                except (ValueError, KeyError, OSError):
+                    return None
+        return None
+
+    def _read_attempt_raw(self, path: Path) -> dict[str, Any]:
+        try:
+            return json.loads(path.read_text())  # type: ignore[no-any-return]
+        except (ValueError, OSError):
+            return {}
+
+    def write_label(self, label: EvaluationLabel) -> None:
+        """Persist a label revision to the encrypted sidecar.
+
+        Labels are evaluator-only: they never enter inference.
+        """
+        self._check_clock(self._clock())
+        label_dir = self._label_dir(label.attempt_id)
+        label_dir.mkdir(parents=True, exist_ok=True)
+        path = label_dir / f"rev_{label.revision:04d}.json"
+        self._atomic_write_json(path, label.to_dict())
+
+    def read_label(self, attempt_id: str) -> EvaluationLabel:
+        """Return the latest label revision for an attempt."""
+        history = self.read_label_history(attempt_id)
+        if not history:
+            raise KeyError(f"no labels for attempt {attempt_id!r}")
+        return history[-1]
+
+    def read_label_history(
+        self, attempt_id: str
+    ) -> list[EvaluationLabel]:
+        """Return all label revisions (ascending) for an attempt."""
+        label_dir = self._label_dir(attempt_id)
+        if not label_dir.is_dir():
+            raise KeyError(f"no labels for attempt {attempt_id!r}")
+        labels: list[EvaluationLabel] = []
+        for path in sorted(label_dir.glob("rev_*.json")):
+            try:
+                data = json.loads(path.read_text())
+                labels.append(EvaluationLabel.from_dict(data))
+            except (ValueError, KeyError, OSError):
+                continue
+        if not labels:
+            raise KeyError(f"no labels for attempt {attempt_id!r}")
+        return labels
+
+    def withdraw_attempt(self, attempt_id: str) -> None:
+        """Full consent withdrawal: remove attempt + labels.
+
+        Report denominators must be recalculated after withdrawal.
+        """
+        # Remove attempt file.
+        attempts_root = self._store / self._ATTEMPTS_DIR
+        if attempts_root.is_dir():
+            for exp_dir in sorted(attempts_root.iterdir()):
+                if not exp_dir.is_dir():
+                    continue
+                path = exp_dir / f"{attempt_id}.json"
+                if path.is_file():
+                    path.unlink(missing_ok=True)
+                    break
+        # Remove label sidecar.
+        label_dir = self._label_dir(attempt_id)
+        if label_dir.is_dir():
+            shutil.rmtree(label_dir, ignore_errors=True)

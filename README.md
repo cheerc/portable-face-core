@@ -144,6 +144,7 @@ src/
     │   ├── __init__.py
     │   ├── __main__.py
     │   ├── cli.py
+    │   ├── experiment.py
     │   ├── keys.py
     │   ├── recorder.py
     │   ├── records.py
@@ -242,10 +243,13 @@ tests/
 │   └── test_memory.py
 ├── research/
 │   ├── __init__.py
+│   ├── test_attempt_lifecycle.py
 │   ├── test_camera_wiring.py
 │   ├── test_cli.py
 │   ├── test_cli_lifecycle.py
 │   ├── test_device_passthrough.py
+│   ├── test_experiment.py
+│   ├── test_main_entry.py
 │   ├── test_recorder.py
 │   ├── test_recorder_recovery.py
 │   ├── test_records.py
