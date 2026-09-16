@@ -85,6 +85,7 @@ class DesktopSession:
         self._state: DesktopState = "idle"
         self._terminal: SessionResult | None = None
         self._label: str | None = None
+        self._deleted = False
         self._label_recorder = label_recorder
         self._label_attempt_id = label_attempt_id
         self._label_actor_ref = label_actor_ref
@@ -113,6 +114,20 @@ class DesktopSession:
     def recording(self) -> bool:
         """Recording indicator: on from successful start until close."""
         return self._recording
+
+    @property
+    def session_id(self) -> str:
+        return self._session_id
+
+    @property
+    def deleted(self) -> bool:
+        """True once the operator deleted the session chain via the UI."""
+        return self._deleted
+
+    def mark_deleted(self) -> None:
+        """Flag the session chain deleted: stops any later commit path."""
+        self._deleted = True
+        self._recording = False
 
     def on_start(
         self, consent: ConsentRecord, now_ns: int, device_id: str = "default"

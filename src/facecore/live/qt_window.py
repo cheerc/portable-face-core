@@ -197,6 +197,7 @@ else:
             consent: ConsentRecord,
             recorder: object | None = None,
             attempt_id: str | None = None,
+            session_id: str | None = None,
             device_id: str = "default",
             mirrored_preview: bool = False,
             offscreen: bool = False,
@@ -208,6 +209,7 @@ else:
             self.consent = consent
             self.recorder = recorder
             self.attempt_id = attempt_id
+            self.session_id = session_id or desktop.session_id
             self.device_id = device_id
             self._mirrored_preview = mirrored_preview
             self._clock_ns = clock_ns
@@ -426,20 +428,27 @@ else:
             self.unknown_label_button.setEnabled(True)
 
         def delete_clicked(self) -> None:
-            """Delete the attempt chain and close the session (operator action)."""
+            """Delete the session bundle plus linked attempts (operator action).
+
+            Atomic from the caller's view: the recorder removes the session
+            bundle directory and cascades to linked attempts, then the
+            desktop is flagged deleted so the CLI never commits afterwards.
+            """
             self._timer.stop()
             try:
                 self.desktop.close()
             except Exception as exc:
                 self._set_status(f"delete failed: {type(exc).__name__}")
                 return
-            if self.recorder is not None and self.attempt_id is not None:
-                try:
-                    withdraw = getattr(self.recorder, "withdraw_attempt")
-                    withdraw(self.attempt_id)
-                except Exception as exc:
-                    self._set_status(f"delete failed: {type(exc).__name__}")
-                    return
+            try:
+                delete_bundle = getattr(self.recorder, "delete", None)
+                if delete_bundle is None:
+                    raise AttributeError("recorder has no delete method")
+                delete_bundle(self.session_id)
+            except Exception as exc:
+                self._set_status(f"delete failed: {type(exc).__name__}")
+                return
+            self.desktop.mark_deleted()
             self._set_status("已刪除 · deleted")
             self._refresh_saved_state()
 

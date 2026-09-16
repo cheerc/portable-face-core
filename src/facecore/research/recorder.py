@@ -208,6 +208,10 @@ class ResearchRecorder:
             raise ValueError(f"invalid session_id {session_id!r}")
         return self._store / session_id
 
+    def session_bundle_exists(self, session_id: str) -> bool:
+        """True when a committed session bundle directory is present."""
+        return (self._sess_dir(session_id) / "manifest.json").is_file()
+
     @staticmethod
     def _frame_name(index: int) -> str:
         return f"frame_{index:03d}.enc"

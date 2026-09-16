@@ -615,6 +615,22 @@ def cmd_live(
         capture_failure: Exception | None = exc
     else:
         capture_failure = None
+    # T2: an operator Delete in the Qt window already removed the session
+    # bundle plus linked attempts. Never commit afterwards: report success
+    # only once deletion is complete.
+    if qt_window is not None and desktop.deleted:
+        _emit(
+            {
+                "session_id": session_id,
+                "status": "deleted",
+                "window": window_label,
+                "elapsed_ms": 0.0,
+                "reason_codes": ["operator_deleted"],
+                "generation": model_generation,
+                "gallery_digest": gallery_digest,
+            }
+        )
+        return 0
     if capture_failure is not None:
         print(f"research live: capture failed: {capture_failure}", file=sys.stderr)
         desktop.close()

@@ -178,6 +178,70 @@ def _window_for(frame_count: int, coverage_ns: int, profile: ResearchProfile) ->
     return "early-stop"
 
 
+def _apply_capture_mapping(
+    recorder: ResearchRecorder, bundle_id: str, frames: list[FramePacket]
+) -> list[FramePacket]:
+    """Crop staged frames with the bundle attempt's capture mapping.
+
+    Returns the original packets unchanged when no attempt links this
+    bundle or no mapping was persisted (legacy backward-compat). A
+    persisted mapping that no longer matches a staged frame fails closed
+    with ReplayRefusal instead of silently scoring a different input.
+    """
+    from facecore.live.qt_window import CropMapping
+
+    attempt_id: str | None = None
+    for attempt in recorder.list_attempts():
+        if attempt.bundle_ref == bundle_id:
+            attempt_id = attempt.attempt_id
+            break
+    if attempt_id is None:
+        return frames
+    try:
+        stored = recorder.read_crop_mapping(attempt_id)
+    except KeyError:
+        return frames
+    try:
+        mapping = CropMapping.from_dict(dict(stored))
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ReplayRefusal(
+            bundle_id, "tampered", f"capture mapping invalid: {exc}"
+        ) from exc
+    cropped: list[FramePacket] = []
+    for packet in frames:
+        height, width = packet.rgb.shape[:2]
+        if (
+            width != mapping.frame_w
+            or height != mapping.frame_h
+            or mapping.x + mapping.size > width
+            or mapping.y + mapping.size > height
+        ):
+            raise ReplayRefusal(
+                bundle_id,
+                "tampered",
+                f"staged frame {packet.sequence} shape "
+                f"({height},{width},3) does not match capture mapping "
+                f"({mapping.frame_h},{mapping.frame_w})",
+            )
+        crop = packet.rgb[
+            mapping.y : mapping.y + mapping.size,
+            mapping.x : mapping.x + mapping.size,
+            :,
+        ]
+        import numpy as np
+
+        cropped.append(
+            FramePacket(
+                sequence=packet.sequence,
+                captured_ns=packet.captured_ns,
+                rgb=np.ascontiguousarray(crop),
+                orientation=packet.orientation,
+                mirrored=packet.mirrored,
+            )
+        )
+    return cropped
+
+
 def replay_session(
     bundle_id: str,
     *,
@@ -266,13 +330,19 @@ def replay_session(
         except ValueError as exc:
             raise ReplayRefusal(bundle_id, "tampered", str(exc)) from exc
 
+    # E7-B Appendix A.7: a bundle whose attempt persisted a capture mapping
+    # must replay the same inference input live scored. Resolve the mapping
+    # from the linked attempt and crop before scoring; bundles without a
+    # mapping keep legacy full-frame behavior (backward-compat).
+    score_packets = _apply_capture_mapping(recorder, bundle_id, frames)
+
     coverage_ns = frames[-1].captured_ns - frames[0].captured_ns if frames else 0
     window = _window_for(len(frames), coverage_ns, profile)
 
     engine = SessionEngine(profile, gallery_digest, model_generation)
     engine.start(bundle_id, frames[0].captured_ns)
     terminal: SessionResult | None = None
-    for packet in frames:
+    for packet in score_packets:
         observation = scorer(packet)
         if observation.sequence != packet.sequence:
             raise ReplayRefusal(

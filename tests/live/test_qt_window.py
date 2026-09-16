@@ -382,6 +382,42 @@ class TestQtResearchWindow:
         assert window.guide_label.text().find("x=1 y=0 S=3") >= 0
         window.close()
 
+    def test_terminal_delete_removes_bundle_and_stops_commit(
+        self, qt_app: QApplication, tmp_path: Path
+    ) -> None:
+        """E7-B r5 T2 RED: Delete removes session bundle, no later commit."""
+        recorder = _recorder(tmp_path)
+        manifest = _manifest()
+        attempt = _attempt("attempt-delete")
+        consent = _consent("qt-session-delete")
+        recorder.begin_attempt(manifest, attempt, consent)
+        desktop = DesktopSession(
+            engine=SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test"),
+            source=FakeCapture(frames=[_packet(1)]),
+            scorer=_matching_scorer,
+            session_id="qt-session-delete",
+            label_recorder=recorder,
+            label_attempt_id=attempt.attempt_id,
+        )
+        window = QtResearchWindow(
+            desktop,
+            consent=consent,
+            recorder=recorder,
+            attempt_id=attempt.attempt_id,
+            device_id="cam-test-delete",
+            offscreen=True,
+            clock_ns=lambda: 0,
+        )
+        window.show()
+        QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
+        window.process_until_terminal()
+        assert desktop.terminal is not None
+        QTest.mouseClick(window.delete_button, Qt.MouseButton.LeftButton)
+        assert desktop.deleted is True
+        assert recorder.session_bundle_exists("qt-session-delete") is False
+        assert recorder.list_attempts(experiment_id="exp-qt") == []
+        window.close()
+
     def test_minimal_ux_controls_and_countdown(
         self, qt_app: QApplication, tmp_path: Path
     ) -> None:

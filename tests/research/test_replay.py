@@ -317,3 +317,88 @@ def test_oversize_frame_dims_rejected(tmp_path: Path) -> None:
     assert json.loads(
         (tmp_path / "store" / "sess-t6-001" / "manifest.json").read_text()
     )["status"] == "committed"
+
+
+# ---------------------------------------------------------------------------
+# E7-B r5 T1 RED: replay applies the persisted capture mapping (A.7)
+# ---------------------------------------------------------------------------
+
+
+def test_replay_applies_capture_mapping_before_scoring(tmp_path: Path) -> None:
+    """E7-B r5 T1: live square crop must match replay scorer input."""
+    from facecore.live.qt_window import CropMapping
+
+    clock = _Clock(_utc("2026-09-16T10:00:00Z"))
+    rec = ResearchRecorder(
+        store_root=tmp_path / "store",
+        key_dir=tmp_path / "research_keys",
+        clock=clock,
+    )
+    session_id = "sess-e7-replay-map"
+    rec.begin(session_id, _consent(session_id))
+    rgb = np.zeros((3, 5, 3), dtype=np.uint8)
+    rec.append_frame(FramePacket(sequence=1, captured_ns=200_000_000, rgb=rgb))
+    rec.commit(_result(session_id))
+
+    from facecore.research.experiment import AttemptRecord, ExperimentManifest
+
+    manifest = ExperimentManifest.from_dict(
+        {
+            "identity": {"experiment_id": "exp-e7-replay"},
+            "software": {},
+            "gallery": {},
+            "policy": {},
+            "capture": {},
+            "privacy": {},
+            "study": {},
+            "analysis": {},
+        }
+    )
+    rec.begin_attempt(
+        manifest,
+        AttemptRecord(
+            experiment_id="exp-e7-replay",
+            attempt_id="att-e7-replay",
+            participant_id="part-synth-001",
+            visit_id="visit-001",
+            condition_id="cond-001",
+            attempt_index=1,
+            retry_of=None,
+            consent_ref=session_id,
+            requested_at_utc="2026-09-16T10:00:00Z",
+            accepted_at_utc="2026-09-16T10:00:01Z",
+            started_at_utc=None,
+            ended_at_utc=None,
+            operational_status="accepted",
+            error_code=None,
+            bundle_ref=session_id,
+        ),
+        _consent(session_id),
+    )
+    mapping = CropMapping(x=1, y=0, size=3, frame_w=5, frame_h=3)
+    rec.record_crop_mapping("att-e7-replay", mapping.to_dict())
+
+    seen: list[tuple[int, ...]] = []
+
+    def _shape_scorer(packet: FramePacket):  # type: ignore[no-untyped-def]
+        from facecore.live.contracts import FrameObservation
+
+        seen.append(tuple(packet.rgb.shape))
+        return FrameObservation(
+            sequence=packet.sequence,
+            captured_ns=packet.captured_ns,
+            processed_ns=packet.captured_ns + 1_000_000,
+            quality_pass=False,
+            quality_reasons=("e7-replay-shape",),
+            face_count=0,
+            face_box=None,
+            identity_scores={},
+            quality_rank=0.0,
+            model_generation="test-gen",
+            gallery_digest="1" * 64,
+        )
+
+    kwargs = _replay_kwargs(tmp_path, clock)
+    kwargs["scorer"] = _shape_scorer
+    replay_session(session_id, **kwargs)
+    assert seen == [(3, 3, 3)]
