@@ -1000,31 +1000,44 @@ class ResearchRecorder:
 
         _, record, meta = self._find_attempt_and_path(attempt_id)
         manifest_digest = meta.get("manifest_digest", "") if meta else ""
-        start_ns = entries[0].captured_ns if entries else 0
-        deadline_ns = start_ns + 5_000_000_000
-        end_ns = entries[-1].captured_ns if entries else start_ns
 
+        start_ns: int | None = None
+        deadline_ns: int | None = None
+        end_ns: int | None = None
+        collection_stop: str | None = None
+        is_complete: bool | None = None
         terminal_result: SessionResult | None = None
-        if record and record.bundle_ref:
-            sess_dir = self._sess_dir(record.bundle_ref)
-            m_path = sess_dir / "manifest.json"
-            if m_path.is_file():
-                try:
-                    m_data = json.loads(m_path.read_text())
-                    if "result" in m_data:
-                        terminal_result = SessionResult.from_dict(m_data["result"])
-                except Exception:
-                    pass
 
-        collection_stop = "in_progress"
-        if record and record.operational_status in (
-            "completed",
-            "timeout",
-            "cancelled",
-        ):
-            collection_stop = record.operational_status
-        elif terminal_result is not None:
-            collection_stop = terminal_result.status.value
+        if record and record.bundle_ref:
+            s_rec = self.read_record(record.bundle_ref)
+            terminal_result = s_rec.result
+            if s_rec.collection_window is not None:
+                cw = s_rec.collection_window
+                start_ns = cw.collection_start_ns
+                deadline_ns = cw.collection_deadline_ns
+                end_ns = cw.collection_end_ns
+                collection_stop = cw.collection_stop_reason
+                is_complete = cw.collection_complete
+
+        if start_ns is None:
+            start_ns = entries[0].captured_ns if entries else 0
+        if deadline_ns is None:
+            deadline_ns = start_ns + 5_000_000_000
+        if end_ns is None:
+            end_ns = entries[-1].captured_ns if entries else start_ns
+        if collection_stop is None:
+            if record and record.operational_status in (
+                "completed",
+                "timeout",
+                "cancelled",
+            ):
+                collection_stop = record.operational_status
+            elif terminal_result is not None:
+                collection_stop = terminal_result.status.value
+            else:
+                collection_stop = "in_progress"
+        if is_complete is None:
+            is_complete = collection_stop in ("completed", "matched", "timeout")
 
         return SessionTrace(
             schema_version=STUDY_SCHEMA_VERSION,
@@ -1034,7 +1047,7 @@ class ResearchRecorder:
             deadline_ns=deadline_ns,
             session_end_ns=end_ns,
             collection_stop_reason=collection_stop,
-            is_complete=(collection_stop in ("completed", "matched", "timeout")),
+            is_complete=is_complete,
             entries=tuple(entries),
             terminal_result=terminal_result,
         )

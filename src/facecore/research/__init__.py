@@ -16,9 +16,12 @@ from facecore.research.records import (
     ResearchSessionRecord,
 )
 from facecore.research.replay import (
+    ArmOutcome,
     ReplayRefusal,
     ReplayResult,
     describe_replay,
+    evaluate_arms,
+    replay_observations,
     replay_session,
 )
 from facecore.research.report import (
@@ -28,6 +31,7 @@ from facecore.research.report import (
 )
 
 __all__ = [
+    "ArmOutcome",
     "ClockRollbackError",
     "ConsentRecord",
     "FrameScore",
@@ -42,6 +46,8 @@ __all__ = [
     "ResearchSessionRecord",
     "build_research_aad",
     "describe_replay",
+    "evaluate_arms",
+    "replay_observations",
     "replay_session",
     "summarize",
 ]
