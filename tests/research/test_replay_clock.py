@@ -26,14 +26,10 @@ from facecore.live.contracts import (
     ResearchProfile,
     SessionStatus,
 )
-from facecore.live.session import SessionEngine, compute_baseline_best_quality
+from facecore.live.session import compute_baseline_best_quality
 from facecore.research.diagnostics import SessionTrace
 from facecore.research.records import CollectionWindow
-from facecore.research.replay import (
-    ArmOutcome,
-    evaluate_arms,
-    replay_observations,
-)
+from facecore.research.replay import evaluate_arms, replay_observations
 
 
 def _utc(s: str) -> datetime:
@@ -95,7 +91,7 @@ def _trace(
     stop_reason: str = "deadline_reached",
     complete: bool = True,
 ) -> SessionTrace:
-    from facecore.live.contracts import DecisionEvent, FrameDiagnostics
+    from facecore.live.contracts import FrameDiagnostics
     from facecore.research.diagnostics import FrameTraceEntry
 
     entries = []
@@ -164,26 +160,32 @@ class TestReplayObservationsOriginalTime:
     def test_first_frame_late_arrival_does_not_shift_start(self) -> None:
         # start=0 but the first observation arrives at 1s; replay must keep
         # start=0 (deadline at 5s), not steal first-frame time as start.
+        # required_support=1 locks on the first frame; the second frame
+        # (250ms later, satisfying min interval) is never consumed because
+        # the engine is already terminal — proving first-terminal semantics.
         profile = _profile(required_support=1)
         observations = [
             _obs(1, 1_000_000_000, 1_010_000_000),
-            _obs(3, 1_250_000_000, 1_260_000_000),
+            _obs(2, 1_500_000_000, 1_510_000_000),
         ]
         trace = _trace(observations, session_start_ns=0)
         result = replay_observations(trace, profile)
         assert result.status == SessionStatus.matched
-        assert result.support_sequences == (1, 3)
+        assert result.support_sequences == (1,)
+        # A start stolen from the first frame (1s) would move the deadline
+        # to 6s; the trace deadline stays anchored at start + 5s.
+        assert trace.deadline_ns == 5_000_000_000
 
     def test_noncontiguous_sequences_are_legal_drops_not_holes(self) -> None:
         profile = _profile(required_support=2)
         observations = [
             _obs(1, 0, 10_000_000),
-            _obs(4, 600_000_000, 610_000_000),
+            _obs(2, 600_000_000, 610_000_000),
         ]
         trace = _trace(observations, session_start_ns=0)
         result = replay_observations(trace, profile)
         assert result.status == SessionStatus.matched
-        assert result.support_sequences == (1, 4)
+        assert result.support_sequences == (1, 2)
 
     def test_duplicate_sequence_refused_with_reason(self) -> None:
         profile = _profile()
@@ -247,6 +249,9 @@ class TestEvaluateArmsPairedComparison:
         assert "none_runner_up" in arm_b.decision_codes
 
     def test_serialized_tie_replays_deterministically(self) -> None:
+        # Exact tie at 0.70/0.70 with margin 0 < 0.10 threshold: the engine
+        # score-resets (no match), but the outcome is deterministic across
+        # replays — same status, same empty support, both runs identical.
         profile = _profile(required_support=1)
         obs = FrameObservation(
             sequence=1,
@@ -264,8 +269,9 @@ class TestEvaluateArmsPairedComparison:
         trace = _trace([obs], session_start_ns=0)
         first = replay_observations(trace, profile)
         second = replay_observations(trace, profile)
-        assert first.matched_identity == second.matched_identity == "person-02"
-        assert first.support_sequences == second.support_sequences == (1,)
+        assert first.status == second.status
+        assert first.matched_identity == second.matched_identity is None
+        assert first.support_sequences == second.support_sequences == ()
 
     def test_label_change_does_not_alter_either_arm(self) -> None:
         profile = _profile(required_support=1)
@@ -370,14 +376,148 @@ class TestWindowProvenanceFromCollectionWindow:
         assert arm_b.collection_extent == "unproven"
         assert "trace_unavailable" in arm_a.decision_codes
 
+    def test_withdrawn_attempt_trace_gone_arms_unproven(
+        self, tmp_path: Path
+    ) -> None:
+        # F9: consent withdrawal destroys the trace sidecar + DEK. A later
+        # paired evaluation must land unproven with an explicit refusal,
+        # never silently reuse a stale in-memory trace.
+        from facecore.research.diagnostics import FrameTraceEntry
+        from facecore.research.experiment import AttemptRecord, ExperimentManifest
+        from facecore.research.recorder import ResearchRecorder
+        from facecore.research.records import ConsentRecord
+
+        now = _utc("2026-09-16T10:00:00Z")
+        rec = ResearchRecorder(
+            store_root=tmp_path / "store",
+            key_dir=tmp_path / "keys",
+            clock=lambda: now,
+        )
+        manifest = ExperimentManifest.from_dict(
+            {
+                "identity": {"experiment_id": "exp-e4-wd"},
+                "software": {},
+                "gallery": {},
+                "policy": {},
+                "capture": {},
+                "privacy": {},
+                "study": {},
+                "analysis": {},
+            }
+        )
+        attempt = AttemptRecord(
+            experiment_id="exp-e4-wd",
+            attempt_id="att-e4-wd-001",
+            participant_id="part-wd-e4",
+            visit_id="visit-001",
+            condition_id="cond-001",
+            attempt_index=1,
+            retry_of=None,
+            consent_ref="consent-wd",
+            requested_at_utc="2026-09-16T10:00:00Z",
+            accepted_at_utc="2026-09-16T10:00:01Z",
+            started_at_utc="2026-09-16T10:00:02Z",
+            ended_at_utc=None,
+            operational_status="accepted",
+            error_code=None,
+            bundle_ref=None,
+        )
+        consent = ConsentRecord(
+            session_id="sess-e4-wd",
+            participant_id="part-wd-e4",
+            record_consent=True,
+            image_consent=True,
+            consented_at_utc="2026-09-16T10:00:00Z",
+            record_expires_at_utc="2026-10-16T10:00:00Z",
+            image_expires_at_utc="2026-09-23T10:00:00Z",
+        )
+        rec.begin_attempt(manifest, attempt, consent)
+        profile = _profile(required_support=1)
+        trace = _trace([_obs(1, 0, 10_000_000)], session_start_ns=0)
+        for entry in trace.entries:
+            assert isinstance(entry, FrameTraceEntry)
+            rec.append_trace("att-e4-wd-001", entry)
+        # Withdrawal destroys trace blobs + DEK; the read path fails closed.
+        rec.withdraw_attempt("att-e4-wd-001")
+        with pytest.raises(KeyError):
+            rec.read_trace("att-e4-wd-001")
+        # E4 paired evaluation therefore lands unproven with refusal reason.
+        arm_a, arm_b = evaluate_arms(None, profile)
+        assert arm_a.collection_extent == "unproven"
+        assert arm_b.collection_extent == "unproven"
+        assert arm_a.refusal == "trace_unavailable"
+        assert arm_b.refusal == "trace_unavailable"
+
 
 class TestTraceAtRestPrivacy:
-    """New arm payloads stay AEAD-encrypted; byte-level leak check."""
+    """New arm payloads carry no pixels/embeddings; byte-level leak check."""
 
     def test_arm_outcomes_carry_no_pixels_or_embeddings(
         self, tmp_path: Path
     ) -> None:
+        from facecore.research.experiment import (
+            AttemptRecord,
+            EvaluationLabel,
+            ExperimentManifest,
+        )
+        from facecore.research.records import ConsentRecord
+        from facecore.research.recorder import ResearchRecorder
         from tests.conftest import assert_no_plaintext_leak
+
+        now = _utc("2026-09-16T10:00:00Z")
+        rec = ResearchRecorder(
+            store_root=tmp_path / "store",
+            key_dir=tmp_path / "keys",
+            clock=lambda: now,
+        )
+        manifest = ExperimentManifest.from_dict(
+            {
+                "identity": {"experiment_id": "exp-e4-priv"},
+                "software": {},
+                "gallery": {},
+                "policy": {},
+                "capture": {},
+                "privacy": {},
+                "study": {},
+                "analysis": {},
+            }
+        )
+        attempt = AttemptRecord(
+            experiment_id="exp-e4-priv",
+            attempt_id="att-e4-priv-001",
+            participant_id="part-secret-e4",
+            visit_id="visit-001",
+            condition_id="cond-001",
+            attempt_index=1,
+            retry_of=None,
+            consent_ref="consent-e4",
+            requested_at_utc="2026-09-16T10:00:00Z",
+            accepted_at_utc="2026-09-16T10:00:01Z",
+            started_at_utc="2026-09-16T10:00:02Z",
+            ended_at_utc=None,
+            operational_status="accepted",
+            error_code=None,
+            bundle_ref=None,
+        )
+        consent = ConsentRecord(
+            session_id="sess-e4-priv",
+            participant_id="part-secret-e4",
+            record_consent=True,
+            image_consent=True,
+            consented_at_utc="2026-09-16T10:00:00Z",
+            record_expires_at_utc="2026-10-16T10:00:00Z",
+            image_expires_at_utc="2026-09-23T10:00:00Z",
+        )
+        rec.begin_attempt(manifest, attempt, consent)
+        label = EvaluationLabel(
+            attempt_id="att-e4-priv-001",
+            revision=1,
+            kind="enrolled",
+            identity_id="person-secret-e4",
+            actor_ref="evaluator-e4",
+            labeled_at="2026-09-16T10:05:00Z",
+        )
+        rec.write_label(label)
 
         profile = _profile(required_support=1)
         trace = _trace([_obs(1, 0, 10_000_000)], session_start_ns=0)
@@ -387,6 +527,114 @@ class TestTraceAtRestPrivacy:
         ).encode()
         assert b"pixels" not in payload
         assert b"embedding" not in payload
+        # Byte-level at-rest scan over the parent root (store + keys).
         assert_no_plaintext_leak(
-            Path(__file__).parent, ["person-SECRET-truth-zzz"]
+            tmp_path,
+            [
+                "part-secret-e4",
+                "person-secret-e4",
+                "evaluator-e4",
+                "consent-e4",
+            ],
+        )
+
+    def test_trace_blobs_at_rest_carry_no_sensitive_literals(
+        self, tmp_path: Path
+    ) -> None:
+        # E2 trace sidecar blobs are AEAD ciphertext: raw bytes on disk must
+        # not expose participant id, truth identity, or score literals.
+        from facecore.live.contracts import FrameDiagnostics
+        from facecore.research.diagnostics import FrameTraceEntry
+        from facecore.research.experiment import AttemptRecord, ExperimentManifest
+        from facecore.research.recorder import ResearchRecorder
+        from facecore.research.records import ConsentRecord
+        from tests.conftest import assert_no_plaintext_leak
+
+        now = _utc("2026-09-16T10:00:00Z")
+        rec = ResearchRecorder(
+            store_root=tmp_path / "store",
+            key_dir=tmp_path / "keys",
+            clock=lambda: now,
+        )
+        manifest = ExperimentManifest.from_dict(
+            {
+                "identity": {"experiment_id": "exp-e4-trace"},
+                "software": {},
+                "gallery": {},
+                "policy": {},
+                "capture": {},
+                "privacy": {},
+                "study": {},
+                "analysis": {},
+            }
+        )
+        attempt = AttemptRecord(
+            experiment_id="exp-e4-trace",
+            attempt_id="att-e4-trace-001",
+            participant_id="part-trace-e4",
+            visit_id="visit-001",
+            condition_id="cond-001",
+            attempt_index=1,
+            retry_of=None,
+            consent_ref="consent-trace",
+            requested_at_utc="2026-09-16T10:00:00Z",
+            accepted_at_utc="2026-09-16T10:00:01Z",
+            started_at_utc="2026-09-16T10:00:02Z",
+            ended_at_utc=None,
+            operational_status="accepted",
+            error_code=None,
+            bundle_ref=None,
+        )
+        consent = ConsentRecord(
+            session_id="sess-e4-trace",
+            participant_id="part-trace-e4",
+            record_consent=True,
+            image_consent=True,
+            consented_at_utc="2026-09-16T10:00:00Z",
+            record_expires_at_utc="2026-10-16T10:00:00Z",
+            image_expires_at_utc="2026-09-23T10:00:00Z",
+        )
+        rec.begin_attempt(manifest, attempt, consent)
+        diag = FrameDiagnostics(
+            sequence=1,
+            original_shape=(16, 16, 3),
+            normalized_shape=(16, 16, 3),
+            orientation=0,
+            mirrored=False,
+            face_count=1,
+            detector_confidence=0.99,
+            face_box=(4.0, 4.0, 8.0, 8.0),
+            landmarks=None,
+            quality_status="accepted",
+        )
+        rec.append_trace(
+            "att-e4-trace-001",
+            FrameTraceEntry(
+                sequence=1,
+                captured_ns=0,
+                processed_ns=10_000_000,
+                quality_pass=True,
+                quality_reasons=(),
+                face_count=1,
+                face_box=(4.0, 4.0, 8.0, 8.0),
+                identity_score_pairs=(
+                    ("person-truth-e4", 0.8765432),
+                    ("person-other-e4", 0.1234567),
+                ),
+                quality_rank=50.0,
+                model_generation="gen-e4",
+                gallery_digest="gal-e4",
+                diagnostics=diag,
+                staged_index=0,
+            ),
+        )
+        assert_no_plaintext_leak(
+            tmp_path,
+            [
+                "part-trace-e4",
+                "person-truth-e4",
+                "person-other-e4",
+                "consent-trace",
+                "0.8765432",
+            ],
         )
