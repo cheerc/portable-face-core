@@ -175,6 +175,7 @@ class TestReplayObservationsOriginalTime:
         assert result.status == SessionStatus.timeout
         assert result.matched_identity is None
         assert result.support_sequences == ()
+        assert result.elapsed_ms == 5100.0
 
     def test_noncontiguous_sequences_are_legal_drops_not_holes(self) -> None:
         profile = _profile(required_support=2)
