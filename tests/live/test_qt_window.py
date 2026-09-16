@@ -62,6 +62,7 @@ def _profile() -> ResearchProfile:
         margin_threshold=0.10,
         detector_version="det-qt-test",
         quality_policy_version="quality-qt-test",
+        continuity_max_center_delta_ratio=0.5,
     )
 
 
@@ -251,6 +252,7 @@ class TestQtResearchWindow:
             clock_ns=lambda: 0,
         )
         window.show()
+        window.set_frame(_packet(1).rgb)
         QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
         window.process_until_terminal()
         assert desktop.display_identity() == "person-synth-01"
@@ -323,8 +325,43 @@ class TestQtResearchWindow:
 def test_research_ui_extra_and_notice_are_declared() -> None:
     pyproject = Path(__file__).parents[2] / "pyproject.toml"
     text = pyproject.read_text()
-    assert 'research-ui = [' in text
+    assert "research-ui = [" in text
     assert '"pyside6==6.11.2"' in text
-    notice = pyproject.parents[1] / "NOTICE"
+    notice = pyproject.parent / "NOTICE"
     assert notice.is_file()
     assert "GNU LESSER GENERAL PUBLIC LICENSE" in notice.read_text()
+
+
+def test_cli_qt_flags_route_without_opening_camera(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Parser exposes the frozen Qt route while preserving fake default."""
+    import facecore.research.cli as research_cli
+
+    called: dict[str, object] = {}
+
+    def fake_cmd_live(**kwargs: object) -> int:
+        called.update(kwargs)
+        return 17
+
+    monkeypatch.setattr(research_cli, "cmd_live", fake_cmd_live)
+    profile = Path("synthetic-profile.json")
+    rc = research_cli.main(
+        [
+            "live",
+            "--profile",
+            str(profile),
+            "--store",
+            "/tmp/synthetic-research-store",
+            "--device",
+            "fake",
+            "--session",
+            "synthetic-session",
+            "--record-consent",
+            "--image-consent",
+            "--ui",
+            "qt",
+            "--qt-offscreen",
+        ]
+    )
+    assert rc == 17
+    assert called["ui"] == "qt"
+    assert called["qt_offscreen"] is True
