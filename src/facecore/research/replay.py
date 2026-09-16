@@ -41,7 +41,7 @@ E4 naming (spec §4.3, three replays not conflated):
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 import json
@@ -59,7 +59,7 @@ from facecore.live.session import (
     SessionEngine,
     compute_baseline_best_quality,
 )
-from facecore.research.diagnostics import SessionTrace
+from facecore.research.diagnostics import FrameTraceEntry, SessionTrace
 from facecore.research.recorder import MAX_FRAMES_PER_SESSION, ResearchRecorder
 from facecore.research.records import CollectionWindow
 
@@ -316,8 +316,10 @@ def _extent_from_window(window: CollectionWindow | None) -> CollectionExtent:
     return "incomplete"
 
 
-def _observations_from_trace(trace: SessionTrace) -> list[FrameObservation]:
-    """Rebuild scored observations from a trace, preserving order and time.
+def _observations_from_entries(
+    entries: Sequence[FrameTraceEntry],
+) -> list[FrameObservation]:
+    """Rebuild scored observations from trace entries, preserving order and time.
 
     Uses the ORIGINAL captured/processed timestamps — never the replay wall
     clock — and never re-runs the scorer. Sequence gaps are legal drops;
@@ -326,7 +328,7 @@ def _observations_from_trace(trace: SessionTrace) -> list[FrameObservation]:
     observations: list[FrameObservation] = []
     last_sequence = 0
     last_captured: int | None = None
-    for entry in trace.entries:
+    for entry in entries:
         if entry.sequence <= last_sequence:
             raise ValueError(
                 f"duplicate_sequence: {entry.sequence} <= {last_sequence}"
@@ -355,6 +357,10 @@ def _observations_from_trace(trace: SessionTrace) -> list[FrameObservation]:
     return observations
 
 
+def _observations_from_trace(trace: SessionTrace) -> list[FrameObservation]:
+    return _observations_from_entries(trace.entries)
+
+
 def replay_observations(
     trace: SessionTrace, profile: ResearchProfile
 ) -> SessionResult:
@@ -364,18 +370,51 @@ def replay_observations(
     the first frame's timestamp) and each entry's original captured_ns
     (never the replay wall clock). No scorer, no labels. Generation or
     gallery drift between trace entries and the profile's engine refuses.
+
+    N2 note: processed_ns is preserved in trace diagnostics for evaluation (e.g.
+    measuring pipeline delay / late processing) and is deliberately NOT a decision
+    input; all engine decisions are anchored strictly to captured_ns.
     """
-    observations = _observations_from_trace(trace)
+    terminal, _, _ = _replay_observations_internal(trace, profile)
+    return terminal
+
+
+def _replay_observations_internal(
+    trace: SessionTrace,
+    profile: ResearchProfile,
+    legal_observations: list[FrameObservation] | None = None,
+) -> tuple[SessionResult, int, int | None]:
+    observations = (
+        legal_observations
+        if legal_observations is not None
+        else _observations_from_trace(trace)
+    )
     if not trace.entries:
         raise ValueError("cannot replay an empty trace: no entries")
     first = trace.entries[0]
     engine = SessionEngine(profile, first.gallery_digest, first.model_generation)
     engine.start(trace.attempt_id, trace.session_start_ns)
+
+    effective_deadline_ns = min(
+        trace.deadline_ns,
+        trace.session_start_ns + int(profile.timeout_ms * 1_000_000),
+    )
+
     terminal: SessionResult | None = None
+    frames_consumed = 0
+    decision_time_ns: int | None = None
+
     for obs in observations:
+        frames_consumed += 1
+        if obs.captured_ns > effective_deadline_ns:
+            terminal = engine.finish(obs.captured_ns, reason="deadline_exceeded")
+            decision_time_ns = obs.captured_ns
+            break
         terminal = engine.observe(obs)
         if terminal is not None:
+            decision_time_ns = obs.captured_ns
             break
+
     if terminal is None:
         last_ns = (
             observations[-1].captured_ns
@@ -383,7 +422,9 @@ def replay_observations(
             else trace.session_start_ns
         )
         terminal = engine.finish(last_ns)
-    return terminal
+        decision_time_ns = last_ns
+
+    return terminal, frames_consumed, decision_time_ns
 
 
 def evaluate_arms(
@@ -443,13 +484,58 @@ def evaluate_arms(
         )
         return blank, arm_b
 
-    observations = _observations_from_trace(trace)
+    # P4: Constrain arm input to the legal collection window
+    violations: list[str] = []
+    legal_entries: list[FrameTraceEntry] = []
+    for entry in trace.entries:
+        is_violation = False
+        if window is not None:
+            if (
+                window.collection_end_ns is not None
+                and entry.captured_ns > window.collection_end_ns
+            ):
+                violations.append("frame_beyond_window")
+                is_violation = True
+            elif entry.captured_ns > window.collection_deadline_ns:
+                violations.append("frame_beyond_deadline")
+                is_violation = True
+        if not is_violation:
+            legal_entries.append(entry)
+
+    legal_observations = _observations_from_entries(legal_entries)
     run_id = f"run-{trace.attempt_id}-001"
+
+    # P5: Staging completeness check
+    staged_count = sum(
+        1 for e in trace.entries if e.stage_missing_reason is None
+    )
+    has_staging_missing = any(
+        e.stage_missing_reason is not None for e in trace.entries
+    )
+
+    arm_refusal: str | None = None
+    if has_staging_missing:
+        arm_refusal = "staging_incomplete"
+        extent = "incomplete"
 
     # Arm A: original baseline helper over the shared legal window.
     best, baseline_status, _ = compute_baseline_best_quality(
-        observations, profile
+        legal_observations, profile
     )
+    a_terminal = baseline_status.value
+    a_matched_id = (
+        _top_identity(best)
+        if baseline_status == SessionStatus.matched and best is not None
+        else None
+    )
+    if has_staging_missing and a_terminal == SessionStatus.matched.value:
+        a_terminal = "refused"
+        a_matched_id = None
+
+    a_codes = [f"baseline_{baseline_status.value}"]
+    if violations:
+        a_codes.extend(violations)
+
     arm_a = ArmOutcome(
         attempt_id=trace.attempt_id,
         run_id=run_id,
@@ -457,36 +543,43 @@ def evaluate_arms(
         profile_digest=digest,
         selected_sequences=(best.sequence,) if best is not None else (),
         support_sequences=(),
-        terminal=baseline_status.value,
-        matched_identity=(
-            _top_identity(best)
-            if baseline_status == SessionStatus.matched and best is not None
-            else None
-        ),
+        terminal=a_terminal,
+        matched_identity=a_matched_id,
         collection_extent=extent,
         decision_time_ns=(
             best.captured_ns if best is not None else None
         ),
-        decision_codes=(f"baseline_{baseline_status.value}",),
+        decision_codes=tuple(a_codes),
         frames_read=len(trace.entries),
-        frames_scored=len(observations),
-        frames_consumed=len(observations),
-        frames_staged=len(trace.entries),
-        refusal=None,
+        frames_scored=len(legal_observations),
+        frames_consumed=len(legal_observations),
+        frames_staged=staged_count,
+        refusal=arm_refusal,
     )
 
     # Arm B: original-time decision replay, first terminal wins.
-    b_result = replay_observations(trace, profile)
-    b_codes: tuple[str, ...] = (f"b_{b_result.status.value}",)
+    b_result, b_consumed, b_decision_time = _replay_observations_internal(
+        trace, profile, legal_observations=legal_observations
+    )
+    b_terminal = b_result.status.value
+    b_matched_id = b_result.matched_identity
+    if has_staging_missing and b_terminal == SessionStatus.matched.value:
+        b_terminal = "refused"
+        b_matched_id = None
+
+    b_codes = [f"b_{b_result.status.value}"]
     single_id_inputs = (
-        observations
-        and all(len(obs.identity_scores) <= 1 for obs in observations)
+        legal_observations
+        and all(len(obs.identity_scores) <= 1 for obs in legal_observations)
     )
     if b_result.status != SessionStatus.matched and (
-        not any(obs.identity_scores for obs in observations)
+        not any(obs.identity_scores for obs in legal_observations)
         or single_id_inputs
     ):
-        b_codes = b_codes + ("none_runner_up",)
+        b_codes.append("none_runner_up")
+    if violations:
+        b_codes.extend(violations)
+
     arm_b = ArmOutcome(
         attempt_id=trace.attempt_id,
         run_id=run_id,
@@ -494,20 +587,16 @@ def evaluate_arms(
         profile_digest=digest,
         selected_sequences=tuple(b_result.support_sequences),
         support_sequences=tuple(b_result.support_sequences),
-        terminal=b_result.status.value,
-        matched_identity=b_result.matched_identity,
+        terminal=b_terminal,
+        matched_identity=b_matched_id,
         collection_extent=extent,
-        decision_time_ns=(
-            _decision_time_ns(trace, b_result) if observations else None
-        ),
-        decision_codes=b_codes,
+        decision_time_ns=b_decision_time,
+        decision_codes=tuple(b_codes),
         frames_read=len(trace.entries),
-        frames_scored=len(observations),
-        frames_consumed=len(b_result.support_sequences)
-        if b_result.status == SessionStatus.matched
-        else len(observations),
-        frames_staged=len(trace.entries),
-        refusal=None,
+        frames_scored=len(legal_observations),
+        frames_consumed=b_consumed,
+        frames_staged=staged_count,
+        refusal=arm_refusal,
     )
     return arm_a, arm_b
 
@@ -517,20 +606,6 @@ def _top_identity(obs: FrameObservation | None) -> str | None:
         return None
     ranked = sorted(obs.identity_scores.items(), key=lambda kv: kv[1])
     return ranked[-1][0]
-
-
-def _decision_time_ns(
-    trace: SessionTrace, result: SessionResult
-) -> int | None:
-    if result.support_sequences:
-        wanted = set(result.support_sequences)
-        for entry in trace.entries:
-            if entry.sequence in wanted:
-                return entry.captured_ns
-        return trace.entries[-1].captured_ns
-    if trace.entries:
-        return trace.entries[-1].captured_ns
-    return None
 
 
 def describe_replay(result: ReplayResult) -> dict[str, Any]:

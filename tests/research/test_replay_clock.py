@@ -148,7 +148,8 @@ class TestReplayObservationsOriginalTime:
         # Decision engine operates strictly on captured_ns, not processed_ns
         # (N2: processed_ns is preserved for diagnostics, not decision input).
         # Frames whose processed_ns extends past the 5s boundary are evaluated
-        # by their captured_ns; with required_support=3 and 2 frames, the session times out.
+        # by their captured_ns; with required_support=3 and 2 frames, the session
+        # times out.
         profile = _profile(timeout_ms=5000, required_support=3)
         observations = [
             _obs(1, 4_800_000_000, 5_200_000_000),
@@ -161,9 +162,9 @@ class TestReplayObservationsOriginalTime:
     def test_first_frame_late_arrival_does_not_shift_start(self) -> None:
         # start=0, deadline=5s (5_000_000_000 ns).
         # required_support=2, min_support_interval_ms=200.
-        # Frame 1 arrives at 4.9s (inside deadline), Frame 2 arrives at 5.1s (past deadline).
+        # Frame 1 arrives at 4.9s (inside deadline), Frame 2 arrives at 5.1s.
         # Correct (start=0): Frame 2 exceeds 5s deadline -> terminal is timeout.
-        # Stolen start (start=4.9s): deadline shifts to 9.9s -> Frame 2 lands within deadline -> matched.
+        # Stolen start (start=4.9s): deadline shifts to 9.9s -> matched.
         profile = _profile(timeout_ms=5000, required_support=2)
         observations = [
             _obs(1, 4_900_000_000, 4_910_000_000),
@@ -209,11 +210,13 @@ class TestReplayObservationsOriginalTime:
     def test_replay_observations_respects_trace_deadline(self) -> None:
         from dataclasses import replace
 
-        # Trace deadline is 1.0s, observation is at 2.0s.
-        # Even if profile.timeout_ms is 5000ms, replay must respect trace deadline.
-        profile = _profile(timeout_ms=5000, required_support=1)
+        # Trace deadline is 1.0s, observation 2 is at 2.0s.
+        # Even if profile.timeout_ms is 5000ms, replay must respect trace deadline:
+        # sequence 2 (past deadline) cannot complete match -> terminates timeout.
+        profile = _profile(timeout_ms=5000, required_support=2)
         observations = [
-            _obs(1, 2_000_000_000, 2_010_000_000),
+            _obs(1, 500_000_000, 510_000_000),
+            _obs(2, 2_000_000_000, 2_010_000_000),
         ]
         trace = _trace(observations, session_start_ns=0)
         trace = replace(trace, deadline_ns=1_000_000_000)
@@ -317,7 +320,7 @@ class TestEvaluateArmsPairedComparison:
         # P1: Frame 1 is quality rejected (fed to engine, rejected).
         # Frame 2 is quality pass (support 1).
         # Frame 3 is quality pass (support 2, terminal matched).
-        # support_sequences is (2, 3), but 3 observations were consumed to reach terminal.
+        # support_sequences is (2, 3), but 3 observations were fed until terminal.
         profile = _profile(required_support=2)
         observations = [
             FrameObservation(
@@ -602,7 +605,8 @@ class TestWindowProvenanceFromCollectionWindow:
         # Sequence 3 is outside the legal window, must not be selected by Arm A or Arm B
         assert 3 not in arm_a.selected_sequences
         assert 3 not in arm_b.selected_sequences
-        assert "frame_beyond_window" in arm_b.decision_codes or arm_b.refusal is not None
+        has_flag = "frame_beyond_window" in arm_b.decision_codes
+        assert has_flag or arm_b.refusal is not None
 
     def test_read_trace_preserves_persisted_session_start_and_deadline(
         self, tmp_path: Path
