@@ -564,18 +564,22 @@ class ResearchRecorder:
                     continue
                 for case_path in sorted(exp_dir.glob("*.enc")):
                     att_id = case_path.stem
-                    attempt_path, _, meta = self._find_attempt_and_path(att_id)
-                    if attempt_path is None or not attempt_path.is_file():
-                        case_path.unlink(missing_ok=True)
-                    elif meta:
-                        exp_str = meta.get("record_expires_at_utc")
-                        if exp_str:
-                            try:
+                    try:
+                        attempt_path, _, meta = self._find_attempt_and_path(
+                            att_id
+                        )
+                        if attempt_path is None or not attempt_path.is_file():
+                            case_path.unlink(missing_ok=True)
+                        elif meta:
+                            exp_str = meta.get("record_expires_at_utc")
+                            if exp_str:
                                 record_exp = _parse_utc(str(exp_str))
                                 if now >= record_exp:
                                     case_path.unlink(missing_ok=True)
-                            except Exception:
-                                pass
+                    except Exception:
+                        # Fail-closed deletion: unverifiable or corrupt attempt
+                        # cannot justify retaining derived case evidence.
+                        case_path.unlink(missing_ok=True)
         return purged
 
     def _purge_images(self, session_id: str) -> None:
