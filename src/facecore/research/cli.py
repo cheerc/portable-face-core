@@ -807,6 +807,26 @@ def cmd_analyze(
                 )
                 return 4
 
+        # Check attempt metadata (covers bundle-less attempts!)
+        _, _, meta = recorder._find_attempt_and_path(attempt.attempt_id)
+        stored_prof_digest = meta.get("profile_digest")
+        if stored_prof_digest and stored_prof_digest != profile_digest:
+            print(
+                f"research analyze: profile digest {profile_digest} does not match "
+                f"attempt manifest policy profile digest {stored_prof_digest}",
+                file=sys.stderr,
+            )
+            return 4
+        elif not stored_prof_digest and not attempt.bundle_ref:
+            trace_dir = recorder._trace_dir(attempt.attempt_id)
+            if trace_dir.is_dir() and any(trace_dir.glob("frame_*.enc")):
+                print(
+                    f"research analyze: attempt {attempt.attempt_id} lacks verifiable "
+                    "profile provenance; refusing unverified analysis",
+                    file=sys.stderr,
+                )
+                return 4
+
     outcomes: list[ArmOutcome] = []
     traces: dict[str, SessionTrace] = {}
 

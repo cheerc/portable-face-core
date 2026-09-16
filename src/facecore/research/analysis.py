@@ -470,9 +470,16 @@ def analyze_batch(
             canonical_outcomes[att_id] = dict(chosen_run)
 
     # Step 4: Paired completeness
-    # Requires identical run_id, identical profile_digest, full extent, neither refused
+    # Requires identical run_id, identical profile_digest, full extent, neither refused,
+    # and quarantine out any attempt with a refusal (Plan :271, Acceptance :459)
     paired_complete_set: set[str] = set()
+    refused_attempts: set[str] = set()
     for att_id, att_outs in outcomes_by_attempt.items():
+        has_refusal = any(o.refusal is not None for o in att_outs)
+        if has_refusal:
+            refused_attempts.add(att_id)
+            continue
+
         runs = {}
         for o in att_outs:
             runs.setdefault(o.run_id, {})[o.arm_id] = o
@@ -667,6 +674,10 @@ def analyze_batch(
                 ):
                     triggers_dict.setdefault(TRIGGER_T02, []).append(att_id)
 
+        # T03: Accounting/refusal/missing-evidence discrepancy
+        if att_id in refused_attempts:
+            triggers_dict.setdefault(TRIGGER_T03, []).append(att_id)
+
         # T06: A correct, B unsuccessful
         if (
             lbl is not None
@@ -705,16 +716,12 @@ def analyze_batch(
                 if not b_cor:
                     triggers_dict.setdefault(TRIGGER_T10, []).append(att_id)
 
-    triggers = {k: tuple(v) for k, v in triggers_dict.items()}
-    hard_triggers_tripped = any(k in HARD_TRIGGERS for k in triggers)
-
     # Step 7: Failure layers and Case Summaries
-    cases: list[CaseSummary] = []
+    layer_by_attempt: dict[str, tuple[str, str | None]] = {}
     layer_breakdown: dict[str, int] = {}
 
     for att_id, att in attempt_map.items():
         lbl = latest_labels.get(att_id)
-        out_a = canonical_outcomes[att_id].get("A")
         out_b = canonical_outcomes[att_id].get("B")
         trace = traces.get(att_id)
 
@@ -754,6 +761,20 @@ def analyze_batch(
                     layer_breakdown[layer] = (
                         layer_breakdown.get(layer, 0) + 1
                     )
+                    if layer == FAILURE_LAYER_UNRESOLVED:
+                        triggers_dict.setdefault(TRIGGER_T03, []).append(att_id)
+
+        layer_by_attempt[att_id] = (layer, detail)
+
+    triggers = {k: tuple(sorted(set(v))) for k, v in triggers_dict.items()}
+    hard_triggers_tripped = any(k in HARD_TRIGGERS for k in triggers)
+
+    cases: list[CaseSummary] = []
+    for att_id, att in attempt_map.items():
+        lbl = latest_labels.get(att_id)
+        out_a = canonical_outcomes[att_id].get("A")
+        out_b = canonical_outcomes[att_id].get("B")
+        layer, detail = layer_by_attempt[att_id]
 
         att_triggers = tuple(
             trig for trig, att_list in triggers.items() if att_id in att_list
@@ -765,6 +786,8 @@ def analyze_batch(
             )
         elif TRIGGER_T06 in att_triggers:
             action = "升級有界 RCA 實驗"
+        elif TRIGGER_T03 in att_triggers:
+            action = "停止統計主張，修 evidence plumbing"
         else:
             action = "單次觀察，等待同 signature 再現"
 

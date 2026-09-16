@@ -629,6 +629,25 @@ class TestCLIAnalyzeIntegration:
 
         recorder = ResearchRecorder(store_dir, key_dir, clock=clock)
 
+        profile = ResearchProfile(
+            schema_version="v1",
+            profile_version="prof-e5",
+            timeout_ms=5000,
+            sample_interval_ms=200,
+            max_frames=25,
+            queue_limit=1,
+            required_support=3,
+            min_support_interval_ms=200,
+            match_threshold=0.45,
+            review_threshold=0.30,
+            margin_threshold=0.10,
+            detector_version="det-1",
+            quality_policy_version="qual-1",
+            continuity_max_center_delta_ratio=0.50,
+        )
+        profile_path = tmp_path / "profile.json"
+        profile_path.write_text(json.dumps(profile.to_dict()))
+
         manifest_data = {
             "identity": {
                 "experiment_id": "exp-e5",
@@ -645,6 +664,7 @@ class TestCLIAnalyzeIntegration:
             },
             "policy": {
                 "profile_version": "prof-e5",
+                "profile_digest": profile.profile_digest(),
             },
             "capture": {"device": "fake"},
             "privacy": {"record_ttl_days": 30},
@@ -653,50 +673,31 @@ class TestCLIAnalyzeIntegration:
         }
         manifest = ExperimentManifest.from_dict(manifest_data)
 
+        secret_identity = "confidential-token-subject-777"
         consent = ConsentRecord(
             session_id="s1",
-            participant_id="p1",
+            participant_id=secret_identity,
             record_consent=True,
             image_consent=True,
             consented_at_utc="2026-09-16T08:00:00Z",
             record_expires_at_utc="2026-10-16T08:00:00Z",
             image_expires_at_utc="2026-09-23T08:00:00Z",
         )
-        att = _attempt("s1", participant_id="p1", visit_id="v1", bundle_ref=None)
+        att = _attempt(
+            "s1", participant_id=secret_identity, visit_id="v1", bundle_ref=None
+        )
         recorder.begin_attempt(manifest, att, consent)
 
         # Write label
         lbl = EvaluationLabel(
-            "s1", 1, "enrolled", "p1", "evaluator", "2026-09-16T08:10:00Z"
+            "s1", 1, "enrolled", secret_identity, "evaluator", "2026-09-16T08:10:00Z"
         )
         recorder.write_label(lbl)
 
         # Append trace
-        trace = _trace_with_scores("s1", [{"p1": 0.85, "p2": 0.20}])
+        trace = _trace_with_scores("s1", [{secret_identity: 0.85, "other": 0.20}])
         for entry in trace.entries:
             recorder.append_trace("s1", entry)
-
-        profile_path = tmp_path / "profile.json"
-        profile_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": "v1",
-                    "profile_version": "prof-e5",
-                    "timeout_ms": 5000,
-                    "sample_interval_ms": 200,
-                    "max_frames": 25,
-                    "queue_limit": 1,
-                    "required_support": 3,
-                    "min_support_interval_ms": 200,
-                    "match_threshold": 0.45,
-                    "review_threshold": 0.30,
-                    "margin_threshold": 0.10,
-                    "detector_version": "det-1",
-                    "quality_policy_version": "qual-1",
-                    "continuity_max_center_delta_ratio": 0.50,
-                }
-            )
-        )
 
         # Run cmd_analyze (production path)
         rc = cmd_analyze(
@@ -717,8 +718,9 @@ class TestCLIAnalyzeIntegration:
         case_file = store_dir / "_cases" / "exp-e5" / "s1.enc"
         assert case_file.is_file()
 
-        # Secret values must not leak in plaintext anywhere
-        assert_no_plaintext_leak(tmp_path, ["p1", "gal-e5"])
+        # Secret values must not leak in plaintext anywhere in store or keys
+        assert_no_plaintext_leak(store_dir, [secret_identity])
+        assert_no_plaintext_leak(key_dir, [secret_identity])
 
 
 class TestReworkFindingsRED:
