@@ -232,6 +232,24 @@ def profile_to_policy(profile: ResearchProfile) -> Any:
     )
 
 
+def _default_experiment_manifest(experiment_id: str) -> Any:
+    """Build the minimal frozen manifest for a CLI-driven attempt (E3)."""
+    from facecore.research.experiment import ExperimentManifest
+
+    return ExperimentManifest.from_dict(
+        {
+            "identity": {"experiment_id": experiment_id},
+            "software": {},
+            "gallery": {},
+            "policy": {},
+            "capture": {},
+            "privacy": {},
+            "study": {},
+            "analysis": {},
+        }
+    )
+
+
 def cmd_live(
     *,
     profile_path: Path,
@@ -247,6 +265,8 @@ def cmd_live(
     capture_factory: Callable[[str], CaptureSource] | None = None,
     detector_factory: Callable[[Path], Any] | None = None,
     embedder_factory: Callable[[Path], Any] | None = None,
+    experiment_id: str = "exp-cli-e3",
+    attempt_id: str | None = None,
 ) -> int:
     """Run one bounded research session (fake pump or real camera)."""
     try:
@@ -265,6 +285,8 @@ def cmd_live(
 
     from datetime import timedelta
 
+    from facecore.research.experiment import AttemptRecord
+
     now = _now_utc()
     # Standard TTLs: 30d record / 7d image from consent time.
     consent = ConsentRecord(
@@ -276,6 +298,51 @@ def cmd_live(
         record_expires_at_utc=(now + timedelta(days=30)).isoformat(),
         image_expires_at_utc=(now + timedelta(days=7)).isoformat(),
     )
+
+    # E3 wiring (1): attempt pre-placement BEFORE camera open / model setup.
+    # The durable encrypted write is the accepted-Start boundary (spec §5);
+    # any later open/setup failure must still leave exactly one attempt.
+    # The attempt id is namespaced away from the session id: recorder.begin
+    # creates rk_{session_id} for image staging, so reusing the raw session
+    # id as attempt id would collide DEKs and destroy the attempt on abort.
+    resolved_attempt_id = attempt_id or f"att-{session_id}"
+    attempt_manifest = _default_experiment_manifest(experiment_id)
+    attempt = AttemptRecord(
+        experiment_id=experiment_id,
+        attempt_id=resolved_attempt_id,
+        participant_id="cli-operator",
+        visit_id="visit-cli-001",
+        condition_id="cond-cli-live",
+        attempt_index=1,
+        retry_of=None,
+        consent_ref=session_id,
+        requested_at_utc=now.isoformat(),
+        accepted_at_utc=now.isoformat(),
+        started_at_utc=None,
+        ended_at_utc=None,
+        operational_status="accepted",
+        error_code=None,
+        bundle_ref=None,
+    )
+    recorder = ResearchRecorder(
+        store_root=store_root, key_dir=key_dir, clock=_now_utc
+    )
+    try:
+        recorder.begin_attempt(attempt_manifest, attempt, consent)
+    except (PermissionError, ValueError) as exc:
+        print(f"research live: attempt refused: {exc}", file=sys.stderr)
+        return 4
+
+    def _finish_attempt_error(error_code: str) -> None:
+        try:
+            recorder.finish_attempt(
+                resolved_attempt_id,
+                result=None,
+                operational_status="open_error",
+                error_code=error_code,
+            )
+        except Exception:
+            pass
 
     window_label = "early-stop"
     source: CaptureSource
@@ -306,6 +373,7 @@ def cmd_live(
                 "for camera-free operation",
                 file=sys.stderr,
             )
+            _finish_attempt_error("setup_error:missing_models_corpus")
             return 2
         if capture_factory is not None:
             source = capture_factory(device)
@@ -322,6 +390,7 @@ def cmd_live(
                 f"research live: cannot open device {device!r}: {exc}",
                 file=sys.stderr,
             )
+            _finish_attempt_error("open_error:camera_open_failed")
             return 2
         probe = source.read()
         source.close()
@@ -331,6 +400,7 @@ def cmd_live(
                 "no frames; refusing to start",
                 file=sys.stderr,
             )
+            _finish_attempt_error("open_error:no_frames")
             return 2
         try:
             context = _build_true_context(
@@ -342,6 +412,7 @@ def cmd_live(
             )
         except Exception as exc:
             print(f"research live: true pipeline setup failed: {exc}", file=sys.stderr)
+            _finish_attempt_error("setup_error:model_setup_failed")
             return 2
         model_generation = context.gallery.generation
         gallery_digest = context.gallery.digest
@@ -351,15 +422,31 @@ def cmd_live(
             score_frame,
         )
 
+        # E3 wiring (2): live trace + diagnostic/event sinks on the true path.
+        trace_diags: list[Any] = []
+        trace_events: list[Any] = []
+
+        def _diagnostic_sink(diag: Any) -> None:
+            trace_diags.append(diag)
+
+        def _event_sink(event: Any) -> None:
+            trace_events.append(event)
+
+        engine = SessionEngine(
+            profile,
+            gallery_digest,
+            model_generation,
+            event_sink=_event_sink,
+        )
+
         def scorer(packet: FramePacket) -> FrameObservation:
-            return score_frame(packet, context)
+            return score_frame(
+                packet, context, diagnostic_sink=_diagnostic_sink
+            )
 
         window_label = "early-stop"
         is_true_path = True
 
-    recorder = ResearchRecorder(
-        store_root=store_root, key_dir=key_dir, clock=_now_utc
-    )
     try:
         recorder.begin(session_id, consent)
     except (PermissionError, ValueError) as exc:
@@ -381,6 +468,9 @@ def cmd_live(
         scorer=scorer,
         session_id=session_id,
         frame_sink=_stage_frame if is_true_path else None,
+        fixed_seconds=fixed_seconds,
+        trace_recorder=recorder if is_true_path else None,
+        trace_attempt_id=resolved_attempt_id if is_true_path else None,
     )
     import time as _time
 
@@ -393,6 +483,15 @@ def cmd_live(
     except (PermissionError, ValueError, RuntimeError) as exc:
         print(f"research live: start refused: {exc}", file=sys.stderr)
         recorder.abort(session_id, reason="start_refused")
+        try:
+            recorder.finish_attempt(
+                resolved_attempt_id,
+                result=None,
+                operational_status="error",
+                error_code="start_refused",
+            )
+        except Exception:
+            pass
         return 2
     # Pump frames into the recorder's staging area as they are sampled.
     # (Desktop owns inference; recorder owns encrypted staging.)
@@ -401,20 +500,80 @@ def cmd_live(
         print("research live: no terminal reached", file=sys.stderr)
         desktop.close()
         recorder.abort(session_id, reason="no_terminal")
+        try:
+            recorder.finish_attempt(
+                resolved_attempt_id,
+                result=None,
+                operational_status="error",
+                error_code="no_terminal",
+            )
+        except Exception:
+            pass
         return 4
     if fixed_seconds:
-        # Fixed-5s comparison mode: inference terminal is locked, but an
-        # image-consented recording runs to the profile deadline.
-        _ = fixed_seconds
+        # Fixed-window comparison mode: inference terminal is locked, the
+        # collector ran to the original deadline, and the window label
+        # reflects collector evidence (not a fabricated 5s claim).
+        window_label = (
+            "fixed-window-complete"
+            if desktop.collection_complete
+            else "fixed-window-incomplete"
+        )
     # t-3: per-frame best-match ledger from scored observations; the
     # terminal matched_identity is still written only on matched.
     frame_scores = tuple(
         frame_score_of(obs) for obs in desktop.observations
     )
+    collection_window = None
+    if fixed_seconds:
+        from facecore.research.records import CollectionWindow
+
+        deadline_ns = start_ns + int(profile.timeout_ms * 1_000_000)
+        collection_window = CollectionWindow(
+            session_id=session_id,
+            collection_start_ns=start_ns,
+            collection_deadline_ns=deadline_ns,
+            collection_end_ns=None,
+            collection_stop_reason=desktop.collection_stop_reason,
+            collection_complete=desktop.collection_complete,
+            frames_sampled=len(desktop.observations),
+        )
     try:
-        recorder.commit(terminal, frame_scores=frame_scores)
+        recorder.commit(
+            terminal,
+            frame_scores=frame_scores,
+            collection_window=collection_window,
+        )
     except (KeyError, ValueError) as exc:
         print(f"research live: commit failed: {exc}", file=sys.stderr)
+        desktop.close()
+        return 4
+    # E3: close the attempt ledger with the operational outcome and link
+    # the committed session bundle for trace recovery.
+    try:
+        op_status = (
+            "completed"
+            if terminal.status.value == "matched"
+            else terminal.status.value
+        )
+        if op_status not in (
+            "accepted",
+            "open_error",
+            "setup_error",
+            "cancelled",
+            "timeout",
+            "completed",
+            "error",
+        ):
+            op_status = "completed"
+        recorder.finish_attempt(
+            resolved_attempt_id,
+            result=terminal,
+            operational_status=op_status,
+            error_code=None,
+        )
+    except Exception as exc:
+        print(f"research live: finish_attempt failed: {exc}", file=sys.stderr)
         desktop.close()
         return 4
     desktop.label_terminal(None)

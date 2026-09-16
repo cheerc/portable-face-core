@@ -56,6 +56,9 @@ class DesktopSession:
         sample_interval_ns: int = 200_000_000,
         max_frames: int = 25,
         frame_sink: Callable[[FramePacket], None] | None = None,
+        fixed_seconds: bool = False,
+        trace_recorder: object | None = None,
+        trace_attempt_id: str | None = None,
     ) -> None:
         if not session_id:
             raise ValueError("session_id must not be empty")
@@ -66,6 +69,9 @@ class DesktopSession:
             sample_interval_ns=sample_interval_ns,
             max_frames=max_frames,
             frame_sink=frame_sink,
+            fixed_seconds=fixed_seconds,
+            trace_recorder=trace_recorder,
+            trace_attempt_id=trace_attempt_id,
         )
         self._engine = engine
         self._session_id = session_id
@@ -218,3 +224,34 @@ class DesktopSession:
     def observations(self) -> list[FrameObservation]:
         """Scored observations in sample order (t-3 ledger source)."""
         return self._controller.scored_observations
+
+    def cancel_collection(self, now_ns: int) -> SessionResult:
+        """E3: stop the fixed-window collector immediately (incomplete)."""
+        if self._state != "running":
+            raise RuntimeError(f"cannot cancel from state {self._state!r}")
+        cancelled = self._controller.cancel_collection(now_ns)
+        self._terminal = cancelled
+        self._state = "terminal"
+        self._recording = False
+        return cancelled
+
+    # -- E3 fixed-window collector evidence (read-only passthrough) ------------
+    @property
+    def inference_terminal(self) -> SessionResult | None:
+        return self._controller.inference_terminal
+
+    @property
+    def post_lock_observations(self) -> list[FrameObservation]:
+        return self._controller.post_lock_observations
+
+    @property
+    def collection_complete(self) -> bool:
+        return self._controller.collection_complete
+
+    @property
+    def collection_stop_reason(self) -> str:
+        return self._controller.collection_stop_reason
+
+    @property
+    def collection_safety_flags(self) -> list[str]:
+        return self._controller.collection_safety_flags

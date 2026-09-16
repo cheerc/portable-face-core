@@ -20,13 +20,12 @@ Only synthetic payloads; never real faces; camera-free.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import numpy as np
-import pytest
 
 from facecore.live.capture import FakeCapture
 from facecore.live.contracts import (
@@ -131,12 +130,11 @@ class TestFixedWindowCollectorSeparation:
     """B inference terminal locks; collector keeps sampling to deadline."""
 
     def test_b_matched_at_0_4s_still_collects_to_5s_boundary(self) -> None:
-        profile = _profile(required_support=1)
-        # Build a source long enough to cover 0..5s at 200ms spacing.
+        profile = _profile(required_support=1, max_frames=26)
+        # Build a source covering 0..5s at 200ms spacing (26 frames).
         frames = [
-            _packet(seq, (seq - 1) * 200_000_000) for seq in range(1, 27)
+            _packet(seq, (seq - 1) * 200_000_000) for seq in range(1, 28)
         ]
-        engine_calls: list[int] = []
 
         def scorer(packet: FramePacket) -> FrameObservation:
             return _matched_obs(packet.sequence, packet.captured_ns)
@@ -152,10 +150,10 @@ class TestFixedWindowCollectorSeparation:
         terminal = controller.run_until_terminal(max_steps=100)
         assert terminal is not None
         assert terminal.status == SessionStatus.matched
-        # B locked early (0.4s would be seq 3 with required_support=1 → seq 1).
+        # B locked early (required_support=1 → seq 1).
         assert terminal.support_sequences == (1,)
-        # Collector evidence: sampled the full 25-frame budget to deadline.
-        assert controller.frames_sampled == 25
+        # Collector evidence: sampled to the 5s deadline boundary.
+        assert controller.frames_sampled == 26
         assert controller.collection_complete is True
         assert controller.collection_stop_reason == "deadline_reached"
         # B result was never rewritten by post-lock frames.
@@ -200,8 +198,11 @@ class TestFixedWindowCollectorSeparation:
 
     def test_full_25_frames_does_not_fabricate_5s_evidence(self) -> None:
         profile = _profile(timeout_ms=5000, max_frames=25)
-        # 25 frames arriving within 1s (40ms spacing): budget exhausted early.
-        frames = [_packet(seq, (seq - 1) * 40_000_000) for seq in range(1, 26)]
+        # 25 frames arriving within 5s (200ms spacing): hits the frame cap
+        # at 4.8s, before the 5s deadline — no fabricated 5s evidence.
+        frames = [
+            _packet(seq, (seq - 1) * 200_000_000) for seq in range(1, 27)
+        ]
         engine = SessionEngine(profile, "gal-e3", "gen-e3")
         controller = LiveController(
             engine,
@@ -314,12 +315,13 @@ class TestCliAttemptPreplacement:
         )
         assert rc == 2
         # The accepted Start left exactly one durable attempt despite the
-        # camera failing before any scoring.
+        # camera failing before any scoring. The attempt id is namespaced
+        # (att- prefix) so its rk_ DEK never collides with session staging.
         rec = ResearchRecorder(
             store_root=store, key_dir=key_dir, clock=datetime.now
         )
         attempts = rec.list_attempts(experiment_id="exp-cli-e3")
-        assert [a.attempt_id for a in attempts] == ["sess-e3-openfail"]
+        assert [a.attempt_id for a in attempts] == ["att-sess-e3-openfail"]
         assert attempts[0].operational_status == "open_error"
 
 

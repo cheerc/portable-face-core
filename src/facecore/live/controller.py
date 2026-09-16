@@ -38,7 +38,14 @@ Scorer = Callable[[FramePacket], FrameObservation]
 
 
 class LiveController:
-    """Owns one bounded session run: pump → score → engine observe."""
+    """Owns one bounded session run: pump → score → engine observe.
+
+    Phase 2B E3 fixed-window separation: in ``fixed_seconds`` mode the
+    B inference terminal locks on first terminal, but the collector keeps
+    sampling to the original deadline. Post-lock frames feed arm A and
+    diagnostics only — they are never re-sent to B. Cancel/close/revoke/
+    multi-face/continuity-unknown/error stop the collector incomplete.
+    """
 
     def __init__(
         self,
@@ -49,12 +56,20 @@ class LiveController:
         sample_interval_ns: int = 200_000_000,
         max_frames: int = 25,
         frame_sink: Callable[[FramePacket], None] | None = None,
+        fixed_seconds: bool = False,
+        trace_recorder: object | None = None,
+        trace_attempt_id: str | None = None,
     ) -> None:
         """frame_sink (t-3): optional per-sampled-frame staging hook.
 
         Called with each sampled packet AFTER scoring succeeds and BEFORE
         engine observe, so encrypted staging (recorder.append_frame) sees
         exactly the frames the engine scored. None keeps prior behavior.
+
+        fixed_seconds (E3): when True, B inference terminal locks but the
+        collector continues to the original deadline for arm A + trace.
+        trace_recorder/trace_attempt_id (E3): when both set, each scored
+        observation is persisted via ``append_trace`` on the live path.
         """
         profile = engine.profile
         if sample_interval_ns <= 0:
@@ -66,12 +81,21 @@ class LiveController:
                 f"max_frames must be in [1, {profile.max_frames}], "
                 f"got {max_frames}"
             )
+        if (trace_recorder is None) != (trace_attempt_id is None):
+            raise ValueError(
+                "trace_recorder and trace_attempt_id must be given together"
+            )
         self._engine = engine
         self._source = source
         self._scorer = scorer
         self._sample_interval_ns = sample_interval_ns
-        self._max_frames = max_frames
+        self._max_frames = (
+            profile.max_frames if fixed_seconds else max_frames
+        )
         self._frame_sink = frame_sink
+        self._fixed_seconds = fixed_seconds
+        self._trace_recorder = trace_recorder
+        self._trace_attempt_id = trace_attempt_id
         self._scored_observations: list[FrameObservation] = []
 
         self._queue: LatestSlot1Queue[FramePacket] = LatestSlot1Queue()
@@ -83,6 +107,15 @@ class LiveController:
         self._last_sequence = 0
         self._terminal: SessionResult | None = None
         self._closed = False
+
+        # E3 fixed-window collector state: B locks once; the collector
+        # continues independently until deadline / cap / stop signal.
+        self._inference_terminal: SessionResult | None = None
+        self._post_lock_observations: list[FrameObservation] = []
+        self._collector_complete = False
+        self._collector_stop_reason = "in_progress"
+        self._collector_safety_flags: list[str] = []
+        self._collection_cancelled = False
 
         self._lock = threading.Lock()
         self._pump_thread: threading.Thread | None = None
@@ -116,6 +149,12 @@ class LiveController:
             self._last_sequence = 0
             self._terminal = None
             self._scored_observations = []
+            self._inference_terminal = None
+            self._post_lock_observations = []
+            self._collector_complete = False
+            self._collector_stop_reason = "in_progress"
+            self._collector_safety_flags = []
+            self._collection_cancelled = False
             self._pump_stop.clear()
 
     def _require_active(self) -> str:
@@ -201,28 +240,154 @@ class LiveController:
         self._scored_observations.append(observation)
         if self._frame_sink is not None:
             self._frame_sink(packet)
+        self._append_live_trace(observation)
+        if self._fixed_seconds and self._inference_terminal is not None:
+            # Fixed-window: B already locked. This frame belongs to the
+            # collector (arm A + diagnostics) only — never back into B.
+            self._post_lock_observations.append(observation)
+            self._collect_safety_flags(observation)
+            return self._inference_terminal
         result = self._engine.observe(observation)
         if result is not None:
+            if self._fixed_seconds:
+                # B locks here; the collector continues to the deadline.
+                self._inference_terminal = result
+                self._terminal = result
+                return self._terminal
             self._terminal = result
             self._stop_and_release()
+        return self._terminal
+
+    def _append_live_trace(self, observation: FrameObservation) -> None:
+        """Persist one scored observation to the encrypted trace sidecar."""
+        if self._trace_recorder is None or self._trace_attempt_id is None:
+            return
+        from facecore.research.diagnostics import FrameTraceEntry
+
+        entry = FrameTraceEntry.from_observation(
+            observation, staged_index=self._frames_sampled - 1
+        )
+        append = getattr(self._trace_recorder, "append_trace", None)
+        if append is None:
+            raise AttributeError(
+                "trace_recorder has no append_trace method"
+            )
+        try:
+            append(self._trace_attempt_id, entry)
+        except ValueError:
+            # Duplicate sequence on re-drive: keep first write, stay live.
+            pass
+
+    def _collect_safety_flags(self, observation: FrameObservation) -> None:
+        """Post-lock safety monitoring: multi-face never goes unnoticed."""
+        if observation.face_count > 1:
+            for reason in observation.quality_reasons:
+                if reason not in self._collector_safety_flags:
+                    self._collector_safety_flags.append(reason)
+            if not observation.quality_reasons:
+                if "input_multiple_faces" not in self._collector_safety_flags:
+                    self._collector_safety_flags.append("input_multiple_faces")
+
+    def cancel_collection(self, now_ns: int) -> SessionResult:
+        """Stop the collector immediately: incomplete, terminal preserved."""
+        self._require_active()
+        self._collection_cancelled = True
+        self._collector_complete = False
+        self._collector_stop_reason = "cancelled"
+        if self._inference_terminal is not None:
+            self._terminal = self._inference_terminal
+        else:
+            self._terminal = self._engine.finish(now_ns, reason="cancelled")
+            self._inference_terminal = self._terminal
+        self._stop_and_release()
         return self._terminal
 
     def run_until_terminal(self, max_steps: int = 100) -> SessionResult | None:
         """Pump + consume until the engine terminates or steps exhaust."""
         self._require_active()
         for _ in range(max_steps):
-            if self._terminal is not None:
+            if self._fixed_seconds:
+                if self._collector_complete:
+                    return self._terminal
+                if self._collection_should_stop():
+                    self._finalize_collection()
+                    return self._terminal
+            elif self._terminal is not None:
                 return self._terminal
             if not self._pump_once():
                 drained = self._consume_one()
                 if drained is not None:
+                    if self._fixed_seconds:
+                        if self._collection_should_stop():
+                            self._finalize_collection()
+                        continue
                     return drained
                 # Source dry and queue empty: conclude at controller clock.
+                if self._fixed_seconds:
+                    self._finalize_collection()
+                    return self._terminal
                 return self.finish(self._controller_now_ns())
             terminal = self._consume_one()
             if terminal is not None:
+                if self._fixed_seconds:
+                    if self._collection_should_stop():
+                        self._finalize_collection()
+                    continue
                 return terminal
+        if self._fixed_seconds:
+            self._finalize_collection()
         return self._terminal
+
+    def _collection_should_stop(self) -> bool:
+        """Collector stops on cancel, cap, deadline, or source exhaustion."""
+        if self._collection_cancelled:
+            return True
+        if self._frames_sampled >= self._max_frames:
+            return True
+        if self._session_start_ns is None:
+            return True
+        deadline = self._session_start_ns + int(
+            self._engine.profile.timeout_ms * 1_000_000
+        )
+        last_ns = self._last_sampled_ns()
+        return last_ns is not None and last_ns >= deadline
+
+    def _last_sampled_ns(self) -> int | None:
+        if self._scored_observations:
+            return self._scored_observations[-1].captured_ns
+        return None
+
+    def _finalize_collection(self) -> None:
+        """Seal collector evidence without rewriting the B terminal."""
+        if self._collector_complete:
+            return
+        if self._collection_cancelled:
+            self._collector_stop_reason = "cancelled"
+        elif self._frames_sampled >= self._max_frames:
+            last_ns = self._last_sampled_ns()
+            deadline = (self._session_start_ns or 0) + int(
+                self._engine.profile.timeout_ms * 1_000_000
+            )
+            if last_ns is not None and last_ns >= deadline:
+                self._collector_stop_reason = "deadline_reached"
+                self._collector_complete = True
+            else:
+                self._collector_stop_reason = "max_frames_reached"
+                self._collector_complete = False
+        else:
+            last_ns = self._last_sampled_ns()
+            deadline = (self._session_start_ns or 0) + int(
+                self._engine.profile.timeout_ms * 1_000_000
+            )
+            if last_ns is not None and last_ns >= deadline:
+                self._collector_stop_reason = "deadline_reached"
+                self._collector_complete = True
+            else:
+                self._collector_stop_reason = "source_exhausted"
+                self._collector_complete = False
+        if self._terminal is None and self._inference_terminal is not None:
+            self._terminal = self._inference_terminal
+        self._stop_and_release()
 
     # -- session routing (stale-result guard) ----------------------------------
     def observe_for(
@@ -426,3 +591,28 @@ class LiveController:
     def scored_observations(self) -> list[FrameObservation]:
         """Copy of scored observations in sample order (t-3 ledger source)."""
         return list(self._scored_observations)
+
+    # -- E3 fixed-window collector evidence (read-only) -------------------------
+    @property
+    def inference_terminal(self) -> SessionResult | None:
+        """B locked terminal: never rewritten by post-lock collector frames."""
+        return self._inference_terminal
+
+    @property
+    def post_lock_observations(self) -> list[FrameObservation]:
+        """Collector frames after B locked (arm A + diagnostics only)."""
+        return list(self._post_lock_observations)
+
+    @property
+    def collection_complete(self) -> bool:
+        """True only when the collector reached the original deadline."""
+        return self._collector_complete
+
+    @property
+    def collection_stop_reason(self) -> str:
+        return self._collector_stop_reason
+
+    @property
+    def collection_safety_flags(self) -> list[str]:
+        """Post-lock safety signals (e.g. multi-face) spotted by monitor."""
+        return list(self._collector_safety_flags)
