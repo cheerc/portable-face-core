@@ -12,6 +12,8 @@ keeps the finite original frame and authenticates the mapping sidecar.
 Synthetic/offscreen tests only; this module does not open a camera by itself.
 """
 
+# mypy: disable-error-code=unused-ignore
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -139,6 +141,8 @@ def preview_frame(frame: np.ndarray, mapping: CropMapping) -> np.ndarray:
     return np.ascontiguousarray(frame)
 
 
+_QT_WINDOW_FACTORY: Any
+
 try:
     from PySide6.QtCore import QTimer, Qt
     from PySide6.QtGui import QImage, QPixmap
@@ -154,7 +158,7 @@ try:
 except ImportError as exc:  # pragma: no cover - exercised without extra
     _QT_IMPORT_ERROR = exc
 
-    class _QtResearchWindow:
+    class _QtResearchWindowUnavailable:
         """Helpful failure when the optional research-ui extra is absent."""
 
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -163,9 +167,11 @@ except ImportError as exc:  # pragma: no cover - exercised without extra
                 "(pyside6==6.11.2)"
             ) from _QT_IMPORT_ERROR
 
+    _QT_WINDOW_FACTORY = _QtResearchWindowUnavailable
+
 else:
 
-    class _QtResearchWindow(QMainWindow):  # type: ignore[no-redef]
+    class _QtResearchWindow(QMainWindow):  # type: ignore[misc]
         """Small offscreen-testable Qt view over a real DesktopSession."""
 
         def __init__(
@@ -389,5 +395,7 @@ else:
             self.desktop.close()
             event.accept()
 
+    _QT_WINDOW_FACTORY = _QtResearchWindow
 
-QtResearchWindow = _QtResearchWindow
+
+QtResearchWindow = _QT_WINDOW_FACTORY
