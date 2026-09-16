@@ -433,6 +433,8 @@ else:
             Atomic from the caller's view: the recorder removes the session
             bundle directory and cascades to linked attempts, then the
             desktop is flagged deleted so the CLI never commits afterwards.
+            A False return or any error fails closed: no deleted flag, no
+            success status, and the CLI never reports rc0 for it.
             """
             self._timer.stop()
             try:
@@ -444,7 +446,8 @@ else:
                 delete_bundle = getattr(self.recorder, "delete", None)
                 if delete_bundle is None:
                     raise AttributeError("recorder has no delete method")
-                delete_bundle(self.session_id)
+                if delete_bundle(self.session_id) is not True:
+                    raise RuntimeError("recorder.delete reported incomplete")
             except Exception as exc:
                 self._set_status(f"delete failed: {type(exc).__name__}")
                 return

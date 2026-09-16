@@ -196,11 +196,39 @@ def _apply_capture_mapping(
             attempt_id = attempt.attempt_id
             break
     if attempt_id is None:
+        # U3: a persisted mapping with no bundle link must never silently
+        # fall back to legacy full-frame scoring. Resolve the accepted
+        # attempt by consent/session linkage; an orphan mapping is a
+        # tampered-like refusal, never a quiet legacy replay.
+        orphan_attempts: list[str] = []
+        for attempt in recorder.list_attempts():
+            try:
+                recorder.read_crop_mapping(attempt.attempt_id)
+            except KeyError:
+                continue
+            except Exception as exc:
+                raise ReplayRefusal(
+                    bundle_id, "tampered", f"capture mapping unreadable: {exc}"
+                ) from exc
+            orphan_attempts.append(attempt.attempt_id)
+        if orphan_attempts:
+            raise ReplayRefusal(
+                bundle_id,
+                "tampered",
+                f"capture mapping exists without bundle link "
+                f"({','.join(sorted(orphan_attempts))}); refusing legacy replay",
+            )
         return frames
     try:
         stored = recorder.read_crop_mapping(attempt_id)
     except KeyError:
         return frames
+    except Exception as exc:
+        # U1: every corrupt/mismatched mapping normalizes to tampered.
+        # Only a genuinely absent mapping takes the legacy path above.
+        raise ReplayRefusal(
+            bundle_id, "tampered", f"capture mapping unreadable: {exc}"
+        ) from exc
     try:
         mapping = CropMapping.from_dict(dict(stored))
     except (ValueError, KeyError, TypeError) as exc:

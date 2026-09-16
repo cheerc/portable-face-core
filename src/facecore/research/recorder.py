@@ -678,7 +678,13 @@ class ResearchRecorder:
         return purged
 
     def delete(self, session_id: str) -> bool:
-        """Tombstone-first re-entrant deletion; idempotent success."""
+        """Tombstone-first re-entrant deletion; idempotent success.
+
+        U2 fail-closed: linked-attempt cleanup errors surface instead of
+        being skipped. A corrupt linked attempt is removed fail-closed
+        (unreadable ciphertext cannot justify retention) after recording
+        the failure; the return value reflects full removal.
+        """
         sess_dir = self._sess_dir(session_id)
         if sess_dir.exists():
             tombstone = sess_dir / "tombstone.json"
@@ -696,6 +702,7 @@ class ResearchRecorder:
         else:
             self._active.pop(session_id, None)
         # F2: cascade delete any attempts linked to this session
+        cascade_errors: list[str] = []
         attempts_root = self._store / self._ATTEMPTS_DIR
         if attempts_root.is_dir():
             for exp_dir in sorted(attempts_root.iterdir()):
@@ -705,13 +712,26 @@ class ResearchRecorder:
                     attempt_id = path.stem
                     try:
                         record, meta = self._decrypt_attempt(path)
+                    except Exception as exc:
+                        # Corrupt linked attempt: fail-closed removal, no
+                        # silent skip. The ciphertext is unreadable, so it
+                        # cannot justify retention; record and remove it.
+                        cascade_errors.append(f"{attempt_id}:{type(exc).__name__}")
+                        path.unlink(missing_ok=True)
+                        continue
+                    try:
                         if (
                             record.bundle_ref == session_id
                             or meta.get("consent_session_id") == session_id
                         ):
                             self.withdraw_attempt(attempt_id)
-                    except Exception:
-                        continue
+                    except Exception as exc:
+                        cascade_errors.append(f"{attempt_id}:{type(exc).__name__}")
+        if cascade_errors:
+            raise StoreCorruptionError(
+                f"linked attempt cleanup incomplete for {session_id!r}: "
+                + ";".join(sorted(set(cascade_errors)))
+            )
         return not sess_dir.exists()
 
     # -- E1: attempt ledger & label sidecar (Phase 2B §12 E1) ----------------
