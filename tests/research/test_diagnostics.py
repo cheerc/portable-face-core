@@ -17,7 +17,6 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -30,7 +29,6 @@ from facecore.live.contracts import (
     FrameObservation,
     FramePacket,
     ResearchProfile,
-    SessionResult,
     SessionStatus,
 )
 from facecore.live.frame_pipeline import ScoringContext, score_frame
@@ -138,7 +136,8 @@ def _recorder(tmp_path: Path, now: datetime) -> ResearchRecorder:
 
 
 def _synthetic_packet(sequence: int = 1, captured_ns: int = 0) -> FramePacket:
-    img = np.zeros((480, 640, 3), dtype=np.uint8)
+    rng = np.random.default_rng(42)
+    img = rng.integers(80, 180, size=(480, 640, 3), dtype=np.uint8)
     return FramePacket(
         sequence=sequence,
         captured_ns=captured_ns,
@@ -149,7 +148,7 @@ def _synthetic_packet(sequence: int = 1, captured_ns: int = 0) -> FramePacket:
 
 
 class TestDiagnosticsContracts:
-    """Validate FrameDiagnostics, DecisionEvent, FrameTraceEntry, and SessionTrace structures."""
+    """Validate FrameDiagnostics, DecisionEvent, trace structures."""
 
     def test_frame_diagnostics_fields_and_truth_free(self) -> None:
         diag = FrameDiagnostics(
@@ -161,7 +160,13 @@ class TestDiagnosticsContracts:
             face_count=1,
             detector_confidence=0.98,
             face_box=(100.0, 100.0, 120.0, 120.0),
-            landmarks=((120.0, 130.0), (180.0, 130.0), (150.0, 160.0), (130.0, 190.0), (170.0, 190.0)),
+            landmarks=(
+                (120.0, 130.0),
+                (180.0, 130.0),
+                (150.0, 160.0),
+                (130.0, 190.0),
+                (170.0, 190.0),
+            ),
             landmark_confidence_is_constant=True,
             shorter_side_px=120,
             sharpness=45.2,
@@ -312,12 +317,21 @@ class TestPipelineDiagnosticsWiring:
         mock_detector = MagicMock()
         mock_detected_face = MagicMock()
         mock_detected_face.confidence = 0.99
-        mock_detected_face.box = (50.0, 50.0, 100.0, 100.0)
-        mock_detected_face.landmarks = [(60.0, 70.0), (80.0, 70.0), (70.0, 85.0), (65.0, 95.0), (75.0, 95.0)]
+        mock_detected_face.box = (50.0, 50.0, 120.0, 120.0)
+        mock_detected_face.landmarks = [
+            (70.0, 80.0),
+            (130.0, 80.0),
+            (100.0, 110.0),
+            (80.0, 140.0),
+            (120.0, 140.0),
+        ]
         mock_detector.detect.return_value = [mock_detected_face]
 
         mock_embedder = MagicMock(spec=Embedder)
-        mock_embedder.embed.return_value = (np.ones(128, dtype=np.float32), "test-embed-model")
+        mock_embedder.embed.return_value = (
+            np.ones(128, dtype=np.float32),
+            "test-embed-model",
+        )
 
         policy = PolicyProfile.frozen_v1().with_thresholds(
             match_threshold=0.45, review_threshold=0.30, margin_threshold=0.10
@@ -326,6 +340,7 @@ class TestPipelineDiagnosticsWiring:
         mock_gallery.embeddings = {"person-01": np.ones(128, dtype=np.float32)}
         mock_gallery.generation = "gen-test"
         mock_gallery.digest = "digest-test"
+        mock_gallery.model_version = "test-embed-model"
 
         ctx = ScoringContext(
             detector=mock_detector,
@@ -352,8 +367,14 @@ class TestPipelineDiagnosticsWiring:
         mock_detector = MagicMock()
         mock_detected_face = MagicMock()
         mock_detected_face.confidence = 0.99
-        mock_detected_face.box = (50.0, 50.0, 20.0, 20.0)  # very small box (20px < 80px min)
-        mock_detected_face.landmarks = [(55.0, 55.0), (65.0, 55.0), (60.0, 60.0), (58.0, 65.0), (62.0, 65.0)]
+        mock_detected_face.box = (50.0, 50.0, 20.0, 20.0)  # small box (< 80px min)
+        mock_detected_face.landmarks = [
+            (55.0, 55.0),
+            (65.0, 55.0),
+            (60.0, 60.0),
+            (58.0, 65.0),
+            (62.0, 65.0),
+        ]
         mock_detector.detect.return_value = [mock_detected_face]
 
         mock_embedder = MagicMock(spec=Embedder)
@@ -364,6 +385,7 @@ class TestPipelineDiagnosticsWiring:
         mock_gallery.embeddings = {"person-01": np.ones(128, dtype=np.float32)}
         mock_gallery.generation = "gen-test"
         mock_gallery.digest = "digest-test"
+        mock_gallery.model_version = "test-embed-model"
 
         ctx = ScoringContext(
             detector=mock_detector,
@@ -497,7 +519,9 @@ class TestSessionEngineEventWiring:
         assert res5.status == SessionStatus.timeout
         assert events[-1].event_type == "late_processing"
 
-    def test_injected_clocks_terminal_result_identical_with_or_without_events(self) -> None:
+    def test_injected_clocks_terminal_result_identical_with_or_without_events(
+        self,
+    ) -> None:
         profile = _profile(required_support=2)
         observations = [
             FrameObservation(
@@ -529,7 +553,9 @@ class TestSessionEngineEventWiring:
         ]
 
         # Run without event_sink
-        engine_clean = SessionEngine(profile=profile, gallery_digest="gal-1", model_generation="gen-1")
+        engine_clean = SessionEngine(
+            profile=profile, gallery_digest="gal-1", model_generation="gen-1"
+        )
         engine_clean.start("s1", 0)
         res_clean = None
         for obs in observations:
@@ -540,7 +566,10 @@ class TestSessionEngineEventWiring:
         # Run with event_sink
         events: list[DecisionEvent] = []
         engine_traced = SessionEngine(
-            profile=profile, gallery_digest="gal-1", model_generation="gen-1", event_sink=events.append
+            profile=profile,
+            gallery_digest="gal-1",
+            model_generation="gen-1",
+            event_sink=events.append,
         )
         engine_traced.start("s1", 0)
         res_traced = None
@@ -580,7 +609,11 @@ class TestEvaluatorTruthReconstruction:
             quality_reasons=(),
             face_count=1,
             face_box=(10.0, 10.0, 50.0, 50.0),
-            identity_score_pairs=(("person-02", 0.75), ("person-01", 0.60), ("person-03", 0.10)),
+            identity_score_pairs=(
+                ("person-02", 0.75),
+                ("person-01", 0.60),
+                ("person-03", 0.10),
+            ),
             quality_rank=30.0,
             model_generation="gen-1",
             gallery_digest="gal-1",
@@ -659,7 +692,10 @@ class TestTracePersistence:
             quality_reasons=(),
             face_count=1,
             face_box=(100.0, 100.0, 120.0, 120.0),
-            identity_score_pairs=(("person-01", 0.82), ("person-02", 0.35)),
+            identity_score_pairs=(
+                ("person-01", 0.82),
+                ("person-02", 0.35),
+            ),
             quality_rank=40.0,
             model_generation="gen-1",
             gallery_digest="gal-1",
@@ -674,5 +710,8 @@ class TestTracePersistence:
         assert len(trace.entries) == 1
         loaded_entry = trace.entries[0]
         assert loaded_entry.sequence == 1
-        assert loaded_entry.identity_score_pairs == (("person-01", 0.82), ("person-02", 0.35))
+        assert loaded_entry.identity_score_pairs == (
+            ("person-01", 0.82),
+            ("person-02", 0.35),
+        )
         assert loaded_entry.diagnostics.sharpness == 40.0

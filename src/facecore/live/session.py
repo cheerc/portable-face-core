@@ -16,9 +16,11 @@ Hard boundaries:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import math
 
 from facecore.live.contracts import (
+    DecisionEvent,
     FrameObservation,
     ResearchProfile,
     SessionResult,
@@ -46,10 +48,13 @@ class SessionEngine:
         profile: ResearchProfile,
         gallery_digest: str,
         model_generation: str,
+        *,
+        event_sink: Callable[[DecisionEvent], None] | None = None,
     ) -> None:
         self.profile = profile
         self.gallery_digest = gallery_digest
         self.model_generation = model_generation
+        self._event_sink = event_sink
 
         self._session_id: str | None = None
         self._start_ns: int | None = None
@@ -74,6 +79,43 @@ class SessionEngine:
 
         # Terminal state
         self._terminal_result: SessionResult | None = None
+
+    def _emit_event(
+        self,
+        *,
+        sequence: int,
+        event_type: str,
+        accepted: bool,
+        reset_reason: str | None,
+        support_before: int,
+        support_after: int,
+        candidate_before: str | None,
+        candidate_after: str | None,
+        terminal_status: str | None,
+        terminal_identity: str | None,
+        now_ns: int,
+    ) -> None:
+        if self._event_sink is None:
+            return
+        remaining_ms = (
+            max(0.0, (self._deadline_ns - now_ns) / 1_000_000.0)
+            if self._deadline_ns is not None
+            else 0.0
+        )
+        event = DecisionEvent(
+            sequence=sequence,
+            event_type=event_type,
+            accepted=accepted,
+            reset_reason=reset_reason,
+            support_before=support_before,
+            support_after=support_after,
+            candidate_before=candidate_before,
+            candidate_after=candidate_after,
+            terminal_status=terminal_status,
+            terminal_identity=terminal_identity,
+            deadline_remaining_ms=remaining_ms,
+        )
+        self._event_sink(event)
 
     @property
     def is_terminal(self) -> bool:
@@ -153,12 +195,38 @@ class SessionEngine:
 
         # Check deadline: if observation captured past deadline, terminate with timeout
         if obs.captured_ns > self._deadline_ns:
+            self._emit_event(
+                sequence=obs.sequence,
+                event_type="late_processing",
+                accepted=False,
+                reset_reason="deadline_exceeded",
+                support_before=len(self._support_sequences),
+                support_after=0,
+                candidate_before=self._current_candidate,
+                candidate_after=None,
+                terminal_status=SessionStatus.timeout.value,
+                terminal_identity=None,
+                now_ns=obs.captured_ns,
+            )
             return self.finish(obs.captured_ns, reason="deadline_exceeded")
 
         # Multi-face -> terminal invalid_input (restart required)
         if obs.face_count > 1:
             self._frames_rejected += 1
             self._clear_support_window()
+            self._emit_event(
+                sequence=obs.sequence,
+                event_type="rejected",
+                accepted=False,
+                reset_reason="input_multiple_faces",
+                support_before=len(self._support_sequences),
+                support_after=0,
+                candidate_before=self._current_candidate,
+                candidate_after=None,
+                terminal_status=SessionStatus.invalid_input.value,
+                terminal_identity=None,
+                now_ns=obs.captured_ns,
+            )
             return self._terminate_terminal(
                 status=SessionStatus.invalid_input,
                 identity=None,
@@ -169,7 +237,26 @@ class SessionEngine:
         # Zero faces or quality rejected -> clear support window, continue sampling
         if not obs.quality_pass or obs.face_count == 0 or obs.face_box is None:
             self._frames_rejected += 1
+            supp_before = len(self._support_sequences)
             self._clear_support_window()
+            q_reason = (
+                "no_face_detected"
+                if obs.face_count == 0
+                else f"quality_rejected: {','.join(obs.quality_reasons)}"
+            )
+            self._emit_event(
+                sequence=obs.sequence,
+                event_type="rejected",
+                accepted=False,
+                reset_reason=q_reason,
+                support_before=supp_before,
+                support_after=0,
+                candidate_before=self._current_candidate,
+                candidate_after=None,
+                terminal_status=None,
+                terminal_identity=None,
+                now_ns=obs.captured_ns,
+            )
             return None
 
         # Passed detection & quality
@@ -185,7 +272,21 @@ class SessionEngine:
             ratio = delta / max(dim1, 1.0)
             if ratio > continuity_limit:
                 # Discontinuous spatial jump -> invalid_input (restart required)
+                supp_before = len(self._support_sequences)
                 self._clear_support_window()
+                self._emit_event(
+                    sequence=obs.sequence,
+                    event_type="rejected",
+                    accepted=False,
+                    reset_reason="continuity_jump_detected",
+                    support_before=supp_before,
+                    support_after=0,
+                    candidate_before=self._current_candidate,
+                    candidate_after=None,
+                    terminal_status=SessionStatus.invalid_input.value,
+                    terminal_identity=None,
+                    now_ns=obs.captured_ns,
+                )
                 return self._terminate_terminal(
                     status=SessionStatus.invalid_input,
                     identity=None,
@@ -200,7 +301,21 @@ class SessionEngine:
 
         # Evaluate top match and runner-up margin
         if not obs.identity_scores:
+            supp_before = len(self._support_sequences)
             self._clear_support_window()
+            self._emit_event(
+                sequence=obs.sequence,
+                event_type="rejected",
+                accepted=False,
+                reset_reason="empty_identity_scores",
+                support_before=supp_before,
+                support_after=0,
+                candidate_before=self._current_candidate,
+                candidate_after=None,
+                terminal_status=None,
+                terminal_identity=None,
+                now_ns=obs.captured_ns,
+            )
             return None
 
         sorted_candidates = sorted(
@@ -213,7 +328,21 @@ class SessionEngine:
 
         if runner_up_score is None:
             # None margin cannot qualify for matched
+            supp_before = len(self._support_sequences)
             self._clear_support_window()
+            self._emit_event(
+                sequence=obs.sequence,
+                event_type="none_runner_up",
+                accepted=False,
+                reset_reason="none_runner_up",
+                support_before=supp_before,
+                support_after=0,
+                candidate_before=self._current_candidate,
+                candidate_after=None,
+                terminal_status=None,
+                terminal_identity=None,
+                now_ns=obs.captured_ns,
+            )
             return None
 
         margin = top_score - runner_up_score
@@ -224,12 +353,45 @@ class SessionEngine:
             or margin < self.profile.margin_threshold
         ):
             # Did not qualify -> clear support window
+            supp_before = len(self._support_sequences)
             self._clear_support_window()
+            s_reason = (
+                "score_below_threshold"
+                if top_score < self.profile.match_threshold
+                else "margin_below_threshold"
+            )
+            self._emit_event(
+                sequence=obs.sequence,
+                event_type="score_reset",
+                accepted=False,
+                reset_reason=s_reason,
+                support_before=supp_before,
+                support_after=0,
+                candidate_before=self._current_candidate,
+                candidate_after=None,
+                terminal_status=None,
+                terminal_identity=None,
+                now_ns=obs.captured_ns,
+            )
             return None
 
         # If continuity limit is None (T1 contract), auto-match is disabled!
         if not self.profile.can_auto_match():
+            supp_before = len(self._support_sequences)
             self._clear_support_window()
+            self._emit_event(
+                sequence=obs.sequence,
+                event_type="reset",
+                accepted=False,
+                reset_reason="auto_match_disabled",
+                support_before=supp_before,
+                support_after=0,
+                candidate_before=self._current_candidate,
+                candidate_after=None,
+                terminal_status=None,
+                terminal_identity=None,
+                now_ns=obs.captured_ns,
+            )
             return None
 
         # Check minimum interval from previous support frame (>= 200ms)
@@ -239,29 +401,83 @@ class SessionEngine:
             and (obs.captured_ns - self._last_support_ns) < min_interval_ns
         ):
             # Too fast, skip accumulating
+            self._emit_event(
+                sequence=obs.sequence,
+                event_type="interval_skip",
+                accepted=False,
+                reset_reason=None,
+                support_before=len(self._support_sequences),
+                support_after=len(self._support_sequences),
+                candidate_before=self._current_candidate,
+                candidate_after=self._current_candidate,
+                terminal_status=None,
+                terminal_identity=None,
+                now_ns=obs.captured_ns,
+            )
             return None
 
         # Cross-person accumulation check
         if self._current_candidate != top_identity:
             # Switched to a different qualified person -> reset and start at 1
+            prev_cand = self._current_candidate
+            prev_supp = len(self._support_sequences)
             self._current_candidate = top_identity
             self._support_sequences = [obs.sequence]
             self._last_support_ns = obs.captured_ns
-        else:
-            # Same identity -> accumulate support
-            self._support_sequences.append(obs.sequence)
-            self._last_support_ns = obs.captured_ns
-
-        # Check if required support reached
-        if len(self._support_sequences) >= self.profile.required_support:
-            return self._terminate_terminal(
-                status=SessionStatus.matched,
-                identity=self._current_candidate,
-                reason_codes=(f"supported_{len(self._support_sequences)}_frames",),
+            is_term = len(self._support_sequences) >= self.profile.required_support
+            term_status = SessionStatus.matched.value if is_term else None
+            term_id = self._current_candidate if is_term else None
+            self._emit_event(
+                sequence=obs.sequence,
+                event_type="identity_change",
+                accepted=True,
+                reset_reason=None,
+                support_before=prev_supp,
+                support_after=1,
+                candidate_before=prev_cand,
+                candidate_after=top_identity,
+                terminal_status=term_status,
+                terminal_identity=term_id,
                 now_ns=obs.captured_ns,
             )
+            if is_term:
+                return self._terminate_terminal(
+                    status=SessionStatus.matched,
+                    identity=self._current_candidate,
+                    reason_codes=(f"supported_{len(self._support_sequences)}_frames",),
+                    now_ns=obs.captured_ns,
+                )
+        else:
+            # Same identity -> accumulate support
+            prev_supp = len(self._support_sequences)
+            self._support_sequences.append(obs.sequence)
+            self._last_support_ns = obs.captured_ns
+            is_term = len(self._support_sequences) >= self.profile.required_support
+            term_status = SessionStatus.matched.value if is_term else None
+            term_id = self._current_candidate if is_term else None
+            self._emit_event(
+                sequence=obs.sequence,
+                event_type="continuity",
+                accepted=True,
+                reset_reason=None,
+                support_before=prev_supp,
+                support_after=len(self._support_sequences),
+                candidate_before=self._current_candidate,
+                candidate_after=self._current_candidate,
+                terminal_status=term_status,
+                terminal_identity=term_id,
+                now_ns=obs.captured_ns,
+            )
+            if is_term:
+                return self._terminate_terminal(
+                    status=SessionStatus.matched,
+                    identity=self._current_candidate,
+                    reason_codes=(f"supported_{len(self._support_sequences)}_frames",),
+                    now_ns=obs.captured_ns,
+                )
 
         return None
+
 
     def finish(self, now_ns: int, reason: str = "timeout") -> SessionResult:
         """Explicitly conclude session at deadline, cancellation, or manual stop."""

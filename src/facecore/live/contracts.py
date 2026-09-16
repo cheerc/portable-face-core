@@ -306,6 +306,118 @@ class FrameDiagnostics:
     scoring_missing_reason: str | None = None
     stage_durations_ms: dict[str, float] = field(default_factory=dict)
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sequence": self.sequence,
+            "original_shape": list(self.original_shape),
+            "normalized_shape": list(self.normalized_shape),
+            "orientation": self.orientation,
+            "mirrored": self.mirrored,
+            "face_count": self.face_count,
+            "detector_confidence": self.detector_confidence,
+            "face_box": list(self.face_box) if self.face_box is not None else None,
+            "landmarks": (
+                [list(pt) for pt in self.landmarks]
+                if self.landmarks is not None
+                else None
+            ),
+            "landmark_confidence_is_constant": self.landmark_confidence_is_constant,
+            "shorter_side_px": self.shorter_side_px,
+            "sharpness": self.sharpness,
+            "mean_luma": self.mean_luma,
+            "clipped_fraction": self.clipped_fraction,
+            "yaw_deg": self.yaw_deg,
+            "pitch_deg": self.pitch_deg,
+            "quality_status": self.quality_status,
+            "quality_reason_codes": list(self.quality_reason_codes),
+            "detection_missing_reason": self.detection_missing_reason,
+            "quality_missing_reason": self.quality_missing_reason,
+            "scoring_missing_reason": self.scoring_missing_reason,
+            "stage_durations_ms": dict(self.stage_durations_ms),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FrameDiagnostics:
+        face_box_raw = data.get("face_box")
+        face_box: tuple[float, float, float, float] | None = None
+        if face_box_raw is not None:
+            face_box = (
+                float(face_box_raw[0]),
+                float(face_box_raw[1]),
+                float(face_box_raw[2]),
+                float(face_box_raw[3]),
+            )
+        landmarks_raw = data.get("landmarks")
+        landmarks: tuple[tuple[float, float], ...] | None = None
+        if landmarks_raw is not None:
+            landmarks = tuple(
+                (float(pt[0]), float(pt[1])) for pt in landmarks_raw
+            )
+        raw_durations = data.get("stage_durations_ms", {})
+        durations = (
+            {k: float(v) for k, v in raw_durations.items()}
+            if isinstance(raw_durations, dict)
+            else {}
+        )
+        orig_shape = tuple(int(x) for x in data["original_shape"])
+        norm_shape = tuple(int(x) for x in data["normalized_shape"])
+        return cls(
+            sequence=int(data["sequence"]),
+            original_shape=(orig_shape[0], orig_shape[1], orig_shape[2]),
+            normalized_shape=(norm_shape[0], norm_shape[1], norm_shape[2]),
+            orientation=int(data["orientation"]),
+            mirrored=bool(data["mirrored"]),
+            face_count=int(data["face_count"]),
+            detector_confidence=(
+                float(data["detector_confidence"])
+                if data.get("detector_confidence") is not None
+                else None
+            ),
+            face_box=face_box,
+            landmarks=landmarks,
+            landmark_confidence_is_constant=bool(
+                data.get("landmark_confidence_is_constant", True)
+            ),
+            shorter_side_px=(
+                int(data["shorter_side_px"])
+                if data.get("shorter_side_px") is not None
+                else None
+            ),
+            sharpness=(
+                float(data["sharpness"])
+                if data.get("sharpness") is not None
+                else None
+            ),
+            mean_luma=(
+                float(data["mean_luma"])
+                if data.get("mean_luma") is not None
+                else None
+            ),
+            clipped_fraction=(
+                float(data["clipped_fraction"])
+                if data.get("clipped_fraction") is not None
+                else None
+            ),
+            yaw_deg=(
+                float(data["yaw_deg"])
+                if data.get("yaw_deg") is not None
+                else None
+            ),
+            pitch_deg=(
+                float(data["pitch_deg"])
+                if data.get("pitch_deg") is not None
+                else None
+            ),
+            quality_status=data.get("quality_status"),
+            quality_reason_codes=tuple(
+                str(r) for r in data.get("quality_reason_codes", ())
+            ),
+            detection_missing_reason=data.get("detection_missing_reason"),
+            quality_missing_reason=data.get("quality_missing_reason"),
+            scoring_missing_reason=data.get("scoring_missing_reason"),
+            stage_durations_ms=durations,
+        )
+
 
 @dataclass(frozen=True)
 class DecisionEvent:
@@ -323,3 +435,33 @@ class DecisionEvent:
     terminal_identity: str | None
     deadline_remaining_ms: float
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sequence": self.sequence,
+            "event_type": self.event_type,
+            "accepted": self.accepted,
+            "reset_reason": self.reset_reason,
+            "support_before": self.support_before,
+            "support_after": self.support_after,
+            "candidate_before": self.candidate_before,
+            "candidate_after": self.candidate_after,
+            "terminal_status": self.terminal_status,
+            "terminal_identity": self.terminal_identity,
+            "deadline_remaining_ms": self.deadline_remaining_ms,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> DecisionEvent:
+        return cls(
+            sequence=int(data["sequence"]),
+            event_type=str(data["event_type"]),
+            accepted=bool(data["accepted"]),
+            reset_reason=data.get("reset_reason"),
+            support_before=int(data["support_before"]),
+            support_after=int(data["support_after"]),
+            candidate_before=data.get("candidate_before"),
+            candidate_after=data.get("candidate_after"),
+            terminal_status=data.get("terminal_status"),
+            terminal_identity=data.get("terminal_identity"),
+            deadline_remaining_ms=float(data["deadline_remaining_ms"]),
+        )

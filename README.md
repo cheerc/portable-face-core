@@ -144,6 +144,7 @@ src/
     │   ├── __init__.py
     │   ├── __main__.py
     │   ├── cli.py
+    │   ├── diagnostics.py
     │   ├── experiment.py
     │   ├── keys.py
     │   ├── recorder.py
@@ -248,6 +249,8 @@ tests/
 │   ├── test_cli.py
 │   ├── test_cli_lifecycle.py
 │   ├── test_device_passthrough.py
+│   ├── test_diagnostic_privacy.py
+│   ├── test_diagnostics.py
 │   ├── test_experiment.py
 │   ├── test_main_entry.py
 │   ├── test_recorder.py

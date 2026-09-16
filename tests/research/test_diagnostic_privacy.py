@@ -1,15 +1,15 @@
-"""E2 RED privacy and lifecycle tests: byte-level at-rest encryption, TTL separation, deletion (Phase 2B §12 E2).
+"""E2 privacy and lifecycle tests: byte-level encryption, TTL, deletion (2B §12 E2).
 
 Source of truth:
-    - docs/specs/2026-09-16-phase2b-mac-recognition-research.md §6 (minimal diagnostics & truth isolation);
-    - docs/plans/2026-09-16-phase2b-mac-recognition-execution-plan.md §12 E2 Acceptance;
+    - docs/specs/2026-09-16-phase2b-mac-recognition-research.md §6;
+    - docs/plans/2026-09-16-phase2b-mac-recognition-execution-plan.md §12 E2;
     - ADR 0010 (at-rest encryption under repo-external store).
 
 Mandatory constraints:
-    1. Byte-level inspection via assert_no_plaintext_leak with scan root passed as parent
-       (covering both store_root and key_dir).
-    2. Sensitive literal set widened to include participant IDs, ground-truth identities,
-       and probe labels.
+    1. Byte-level inspection via assert_no_plaintext_leak with scan root passed as
+       parent (covering both store_root and key_dir).
+    2. Sensitive literal set widened to include participant IDs, ground-truth
+       identities, and probe labels.
     3. Immutable RED commit established before GREEN implementation.
 """
 
@@ -24,12 +24,15 @@ from facecore.contracts.crypto import StoreCorruptionError
 from facecore.live.contracts import (
     FrameDiagnostics,
     FramePacket,
-    ResearchProfile,
     SessionResult,
     SessionStatus,
 )
-from facecore.research.diagnostics import FrameTraceEntry, SessionTrace
-from facecore.research.experiment import AttemptRecord, EvaluationLabel, ExperimentManifest
+from facecore.research.diagnostics import FrameTraceEntry
+from facecore.research.experiment import (
+    AttemptRecord,
+    EvaluationLabel,
+    ExperimentManifest,
+)
 from facecore.research.records import ConsentRecord
 from facecore.research.recorder import ResearchRecorder
 from tests.conftest import assert_no_plaintext_leak
@@ -118,7 +121,13 @@ def _sample_trace_entry(
         face_count=1,
         detector_confidence=0.96,
         face_box=(120.0, 120.0, 140.0, 140.0),
-        landmarks=((130.0, 140.0), (190.0, 140.0), (160.0, 170.0), (140.0, 200.0), (180.0, 200.0)),
+        landmarks=(
+            (130.0, 140.0),
+            (190.0, 140.0),
+            (160.0, 170.0),
+            (140.0, 200.0),
+            (180.0, 200.0),
+        ),
         sharpness=52.3,
         mean_luma=120.0,
         clipped_fraction=0.005,
@@ -144,9 +153,11 @@ def _sample_trace_entry(
 
 
 class TestDiagnosticPrivacyAtRest:
-    """Verify that trace storage is strictly AEAD-encrypted with zero plaintext leaks."""
+    """Verify trace storage is strictly AEAD-encrypted with zero plaintext leaks."""
 
-    def test_trace_bytes_at_rest_contain_no_sensitive_literals(self, tmp_path: Path) -> None:
+    def test_trace_bytes_at_rest_contain_no_sensitive_literals(
+        self, tmp_path: Path
+    ) -> None:
         now = _utc("2026-09-16T10:00:00Z")
         rec = _recorder(tmp_path, now)
 
@@ -154,7 +165,9 @@ class TestDiagnosticPrivacyAtRest:
         secret_identity = "person-secret-truth-042"
         consent = _consent("sess-priv-001", participant_id=participant_id)
         manifest = _manifest("exp-priv-001")
-        attempt = _attempt("att-priv-001", "exp-priv-001", participant_id=participant_id)
+        attempt = _attempt(
+            "att-priv-001", "exp-priv-001", participant_id=participant_id
+        )
 
         rec.begin_attempt(manifest, attempt, consent)
         entry = _sample_trace_entry(sequence=1, identity_id=secret_identity)
@@ -167,7 +180,7 @@ class TestDiagnosticPrivacyAtRest:
             kind="enrolled",
             identity_id=secret_identity,
             actor_ref="evaluator-alice",
-            labeled_at_utc="2026-09-16T10:05:00Z",
+            labeled_at="2026-09-16T10:05:00Z",
         )
         rec.write_label(label)
 
@@ -185,7 +198,9 @@ class TestDiagnosticPrivacyAtRest:
 class TestDiagnosticLifecycleAndTtl:
     """Verify TTL separation (7d image vs 30d trace/record), deletion, and tampering."""
 
-    def test_ttl_separation_image_7d_purged_trace_30d_retained(self, tmp_path: Path) -> None:
+    def test_ttl_separation_image_7d_purged_trace_30d_retained(
+        self, tmp_path: Path
+    ) -> None:
         start_time = _utc("2026-09-16T10:00:00Z")
         rec = _recorder(tmp_path, start_time)
 
@@ -203,7 +218,12 @@ class TestDiagnosticLifecycleAndTtl:
         rec.begin(session_id, consent)
         # Create a dummy image packet
         import numpy as np
-        img_packet = FramePacket(sequence=1, captured_ns=0, rgb=np.zeros((100, 100, 3), dtype=np.uint8))
+
+        img_packet = FramePacket(
+            sequence=1,
+            captured_ns=0,
+            rgb=np.zeros((100, 100, 3), dtype=np.uint8),
+        )
         rec.append_frame(img_packet)
         dummy_result = SessionResult(
             session_id=session_id,
@@ -222,9 +242,15 @@ class TestDiagnosticLifecycleAndTtl:
             gallery_digest="d1",
         )
         rec.commit(dummy_result)
-        rec.finish_attempt(attempt_id, result=dummy_result, operational_status="completed", error_code=None)
+        rec.finish_attempt(
+            attempt_id,
+            result=dummy_result,
+            operational_status="completed",
+            error_code=None,
+        )
 
-        # At Day 8 (now = start + 8 days): image TTL (7d) is expired, but record TTL (30d) is active!
+        # At Day 8 (now = start + 8 days): image TTL (7d) is expired,
+        # but record TTL (30d) is active!
         day8 = start_time + timedelta(days=8)
         purged = rec.purge_expired(day8)
         assert session_id in purged

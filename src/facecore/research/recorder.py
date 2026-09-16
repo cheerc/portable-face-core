@@ -49,6 +49,7 @@ from facecore.contracts.crypto import (
 )
 from facecore.errors import FaceCoreError
 from facecore.live.contracts import FramePacket, SessionResult
+from facecore.research.diagnostics import FrameTraceEntry, SessionTrace
 from facecore.research.experiment import (
     ATTEMPT_STATUSES,
     STUDY_SCHEMA_VERSION,
@@ -609,6 +610,7 @@ class ResearchRecorder:
     # (``rk_{attempt_id}``) via ResearchKeyProvider.
     _ATTEMPTS_DIR = "_attempts"
     _LABELS_DIR = "_labels"
+    _TRACES_DIR = "_traces"
 
     def _attempt_dir(self, experiment_id: str) -> Path:
         if not experiment_id or "/" in experiment_id:
@@ -619,6 +621,11 @@ class ResearchRecorder:
         if not attempt_id or "/" in attempt_id:
             raise ValueError(f"invalid attempt_id {attempt_id!r}")
         return self._store / self._LABELS_DIR / attempt_id
+
+    def _trace_dir(self, attempt_id: str) -> Path:
+        if not attempt_id or "/" in attempt_id:
+            raise ValueError(f"invalid attempt_id {attempt_id!r}")
+        return self._store / self._TRACES_DIR / attempt_id
 
     def begin_attempt(
         self,
@@ -879,3 +886,126 @@ class ResearchRecorder:
         label_dir = self._label_dir(attempt_id)
         if label_dir.is_dir():
             shutil.rmtree(label_dir, ignore_errors=True)
+        trace_dir = self._trace_dir(attempt_id)
+        if trace_dir.is_dir():
+            shutil.rmtree(trace_dir, ignore_errors=True)
+
+    # -- E2: diagnostic trace (Phase 2B §12 E2) -----------------------------
+    def append_trace(self, attempt_id: str, entry: FrameTraceEntry) -> None:
+        """Persist an encrypted frame trace entry under the attempt record DEK.
+
+        Traces are sensitive research data: AEAD-encrypted at rest with
+        length-prefixed research AAD.
+        """
+        self._check_clock(self._clock())
+        trace_dir = self._trace_dir(attempt_id)
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        target_path = trace_dir / f"frame_{entry.sequence:04d}.enc"
+        if target_path.is_file():
+            raise ValueError(
+                f"trace frame {entry.sequence} for attempt {attempt_id!r} "
+                "already exists"
+            )
+        try:
+            dek = self._keys.get_key(f"rk_{attempt_id}")
+        except KeyNotFoundError as exc:
+            raise KeyError(
+                f"attempt {attempt_id!r} key not found for trace append"
+            ) from exc
+
+        plaintext = json.dumps(entry.to_dict(), sort_keys=True).encode("utf-8")
+        aad = build_research_aad(
+            STUDY_SCHEMA_VERSION, attempt_id, "trace_frame", str(entry.sequence)
+        )
+        blob = AeadCipher(dek).encrypt(plaintext, aad)
+        self._atomic_write_bytes(target_path, _blob_to_wire(blob))
+
+    def read_trace(self, attempt_id: str) -> SessionTrace:
+        """Read and decrypt all frame trace entries for an attempt."""
+        trace_dir = self._trace_dir(attempt_id)
+        if not trace_dir.is_dir():
+            raise KeyError(f"no traces found for attempt {attempt_id!r}")
+        try:
+            dek = self._keys.get_key(f"rk_{attempt_id}")
+        except KeyNotFoundError as exc:
+            raise KeyError(f"key not found for attempt {attempt_id!r}") from exc
+
+        entries: list[FrameTraceEntry] = []
+        for path in sorted(trace_dir.glob("frame_*.enc")):
+            seq_str = path.stem.split("_")[1]
+            if not seq_str.isdigit():
+                continue
+            seq_num = int(seq_str)
+            try:
+                wire = path.read_bytes()
+                blob = _blob_from_wire(wire)
+            except Exception as exc:
+                raise StoreCorruptionError(
+                    f"corrupt trace file {path.name!r} for attempt {attempt_id!r}"
+                ) from exc
+
+            aad = build_research_aad(
+                STUDY_SCHEMA_VERSION, attempt_id, "trace_frame", str(seq_num)
+            )
+            try:
+                plaintext = AeadCipher(dek).decrypt(blob, aad)
+            except Exception as exc:
+                raise StoreCorruptionError(
+                    f"tamper or AAD mismatch in trace {path.name!r} "
+                    f"for attempt {attempt_id!r}"
+                ) from exc
+
+            try:
+                data = json.loads(plaintext.decode("utf-8"))
+                entries.append(FrameTraceEntry.from_dict(data))
+            except Exception as exc:
+                raise StoreCorruptionError(
+                    f"invalid trace entry in {path.name!r} "
+                    f"for attempt {attempt_id!r}"
+                ) from exc
+
+        if not entries:
+            raise KeyError(
+                f"no valid trace entries found for attempt {attempt_id!r}"
+            )
+
+        _, record, meta = self._find_attempt_and_path(attempt_id)
+        manifest_digest = meta.get("manifest_digest", "") if meta else ""
+        start_ns = entries[0].captured_ns if entries else 0
+        deadline_ns = start_ns + 5_000_000_000
+        end_ns = entries[-1].captured_ns if entries else start_ns
+
+        terminal_result: SessionResult | None = None
+        if record and record.bundle_ref:
+            sess_dir = self._sess_dir(record.bundle_ref)
+            m_path = sess_dir / "manifest.json"
+            if m_path.is_file():
+                try:
+                    m_data = json.loads(m_path.read_text())
+                    if "result" in m_data:
+                        terminal_result = SessionResult.from_dict(m_data["result"])
+                except Exception:
+                    pass
+
+        collection_stop = "in_progress"
+        if record and record.operational_status in (
+            "completed",
+            "timeout",
+            "cancelled",
+        ):
+            collection_stop = record.operational_status
+        elif terminal_result is not None:
+            collection_stop = terminal_result.status.value
+
+        return SessionTrace(
+            schema_version=STUDY_SCHEMA_VERSION,
+            attempt_id=attempt_id,
+            manifest_digest=manifest_digest,
+            session_start_ns=start_ns,
+            deadline_ns=deadline_ns,
+            session_end_ns=end_ns,
+            collection_stop_reason=collection_stop,
+            is_complete=(collection_stop in ("completed", "matched", "timeout")),
+            entries=tuple(entries),
+            terminal_result=terminal_result,
+        )
