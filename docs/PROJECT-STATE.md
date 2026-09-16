@@ -1,6 +1,6 @@
 # Project State
 
-更新：2026-09-16。證據基準：main `d4147f507d1c0d7d90b1874a05f8dc9cfcda85dd`（PR #68）。Phase 2A 結案（decision `d-20260916002300248295-1`）。啟動 session 時仍須查 live main／board；本檔不是 daemon 工作快照。
+更新：2026-09-16。證據基準：main `dab9220c7e1241afddb36679e2b1642e84c73adc`（PR #69）。Phase 2A 結案（decision `d-20260916002300248295-1`）；Phase 2B 文件與研究工具工程已授權開工（decision `d-20260916012440460338-3`），研究能力尚未實作、尚無辨識有效性證據。啟動 session 時仍須查 live main／board；本檔不是 daemon 工作快照。
 
 ## 現在在哪裡
 
@@ -12,7 +12,7 @@
 - **Phase 2A 結案（2026-09-16，七項）：** T1–T8 實作鏈；前處理不變性修復 contract v3（letterbox PR #58、5 點對齊 PR-2 PR #60、spec 補正 PR #57）；治理機制 PR #59＋helper 清理 PR #62；真機故障路徑 worker 競態修復 PR #66（exact-HEAD＋landed HEAD 雙真機驗 PASS）；修復後 smoke live-v3-001／v3-002 鏈路通（不以認對驗收）；檢查腳本化 PR #67；本機列舉 PR #68（在場確認 PASS）。
 - 真人 session 全部依同意設計刪除（零殘留），目前**沒有任何封存 session 語料**。
 - 據此可宣稱：**Phase 2A 工具鏈就緒（含前處理正確性與真機端到端執行）**。不可宣稱：校準完成、辨識可用、誤認率為 0、準備部署。
-- **Phase 2A／2B 界線：** 2A＝工具正確性＋前處理不變性＋團隊可自足的 §9 項目，**不設準確率目標**；2B＝研究有效性（§5 對照臂、§8 分母、holdout 切分、未註冊參與者 session），**零授權，需另行決定**。引導 UI 定案為 **pyside6** 真窗＋方形對齊框（Cocoa 關閉）；方形框為採集側措施，不替代 §6 不變量。
+- **Phase 2A／2B 界線：** 2A＝工具正確性＋前處理不變性＋團隊可自足的 §9 項目，**不設準確率目標**；2B＝研究有效性（§5 對照臂、§8 分母、holdout 切分、未註冊參與者 session）。**2B 的文件（G0）與研究工具工程（G1）已授權；採集（G3）、改善／調參（G4）、holdout 解封（G5）仍未開。** 契約見 [Phase 2B 研究規格](specs/2026-09-16-phase2b-mac-recognition-research.md)。引導 UI 定案為 **pyside6** 真窗＋方形對齊框（Cocoa 關閉）；方形框為採集側措施，不替代 §6 不變量。
 
 ## 功能與 evidence 的界線
 
@@ -47,18 +47,20 @@ Baseline/adaptive 有不同規則；2/13 對 0/13 不是純粹同 operating poin
 2. **1B 工程／研究 closeout：** 已交付功能與 M3 真圖負向／閾值 evidence；保留未測的真實 promotion、long-horizon drift 和現場失敗恢復限制。不能僅因 M3 跑完便自動宣布全部 spec acceptance 達成。
 3. **選型／operating point：OPEN。** 未決部署準確性不禁止經獨立設計的受控 Mac 研究；研究不降低原有模型 integrity/license/provenance gate。
 4. **Phase 2A：已結案（2026-09-16）。** 上述七項交付完成；未驗項 retained（見下），不構成結案阻擋。
-5. **Android/iOS／認證／產品整合：另行決策。** 代表性 gallery 重校準在部署／目標容量宣稱前完成；跨 runtime 與真人 carrier 在 mobile 評估前完成。相機引導、多幀穩定不等於 liveness。
+5. **Phase 2B：文件（G0）與研究工具工程（G1）已授權；採集（G3）、改善／調參（G4）、holdout 解封（G5）未開。** 範圍、分母契約、分析觸發與完成判定見 [Phase 2B 研究規格](specs/2026-09-16-phase2b-mac-recognition-research.md) 與[執行計畫](plans/2026-09-16-phase2b-mac-recognition-execution-plan.md)；證據隔離取捨見 [ADR 0010](decisions/0010-phase2b-evidence-isolation.md)。工程期間只用 synthetic／test double；任何真實相機操作需 operator 在場。**2B 目前沒有任何辨識有效性證據。**
+6. **Android/iOS／認證／產品整合：另行決策。** 代表性 gallery 重校準在部署／目標容量宣稱前完成；跨 runtime 與真人 carrier 在 mobile 評估前完成。相機引導、多幀穩定不等於 liveness。
 
 ## 未驗 retained（不隱含派工授權）
 
 - 真機 disconnect 模擬、OS 相機權限層驗證。
-- 辨識正確性（屬 2B，需另行決定）。
-- 引導 UI pyside6 真窗、未註冊參與者 session、§5 對照臂、§8 分母、holdout 切分（全屬 2B，零授權）。
+- 辨識正確性（屬 2B；工具工程已開工，尚無任何真實 session 證據）。
+- 引導 UI pyside6 真窗、§5 對照臂、§8 分母、holdout 切分（屬 2B 工程範圍，未實作）；未註冊參與者 session 另需 G3 採集授權與該參與者個別同意。
+- 研究 evidence plumbing 三項已知缺口：attempt 帳本晚於 camera／model setup、`--fixed-seconds` 未實作、replay 以重放時鐘重建 processed（見執行計畫 §10）。修復前，雙臂比較與 session 級分母不得用於任何有效性宣稱。
 - R4 缺檔 seq/rank 對位、各臂 refused 計數／雜檔處理、ORT teardown crash、continuity 位移界線初值（0.50 仍為初值）、ORT 端到端 5fps 餘量。
 
 ## Next Session
 
 1. 讀本檔、母規格、ADR 0008／0009、Mac 研究設計；查 git／task／inbox 活源。
-2. Phase 2A 已結案；2B 零授權——任何 2B 工作需另行決定與派工。
+2. Phase 2A 已結案；Phase 2B 走 G0–G6 關卡，目前 G0／G1 已開，G3 採集、G4 改善、G5 holdout 未開。每個工程包由 lead 建 board task 後才派工，不從文件直接開工。
 3. Plan 規範：相機錄製需個別參與者同意；文件批准不構成同意。
 4. 不重開已完成的 P0／2A；不把歷史骨架當現況；不重新派已完成任務。
