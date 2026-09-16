@@ -20,14 +20,14 @@ import hashlib
 from pathlib import Path
 import time
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import numpy as np
 from PIL import Image
 
 from facecore.contracts.policy import PolicyProfile
 from facecore.eval.corpus import load_manifest
-from facecore.live.contracts import FrameObservation, FramePacket
+from facecore.live.contracts import FrameDiagnostics, FrameObservation, FramePacket
 from facecore.pipeline.align import align_crop
 from facecore.pipeline.decode import DecodedImage
 from facecore.pipeline.detect import DetectedFace, enforce_single_face
@@ -204,8 +204,16 @@ def build_research_gallery(
     )
 
 
-def score_frame(frame: FramePacket, context: ScoringContext) -> FrameObservation:
-    """Score a single incoming camera FramePacket deterministically."""
+def score_frame(
+    frame: FramePacket,
+    context: ScoringContext,
+    *,
+    diagnostic_sink: Callable[[FrameDiagnostics], None] | None = None,
+) -> FrameObservation:
+    """Score a single incoming camera FramePacket deterministically.
+
+    Optionally emits structured FrameDiagnostics to diagnostic_sink if provided.
+    """
     # Orientation normalization:
     # If orientation is nonzero, rotate pixels so up is up.
     # Note: frame.mirrored affects only UI preview display;
@@ -218,6 +226,7 @@ def score_frame(frame: FramePacket, context: ScoringContext) -> FrameObservation
             rgb_pixels = np.ascontiguousarray(np.rot90(rgb_pixels, k=k))
 
     height, width, _ = rgb_pixels.shape
+    orig_h, orig_w, orig_c = frame.rgb.shape
     decoded = DecodedImage(
         width=width,
         height=height,
@@ -225,13 +234,51 @@ def score_frame(frame: FramePacket, context: ScoringContext) -> FrameObservation
         pixels=rgb_pixels.tobytes(),
     )
 
+    stage_durations_ms: dict[str, float] = {}
+
     # 1. Detection
+    t_det_0 = time.perf_counter_ns()
     detected_faces: list[DetectedFace] = context.detector.detect(decoded)
+    t_det_1 = time.perf_counter_ns()
+    stage_durations_ms["detection"] = (t_det_1 - t_det_0) / 1_000_000.0
+
     status, reason, face = enforce_single_face(detected_faces)
 
     if status != "ok" or face is None:
         # Zero or multiple faces -> quality rejected, do NOT embed
         reasons = (reason,) if reason else ("unknown_face_count_error",)
+        missing_reason = (
+            "no_face_detected"
+            if len(detected_faces) == 0
+            else "multiple_faces"
+        )
+        if diagnostic_sink is not None:
+            diag = FrameDiagnostics(
+                sequence=frame.sequence,
+                original_shape=(orig_h, orig_w, orig_c),
+                normalized_shape=(height, width, 3),
+                orientation=frame.orientation,
+                mirrored=frame.mirrored,
+                face_count=len(detected_faces),
+                detector_confidence=None,
+                face_box=None,
+                landmarks=None,
+                landmark_confidence_is_constant=True,
+                shorter_side_px=None,
+                sharpness=None,
+                mean_luma=None,
+                clipped_fraction=None,
+                yaw_deg=None,
+                pitch_deg=None,
+                quality_status=None,
+                quality_reason_codes=(),
+                detection_missing_reason=missing_reason,
+                quality_missing_reason=missing_reason,
+                scoring_missing_reason=missing_reason,
+                stage_durations_ms=stage_durations_ms,
+            )
+            diagnostic_sink(diag)
+
         return FrameObservation(
             sequence=frame.sequence,
             captured_ns=frame.captured_ns,
@@ -247,6 +294,7 @@ def score_frame(frame: FramePacket, context: ScoringContext) -> FrameObservation
         )
 
     # 2. Alignment & Quality Gate
+    t_qual_0 = time.perf_counter_ns()
     crop = align_crop(decoded.pixels, decoded.width, decoded.height, face)
 
     # Measure face geometry and quality
@@ -270,9 +318,40 @@ def score_frame(frame: FramePacket, context: ScoringContext) -> FrameObservation
         pitch_deg=pitch_deg,
         landmarks=landmarks,
     )
+    t_qual_1 = time.perf_counter_ns()
+    stage_durations_ms["quality"] = (t_qual_1 - t_qual_0) / 1_000_000.0
+
+    raw_landmarks = tuple((float(x), float(y)) for (x, y) in face.landmarks)
 
     if quality_verdict.status != "accepted":
         # Quality rejection -> do NOT embed
+        if diagnostic_sink is not None:
+            diag = FrameDiagnostics(
+                sequence=frame.sequence,
+                original_shape=(orig_h, orig_w, orig_c),
+                normalized_shape=(height, width, 3),
+                orientation=frame.orientation,
+                mirrored=frame.mirrored,
+                face_count=1,
+                detector_confidence=face.confidence,
+                face_box=face.box,
+                landmarks=raw_landmarks,
+                landmark_confidence_is_constant=True,
+                shorter_side_px=shorter_side_px,
+                sharpness=sharpness,
+                mean_luma=mean_luma,
+                clipped_fraction=clipped_fraction,
+                yaw_deg=yaw_deg,
+                pitch_deg=pitch_deg,
+                quality_status=quality_verdict.status,
+                quality_reason_codes=tuple(quality_verdict.reason_codes),
+                detection_missing_reason=None,
+                quality_missing_reason=None,
+                scoring_missing_reason="quality_rejected",
+                stage_durations_ms=stage_durations_ms,
+            )
+            diagnostic_sink(diag)
+
         return FrameObservation(
             sequence=frame.sequence,
             captured_ns=frame.captured_ns,
@@ -288,6 +367,7 @@ def score_frame(frame: FramePacket, context: ScoringContext) -> FrameObservation
         )
 
     # 3. Embedding & Gallery Scoring (Only when single face AND quality accepted)
+    t_embed_0 = time.perf_counter_ns()
     probe_vec, embed_model = context.embedder.embed(crop)
     if embed_model != context.model_version:
         raise ValueError(
@@ -300,11 +380,40 @@ def score_frame(frame: FramePacket, context: ScoringContext) -> FrameObservation
     for ident, gal_vec in context.gallery.embeddings.items():
         score = cosine_score(probe_vec, gal_vec)
         identity_scores[ident] = score
+    t_embed_1 = time.perf_counter_ns()
+    stage_durations_ms["embed"] = (t_embed_1 - t_embed_0) / 1_000_000.0
 
     t_proc_end_ns = time.monotonic_ns()
     # Guard monotonic time ordering
     if t_proc_end_ns < frame.captured_ns:
         t_proc_end_ns = frame.captured_ns
+
+    if diagnostic_sink is not None:
+        diag = FrameDiagnostics(
+            sequence=frame.sequence,
+            original_shape=(orig_h, orig_w, orig_c),
+            normalized_shape=(height, width, 3),
+            orientation=frame.orientation,
+            mirrored=frame.mirrored,
+            face_count=1,
+            detector_confidence=face.confidence,
+            face_box=face.box,
+            landmarks=raw_landmarks,
+            landmark_confidence_is_constant=True,
+            shorter_side_px=shorter_side_px,
+            sharpness=sharpness,
+            mean_luma=mean_luma,
+            clipped_fraction=clipped_fraction,
+            yaw_deg=yaw_deg,
+            pitch_deg=pitch_deg,
+            quality_status="accepted",
+            quality_reason_codes=(),
+            detection_missing_reason=None,
+            quality_missing_reason=None,
+            scoring_missing_reason=None,
+            stage_durations_ms=stage_durations_ms,
+        )
+        diagnostic_sink(diag)
 
     return FrameObservation(
         sequence=frame.sequence,
