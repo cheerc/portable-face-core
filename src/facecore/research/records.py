@@ -105,6 +105,62 @@ class FrameScore:
 
 
 @dataclass(frozen=True)
+class CollectionWindow:
+    """E3 fixed-window collector evidence (arm-shared, B-independent).
+
+    Records the provenance the paired comparison actually needs: the
+    original collection start/deadline/end, why collection stopped, and
+    whether the window is complete. A full 25-frame budget that arrives
+    early is ``max_frames_reached`` (incomplete), never a fabricated 5s.
+    """
+
+    session_id: str
+    collection_start_ns: int
+    collection_deadline_ns: int
+    collection_end_ns: int | None
+    collection_stop_reason: str
+    collection_complete: bool
+    frames_sampled: int
+
+    def __post_init__(self) -> None:
+        if not self.session_id:
+            raise ValueError("session_id must not be empty")
+        if self.collection_start_ns < 0:
+            raise ValueError("collection_start_ns must be >= 0")
+        if self.collection_deadline_ns < self.collection_start_ns:
+            raise ValueError("collection_deadline_ns must be >= start")
+        if self.frames_sampled < 0:
+            raise ValueError("frames_sampled must be >= 0")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "collection_start_ns": self.collection_start_ns,
+            "collection_deadline_ns": self.collection_deadline_ns,
+            "collection_end_ns": self.collection_end_ns,
+            "collection_stop_reason": self.collection_stop_reason,
+            "collection_complete": self.collection_complete,
+            "frames_sampled": self.frames_sampled,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CollectionWindow:
+        return cls(
+            session_id=str(data["session_id"]),
+            collection_start_ns=int(data["collection_start_ns"]),
+            collection_deadline_ns=int(data["collection_deadline_ns"]),
+            collection_end_ns=(
+                int(data["collection_end_ns"])
+                if data.get("collection_end_ns") is not None
+                else None
+            ),
+            collection_stop_reason=str(data["collection_stop_reason"]),
+            collection_complete=bool(data["collection_complete"]),
+            frames_sampled=int(data["frames_sampled"]),
+        )
+
+
+@dataclass(frozen=True)
 class ResearchSessionRecord:
     """Research session envelope with isolated ground truth labels."""
 
@@ -115,6 +171,7 @@ class ResearchSessionRecord:
     ground_truth_label: str | None = None
     notes: str | None = None
     frame_scores: tuple[FrameScore, ...] = ()
+    collection_window: CollectionWindow | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != "v1":
@@ -138,6 +195,11 @@ class ResearchSessionRecord:
             raise ValueError(
                 "matched_identity must be None unless status is matched"
             )
+        if (
+            self.collection_window is not None
+            and self.collection_window.session_id != self.session_id
+        ):
+            raise ValueError("collection_window session id does not match")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -148,10 +210,16 @@ class ResearchSessionRecord:
             "ground_truth_label": self.ground_truth_label,
             "notes": self.notes,
             "frame_scores": [entry.to_dict() for entry in self.frame_scores],
+            "collection_window": (
+                self.collection_window.to_dict()
+                if self.collection_window is not None
+                else None
+            ),
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ResearchSessionRecord:
+        window_raw = data.get("collection_window")
         return cls(
             session_id=data["session_id"],
             schema_version=data["schema_version"],
@@ -162,5 +230,10 @@ class ResearchSessionRecord:
             frame_scores=tuple(
                 FrameScore.from_dict(entry)
                 for entry in data.get("frame_scores", [])
+            ),
+            collection_window=(
+                CollectionWindow.from_dict(window_raw)
+                if window_raw is not None
+                else None
             ),
         )

@@ -59,6 +59,7 @@ from facecore.research.experiment import (
 )
 from facecore.research.keys import ResearchKeyProvider
 from facecore.research.records import (
+    CollectionWindow,
     ConsentRecord,
     FrameScore,
     ResearchSessionRecord,
@@ -293,6 +294,7 @@ class ResearchRecorder:
         self,
         result: SessionResult,
         frame_scores: tuple[FrameScore, ...] = (),
+        collection_window: CollectionWindow | None = None,
     ) -> None:
         """Atomically commit the session bundle (record + staged frames)."""
         self._check_clock(self._clock())
@@ -306,6 +308,7 @@ class ResearchRecorder:
             consent=state.consent,
             result=result,
             frame_scores=frame_scores,
+            collection_window=collection_window,
         )
         plaintext = json.dumps(record.to_dict(), sort_keys=True).encode("utf-8")
         cipher = AeadCipher(self._keys.get_key(state.record_key_id))
@@ -333,11 +336,37 @@ class ResearchRecorder:
         del self._active[session_id]
 
     def abort(self, session_id: str, reason: str) -> None:
-        """Discard an uncommitted session (e.g. multi-face); zero residue."""
+        """Discard an uncommitted session (e.g. multi-face); zero residue.
+
+        E3 note: the attempt ledger (``rk_{attempt_id}``) is intentionally
+        NOT destroyed here — image staging and attempt accounting are
+        separate lifecycles, and aborting pixels must not erase the
+        denominator entry. Use ``withdraw_attempt`` for consent withdrawal.
+        """
         self._active.pop(session_id, None)
         sess_dir = self._sess_dir(session_id)
-        self._keys.destroy_session_keys(session_id)
-        if sess_dir.exists():
+        state_keys_destroyed = False
+        if (sess_dir / "manifest.json").is_file() or not sess_dir.exists():
+            # Committed bundle or nothing staged: session keys are safe to
+            # destroy. Otherwise an in-progress staging area exists and its
+            # keys belong to the live session, not the attempt ledger.
+            pass
+        try:
+            state = self._active.get(session_id)
+            if state is None:
+                # No live staging state: only destroy keys namespaced to the
+                # session id itself, never a caller-supplied attempt id.
+                if session_id and "/" not in session_id:
+                    rk_path = self._keys._key_path(f"rk_{session_id}")
+                    ik_path = self._keys._key_path(f"ik_{session_id}")
+                    if rk_path.is_file() or ik_path.is_file():
+                        self._keys.destroy_session_keys(session_id)
+                        state_keys_destroyed = True
+        finally:
+            _ = state_keys_destroyed
+        if sess_dir.exists() and not (sess_dir / "manifest.json").is_file():
+            # Only remove uncommitted staging residue; committed bundles and
+            # the attempt/label/trace sidecars are never touched here.
             shutil.rmtree(sess_dir, ignore_errors=True)
 
     def revoke_image_consent(self, session_id: str) -> None:

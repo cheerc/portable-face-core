@@ -18,7 +18,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from facecore.live.contracts import DecisionEvent, FrameDiagnostics, SessionResult
+from facecore.live.contracts import (
+    DecisionEvent,
+    FrameDiagnostics,
+    FrameObservation,
+    SessionResult,
+)
 from facecore.research.experiment import STUDY_SCHEMA_VERSION
 
 MAX_TRACE_ENTRIES = 25
@@ -51,6 +56,64 @@ class FrameTraceEntry:
     def __post_init__(self) -> None:
         if self.sequence < 1:
             raise ValueError(f"sequence must be >= 1, got {self.sequence}")
+
+    @classmethod
+    def from_observation(
+        cls, obs: FrameObservation, staged_index: int | None = None
+    ) -> FrameTraceEntry:
+        """Build a trace entry from one scored observation (E3 live wiring).
+
+        Preserves the observation's identity-score iteration order exactly;
+        diagnostics carry a structural summary (no pixels/embeddings).
+        """
+        diag = FrameDiagnostics(
+            sequence=obs.sequence,
+            original_shape=(0, 0, 0),
+            normalized_shape=(0, 0, 0),
+            orientation=0,
+            mirrored=False,
+            face_count=obs.face_count,
+            detector_confidence=None,
+            face_box=obs.face_box,
+            landmarks=None,
+            landmark_confidence_is_constant=True,
+            shorter_side_px=None,
+            sharpness=None,
+            mean_luma=None,
+            clipped_fraction=None,
+            yaw_deg=None,
+            pitch_deg=None,
+            quality_status=(
+                "accepted" if obs.quality_pass else "rejected"
+            ),
+            quality_reason_codes=tuple(obs.quality_reasons),
+            detection_missing_reason=(
+                None if obs.face_count > 0 else "no_face_detected"
+            ),
+            quality_missing_reason=(
+                None if obs.quality_pass else "quality_rejected"
+            ),
+            scoring_missing_reason=(
+                None if obs.identity_scores else "no_scores"
+            ),
+        )
+        return cls(
+            sequence=obs.sequence,
+            captured_ns=obs.captured_ns,
+            processed_ns=obs.processed_ns,
+            quality_pass=obs.quality_pass,
+            quality_reasons=tuple(obs.quality_reasons),
+            face_count=obs.face_count,
+            face_box=obs.face_box,
+            identity_score_pairs=tuple(obs.identity_scores.items()),
+            quality_rank=obs.quality_rank,
+            model_generation=obs.model_generation,
+            gallery_digest=obs.gallery_digest,
+            diagnostics=diag,
+            decision_event=None,
+            staged_index=staged_index,
+            stage_missing_reason=None,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
