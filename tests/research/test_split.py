@@ -434,6 +434,43 @@ class TestSplitInvariants:
         contam = recorder.list_contamination("exp-e6")
         assert len(contam) >= 1
 
+    def test_timestamp_suffix_cannot_bypass_freeze_order(
+        self, tmp_path: Path
+    ) -> None:
+        store_dir = tmp_path / "store"
+        key_dir = tmp_path / "keys"
+        recorder = ResearchRecorder(store_dir, key_dir, clock=_now_utc)
+        manifest = _manifest("exp-e6")
+        freeze = freeze_candidate(
+            manifest,
+            code_sha="c" * 40,
+            profile_digest=TEST_PROFILE_DIGEST,
+            analysis_digest="ana-001",
+            planned_visit_ids=("v_future",),
+            frozen_at_utc="2026-09-16T01:00:00Z",
+        )
+        recorder.record_freeze(freeze)
+
+        # 00:59Z is before 01:00Z, despite the +08:00 lexical prefix.
+        before = _attempt(
+            "s_suffix_before",
+            visit_id="v_future",
+            split="holdout",
+            requested_at_utc="2026-09-16T08:59:00+08:00",
+        )
+        with pytest.raises(SplitContaminationError, match="precede"):
+            recorder.begin_attempt(manifest, before, _consent("s_suffix_before"))
+
+        # A genuinely later instant remains admissible.
+        after = _attempt(
+            "s_suffix_after",
+            visit_id="v_future",
+            split="holdout",
+            requested_at_utc="2026-09-16T09:01:00+08:00",
+        )
+        recorder.begin_attempt(manifest, after, _consent("s_suffix_after"))
+        assert recorder.list_attempts(experiment_id="exp-e6")[0].attempt_id == "s_suffix_after"
+
     def test_candidate_or_hash_swap_rejected_after_freeze(self, tmp_path: Path) -> None:
         store_dir = tmp_path / "store"
         key_dir = tmp_path / "keys"
