@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from facecore.live.contracts import SessionStatus
+from facecore.research.analysis import format_rate
 from facecore.research.replay import ReplayRefusal, ReplayResult
 
 Split = Literal["development", "holdout"]
@@ -91,6 +92,15 @@ class ResearchReport:
             "matched_latency_ms": list(self.matched_latency_ms),
             "censored_latency_ms": list(self.censored_latency_ms),
         }
+
+    @property
+    def accuracy_rate(self) -> float | None:
+        """Correct match rate over eligible attempts; None when eligible == 0."""
+        return (self.correct / self.eligible) if self.eligible > 0 else None
+
+    def format_accuracy(self) -> str:
+        """Format accuracy honestly; returns 'not estimable' when eligible == 0."""
+        return format_rate(self.correct, self.eligible)
 
 
 def _is_negative_label(label: str | None) -> bool:

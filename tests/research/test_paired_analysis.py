@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import pytest
 
 from facecore.live.contracts import (
     FrameDiagnostics,
@@ -470,7 +471,10 @@ class TestDiagnosticClassification:
             "s_thresh": _trace_with_scores("s_thresh", [{"p1": 0.40, "p2": 0.20}])
         }
         profile = ResearchProfile(
+            schema_version="v1",
+            profile_version="prof-e5",
             timeout_ms=5000,
+            sample_interval_ms=200,
             max_frames=25,
             queue_limit=1,
             required_support=3,
@@ -600,3 +604,94 @@ class TestAtRestBytesNoPlaintextLeak:
 
         # Assert no plaintext leak across both key_dir and store_dir!
         assert_no_plaintext_leak(tmp_path, [secret_identity, secret_diagnostic])
+
+
+class TestCLIAnalyzeIntegration:
+    """F5: Test end-to-end CLI analyze invocation with evaluate_arms."""
+
+    def test_cli_analyze_calls_evaluate_arms_and_saves_cases(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from datetime import datetime, timezone
+        from facecore.research.cli import cmd_analyze
+        from facecore.research.experiment import ExperimentManifest
+        from facecore.research.records import ConsentRecord
+        from facecore.research.recorder import ResearchRecorder
+
+        store_dir = tmp_path / "store"
+        key_dir = tmp_path / "keys"
+        store_dir.mkdir()
+        key_dir.mkdir()
+
+        def clock() -> datetime:
+            return datetime(2026, 9, 16, 8, 0, 0, tzinfo=timezone.utc)
+
+        recorder = ResearchRecorder(store_dir, key_dir, clock=clock)
+
+        manifest_data = {
+            "identity": {
+                "experiment_id": "exp-e5",
+                "schema_version": "v2",
+                "owner": "lead-test",
+                "custodian": "custodian-test",
+            },
+            "software": {
+                "code_sha": "0" * 40,
+                "generation": "gen-e5",
+            },
+            "gallery": {
+                "gallery_digest": "gal-e5",
+            },
+            "policy": {
+                "profile_version": "prof-e5",
+            },
+            "capture": {"device": "fake"},
+            "privacy": {"record_ttl_days": 30},
+            "study": {"participants": ["p1"]},
+            "analysis": {"arms": ["A", "B"]},
+        }
+        manifest = ExperimentManifest.from_dict(manifest_data)
+
+        consent = ConsentRecord(
+            session_id="s1",
+            participant_id="p1",
+            record_consent=True,
+            image_consent=True,
+            consented_at_utc="2026-09-16T08:00:00Z",
+            record_expires_at_utc="2026-10-16T08:00:00Z",
+            image_expires_at_utc="2026-09-23T08:00:00Z",
+        )
+        att = _attempt("s1", participant_id="p1", visit_id="v1", bundle_ref=None)
+        recorder.begin_attempt(manifest, att, consent)
+
+        # Write label
+        lbl = EvaluationLabel(
+            "s1", 1, "enrolled", "p1", "evaluator", "2026-09-16T08:10:00Z"
+        )
+        recorder.write_label(lbl)
+
+        # Append trace
+        trace = _trace_with_scores("s1", [{"p1": 0.85, "p2": 0.20}])
+        for entry in trace.entries:
+            recorder.append_trace("s1", entry)
+
+        # Run cmd_analyze (production path)
+        rc = cmd_analyze(
+            store=store_dir,
+            key_dir=key_dir,
+            experiment_id="exp-e5",
+            mode="development",
+        )
+        assert rc == 0
+
+        captured = capsys.readouterr()
+        assert "=== Batch Analysis: exp-e5 ===" in captured.out
+        assert "Run code: exp-e5-development" in captured.out
+        assert "Attempted: 1" in captured.out
+
+        # Verify case file written and AEAD-encrypted
+        case_file = store_dir / "_cases" / "exp-e5" / "s1.enc"
+        assert case_file.is_file()
+
+        # Secret values must not leak in plaintext anywhere
+        assert_no_plaintext_leak(tmp_path, ["p1", "gal-e5"])

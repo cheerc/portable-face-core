@@ -21,12 +21,24 @@ Hard boundaries:
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+from pathlib import Path
 from typing import Any
 
-from facecore.live.contracts import ResearchProfile
-from facecore.research.diagnostics import SessionTrace
-from facecore.research.experiment import AttemptRecord, EvaluationLabel
+from facecore.live.contracts import ResearchProfile, SessionStatus
+from facecore.research.diagnostics import FrameTraceEntry, SessionTrace
+from facecore.research.experiment import (
+    STUDY_SCHEMA_VERSION,
+    AttemptRecord,
+    EvaluationLabel,
+)
+from facecore.research.recorder import (
+    ResearchRecorder,
+    _blob_to_wire,
+    build_research_aad,
+)
 from facecore.research.replay import ArmOutcome
+from facecore.storage.cipher import AeadCipher
 
 # Triggers (§7)
 TRIGGER_T01 = "T01"  # wrong enrolled matched / unenrolled false accept (HARD)
@@ -158,6 +170,24 @@ class CaseSummary:
             "recommended_action": self.recommended_action,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CaseSummary:
+        return cls(
+            attempt_id=str(data["attempt_id"]),
+            participant_id=str(data["participant_id"]),
+            visit_id=str(data["visit_id"]),
+            truth_kind=str(data["truth_kind"]),
+            truth_identity=data.get("truth_identity"),
+            operational_status=str(data["operational_status"]),
+            arm_a_terminal=data.get("arm_a_terminal"),
+            arm_b_terminal=data.get("arm_b_terminal"),
+            earliest_blocking_layer=str(data["earliest_blocking_layer"]),
+            threshold_detail=data.get("threshold_detail"),
+            triggers=tuple(str(t) for t in data.get("triggers", ())),
+            evidence_locator=str(data["evidence_locator"]),
+            recommended_action=str(data["recommended_action"]),
+        )
+
 
 @dataclass(frozen=True)
 class BatchAnalysis:
@@ -247,6 +277,109 @@ class BatchAnalysis:
         return "\n".join(lines)
 
 
+def save_case_summaries(
+    recorder: ResearchRecorder,
+    experiment_id: str,
+    cases: tuple[CaseSummary, ...] | list[CaseSummary],
+) -> list[Path]:
+    """Persist case summaries AEAD-encrypted at rest under attempt record keys."""
+    case_dir = recorder._store / "_cases" / experiment_id
+    case_dir.mkdir(parents=True, exist_ok=True)
+    saved_paths: list[Path] = []
+    for case in cases:
+        dek = recorder._keys.get_or_create_record_key(case.attempt_id)
+        payload = case.to_dict()
+        plaintext = json.dumps(payload, sort_keys=True).encode("utf-8")
+        aad = build_research_aad(
+            STUDY_SCHEMA_VERSION, case.attempt_id, "case_summary", "0"
+        )
+        blob = AeadCipher(dek).encrypt(plaintext, aad)
+        target_path = case_dir / f"{case.attempt_id}.enc"
+        recorder._atomic_write_bytes(target_path, _blob_to_wire(blob))
+        saved_paths.append(target_path)
+    return saved_paths
+
+
+def _classify_failure_layer(
+    attempt: AttemptRecord,
+    lbl: EvaluationLabel | None,
+    trace: SessionTrace | None,
+    out_b: ArmOutcome | None,
+    profile: ResearchProfile | None,
+) -> tuple[str, str | None]:
+    """Classify the earliest blocking layer for an enrolled failure (§6)."""
+    if (
+        attempt.operational_status in ("open_error", "setup_error", "error")
+        or attempt.error_code is not None
+    ):
+        return FAILURE_LAYER_CAPTURE, None
+
+    if trace is None:
+        return FAILURE_LAYER_UNRESOLVED, None
+
+    # Quality check: any usable frames?
+    has_usable = any(e.quality_pass for e in trace.entries)
+    if not has_usable:
+        return FAILURE_LAYER_QUALITY, None
+
+    if lbl is None or lbl.kind != "enrolled" or not lbl.identity_id:
+        return FAILURE_LAYER_UNRESOLVED, None
+
+    truth_id = lbl.identity_id
+    scored_entries = [e for e in trace.entries if e.identity_score_pairs]
+    if not scored_entries:
+        return FAILURE_LAYER_UNRESOLVED, None
+
+    ever_scored = any(
+        any(k == truth_id for k, _ in e.identity_score_pairs)
+        for e in scored_entries
+    )
+    if not ever_scored:
+        return FAILURE_LAYER_UNRESOLVED, None
+
+    # Find highest score for truth identity
+    best_truth_score = -1.0
+    best_entry: FrameTraceEntry | None = None
+    for e in scored_entries:
+        for k, v in e.identity_score_pairs:
+            if k == truth_id and v > best_truth_score:
+                best_truth_score = v
+                best_entry = e
+
+    if best_entry is None:
+        return FAILURE_LAYER_UNRESOLVED, None
+
+    sorted_pairs = sorted(
+        best_entry.identity_score_pairs, key=lambda x: x[1], reverse=True
+    )
+    top1_id, top1_val = sorted_pairs[0]
+    runner_up_val = sorted_pairs[1][1] if len(sorted_pairs) > 1 else None
+
+    if top1_id != truth_id:
+        return FAILURE_LAYER_RANKING, None
+
+    # Truth is rank 1 -> check threshold criteria
+    match_thresh = profile.match_threshold if profile else 0.45
+    margin_thresh = profile.margin_threshold if profile else 0.10
+
+    if runner_up_val is None:
+        return FAILURE_LAYER_THRESHOLD, "none_runner_up"
+
+    margin = top1_val - runner_up_val
+    score_bad = top1_val < match_thresh
+    margin_bad = margin < margin_thresh
+
+    if score_bad and margin_bad:
+        return FAILURE_LAYER_THRESHOLD, "both"
+    if score_bad:
+        return FAILURE_LAYER_THRESHOLD, "score_only"
+    if margin_bad:
+        return FAILURE_LAYER_THRESHOLD, "margin_only"
+
+    # Truth passed score and margin on individual frame, but failed temporal support
+    return FAILURE_LAYER_TEMPORAL, None
+
+
 def analyze_batch(
     attempts: list[AttemptRecord],
     outcomes: list[ArmOutcome],
@@ -257,23 +390,353 @@ def analyze_batch(
     mode: str = "development",
 ) -> BatchAnalysis:
     """Analyze a batch of attempts, paired outcomes, and labels (§5-§9)."""
-    # Minimal stub for RED test phase: returns empty dummy to fail behavioral assertions
+    _ = mode
+    traces = traces or {}
+    experiment_id = attempts[0].experiment_id if attempts else "unknown-experiment"
+
+    # Step 1: Attempt ledger is authoritative (ADR 0010 item 2)
+    attempt_map: dict[str, AttemptRecord] = {}
+    for a in attempts:
+        if a.attempt_id not in attempt_map:
+            attempt_map[a.attempt_id] = a
+
+    attempted = len(attempt_map)
+    participants = {a.participant_id for a in attempt_map.values()}
+    visits = {(a.participant_id, a.visit_id) for a in attempt_map.values()}
+    participants_count = len(participants)
+    visits_count = len(visits)
+
+    operation_errors = sum(
+        1
+        for a in attempt_map.values()
+        if a.operational_status in ("open_error", "setup_error", "error")
+        or a.error_code is not None
+    )
+
+    # Step 2: Labels (evaluator-only, latest revision wins)
+    latest_labels: dict[str, EvaluationLabel] = {}
+    for lbl_item in sorted(labels, key=lambda x: x.revision):
+        if lbl_item.attempt_id in attempt_map:
+            latest_labels[lbl_item.attempt_id] = lbl_item
+
+    labeled = 0
+    truth_known_enrolled = 0
+    unknown = 0
+    uncertain = 0
+    unlabeled = 0
+
+    for att_id in attempt_map:
+        if att_id not in latest_labels:
+            unlabeled += 1
+        else:
+            labeled += 1
+            l_rec = latest_labels[att_id]
+            if l_rec.kind == "enrolled":
+                truth_known_enrolled += 1
+            elif l_rec.kind == "unenrolled":
+                unknown += 1
+            elif l_rec.kind == "uncertain":
+                uncertain += 1
+
+    # Step 3: Outcomes grouped by attempt and arm (outcomes cannot expand attempted)
+    canonical_outcomes: dict[str, dict[str, ArmOutcome]] = {
+        att_id: {} for att_id in attempt_map
+    }
+    for outcome in outcomes:
+        att_id = outcome.attempt_id
+        if att_id not in attempt_map:
+            continue
+        arm_id = outcome.arm_id
+        if arm_id not in canonical_outcomes[att_id]:
+            canonical_outcomes[att_id][arm_id] = outcome
+        elif (
+            canonical_outcomes[att_id][arm_id].refusal is not None
+            and outcome.refusal is None
+        ):
+            # Prefer non-refused run as canonical live outcome
+            canonical_outcomes[att_id][arm_id] = outcome
+
+    # Step 4: Paired completeness
+    # Both A and B must exist, both full extent, neither refused
+    paired_complete_set: set[str] = set()
+    for att_id in attempt_map:
+        outs = canonical_outcomes[att_id]
+        if "A" in outs and "B" in outs:
+            p_a = outs["A"]
+            p_b = outs["B"]
+            if (
+                p_a.collection_extent == "full"
+                and p_b.collection_extent == "full"
+                and p_a.refusal is None
+                and p_b.refusal is None
+            ):
+                paired_complete_set.add(att_id)
+
+    paired_complete = len(paired_complete_set)
+
+    # Step 5: Per-arm analysis
+    arm_analyses: dict[str, ArmAnalysis] = {}
+    for arm_id in ("A", "B"):
+        correct = 0
+        wrong_enrolled = 0
+        unknown_false_accept = 0
+        review = 0
+        unknown_term = 0
+        timeout = 0
+        invalid_input = 0
+        error = 0
+        cancelled = 0
+        refused = 0
+        no_result = 0
+        time_to_correct: list[float] = []
+        time_to_wrong: list[float] = []
+        nondecision: list[float] = []
+
+        for att_id, att in attempt_map.items():
+            out = canonical_outcomes[att_id].get(arm_id)
+            lbl = latest_labels.get(att_id)
+
+            if out is None:
+                no_result += 1
+                continue
+
+            if out.refusal is not None:
+                refused += 1
+                continue
+
+            start_ns = traces[att_id].session_start_ns if att_id in traces else 0
+            dec_time = out.decision_time_ns
+            elapsed_ms = (
+                round((dec_time - start_ns) / 1_000_000.0, 2)
+                if dec_time is not None
+                else None
+            )
+
+            term = out.terminal
+            if term == SessionStatus.matched.value:
+                if lbl is not None and lbl.kind == "enrolled":
+                    if out.matched_identity == lbl.identity_id:
+                        correct += 1
+                        if elapsed_ms is not None:
+                            time_to_correct.append(elapsed_ms)
+                    else:
+                        wrong_enrolled += 1
+                        if elapsed_ms is not None:
+                            time_to_wrong.append(elapsed_ms)
+                elif lbl is not None and lbl.kind == "unenrolled":
+                    unknown_false_accept += 1
+                    if elapsed_ms is not None:
+                        time_to_wrong.append(elapsed_ms)
+            elif term == SessionStatus.timeout.value:
+                timeout += 1
+                if elapsed_ms is not None:
+                    nondecision.append(elapsed_ms)
+            elif term == SessionStatus.invalid_input.value:
+                invalid_input += 1
+                if elapsed_ms is not None:
+                    nondecision.append(elapsed_ms)
+            elif term == SessionStatus.review.value:
+                review += 1
+                if elapsed_ms is not None:
+                    nondecision.append(elapsed_ms)
+            elif term == SessionStatus.unknown.value:
+                unknown_term += 1
+                if elapsed_ms is not None:
+                    nondecision.append(elapsed_ms)
+            elif term == SessionStatus.cancelled.value:
+                cancelled += 1
+                if elapsed_ms is not None:
+                    nondecision.append(elapsed_ms)
+            elif term == SessionStatus.error.value:
+                error += 1
+                if elapsed_ms is not None:
+                    nondecision.append(elapsed_ms)
+            elif term == "refused":
+                refused += 1
+
+        enrolled_correct_rate = (
+            (correct / truth_known_enrolled) if truth_known_enrolled > 0 else None
+        )
+        enrolled_wrong_rate = (
+            (wrong_enrolled / truth_known_enrolled)
+            if truth_known_enrolled > 0
+            else None
+        )
+        unknown_fa_rate = (
+            (unknown_false_accept / unknown) if unknown > 0 else None
+        )
+
+        # Conditional paired-complete enrolled counts
+        cond_count = 0
+        cond_correct = 0
+        for att_id in paired_complete_set:
+            lbl = latest_labels.get(att_id)
+            if lbl is not None and lbl.kind == "enrolled":
+                cond_count += 1
+                out = canonical_outcomes[att_id].get(arm_id)
+                if (
+                    out is not None
+                    and out.terminal == SessionStatus.matched.value
+                    and out.matched_identity == lbl.identity_id
+                ):
+                    cond_correct += 1
+
+        cond_rate = (cond_correct / cond_count) if cond_count > 0 else None
+
+        arm_analyses[arm_id] = ArmAnalysis(
+            arm_id=arm_id,
+            correct=correct,
+            wrong_enrolled=wrong_enrolled,
+            unknown_false_accept=unknown_false_accept,
+            review=review,
+            unknown=unknown_term,
+            timeout=timeout,
+            invalid_input=invalid_input,
+            error=error,
+            cancelled=cancelled,
+            refused=refused,
+            no_result=no_result,
+            enrolled_correct_rate=enrolled_correct_rate,
+            enrolled_wrong_rate=enrolled_wrong_rate,
+            unknown_fa_rate=unknown_fa_rate,
+            conditional_paired_enrolled_correct=cond_correct,
+            conditional_paired_enrolled_count=cond_count,
+            conditional_paired_enrolled_correct_rate=cond_rate,
+            time_to_correct_ms=tuple(time_to_correct),
+            time_to_wrong_ms=tuple(time_to_wrong),
+            nondecision_ms=tuple(nondecision),
+        )
+
+    # Step 6: Triggers detection
+    triggers_dict: dict[str, list[str]] = {}
+    for att_id, att in attempt_map.items():
+        out_a = canonical_outcomes[att_id].get("A")
+        out_b = canonical_outcomes[att_id].get("B")
+        lbl = latest_labels.get(att_id)
+
+        # T01: wrong enrolled match OR unenrolled false accept
+        is_t01 = False
+        for out in (out_a, out_b):
+            if out is not None and out.terminal == SessionStatus.matched.value:
+                if (
+                    lbl is not None
+                    and lbl.kind == "enrolled"
+                    and out.matched_identity != lbl.identity_id
+                ):
+                    is_t01 = True
+                elif lbl is not None and lbl.kind == "unenrolled":
+                    is_t01 = True
+        if is_t01:
+            triggers_dict.setdefault(TRIGGER_T01, []).append(att_id)
+
+        # T06: A correct, B unsuccessful
+        if (
+            lbl is not None
+            and lbl.kind == "enrolled"
+            and out_a is not None
+            and out_a.terminal == SessionStatus.matched.value
+            and out_a.matched_identity == lbl.identity_id
+        ):
+            b_success = (
+                out_b is not None
+                and out_b.terminal == SessionStatus.matched.value
+                and out_b.matched_identity == lbl.identity_id
+            )
+            if not b_success:
+                triggers_dict.setdefault(TRIGGER_T06, []).append(att_id)
+
+        # T08: Low usable frames / quality rejection
+        if (
+            out_b is not None
+            and out_b.terminal == SessionStatus.invalid_input.value
+        ):
+            triggers_dict.setdefault(TRIGGER_T08, []).append(att_id)
+
+        # T10: Any enrolled not correctly matched by B
+        if lbl is not None and lbl.kind == "enrolled":
+            b_cor = (
+                out_b is not None
+                and out_b.terminal == SessionStatus.matched.value
+                and out_b.matched_identity == lbl.identity_id
+            )
+            if not b_cor:
+                triggers_dict.setdefault(TRIGGER_T10, []).append(att_id)
+
+    triggers = {k: tuple(v) for k, v in triggers_dict.items()}
+    hard_triggers_tripped = any(k in HARD_TRIGGERS for k in triggers)
+
+    # Step 7: Failure layers and Case Summaries
+    cases: list[CaseSummary] = []
+    layer_breakdown: dict[str, int] = {}
+
+    for att_id, att in attempt_map.items():
+        lbl = latest_labels.get(att_id)
+        out_a = canonical_outcomes[att_id].get("A")
+        out_b = canonical_outcomes[att_id].get("B")
+        trace = traces.get(att_id)
+
+        layer = "none"
+        detail: str | None = None
+
+        if lbl is not None and lbl.kind == "enrolled":
+            b_cor = (
+                out_b is not None
+                and out_b.terminal == SessionStatus.matched.value
+                and out_b.matched_identity == lbl.identity_id
+            )
+            if not b_cor:
+                layer, detail = _classify_failure_layer(
+                    att, lbl, trace, out_b, profile
+                )
+                layer_breakdown[layer] = layer_breakdown.get(layer, 0) + 1
+
+        att_triggers = tuple(
+            trig for trig, att_list in triggers.items() if att_id in att_list
+        )
+
+        if TRIGGER_T01 in att_triggers:
+            action = (
+                "立即隔離候選改善的放行；保留合規證據、建 incident"
+            )
+        elif TRIGGER_T06 in att_triggers:
+            action = "升級有界 RCA 實驗"
+        else:
+            action = "單次觀察，等待同 signature 再現"
+
+        cases.append(
+            CaseSummary(
+                attempt_id=att_id,
+                participant_id=att.participant_id,
+                visit_id=att.visit_id,
+                truth_kind=lbl.kind if lbl else "unlabeled",
+                truth_identity=lbl.identity_id if lbl else None,
+                operational_status=att.operational_status,
+                arm_a_terminal=out_a.terminal if out_a else None,
+                arm_b_terminal=out_b.terminal if out_b else None,
+                earliest_blocking_layer=layer,
+                threshold_detail=detail,
+                triggers=att_triggers,
+                evidence_locator=f"{att_id}:{att.bundle_ref or 'no_bundle'}",
+                recommended_action=action,
+            )
+        )
+
     return BatchAnalysis(
-        experiment_id="",
-        attempted=0,
-        labeled=0,
-        truth_known_enrolled=0,
-        unknown=0,
-        uncertain=0,
-        unlabeled=0,
-        paired_complete=0,
-        operation_errors=0,
-        participants_count=0,
-        visits_count=0,
-        arm_a=ArmAnalysis(arm_id="A"),
-        arm_b=ArmAnalysis(arm_id="B"),
-        triggers={},
-        hard_triggers_tripped=False,
-        layer_breakdown={},
-        cases=(),
+        experiment_id=experiment_id,
+        attempted=attempted,
+        labeled=labeled,
+        truth_known_enrolled=truth_known_enrolled,
+        unknown=unknown,
+        uncertain=uncertain,
+        unlabeled=unlabeled,
+        paired_complete=paired_complete,
+        operation_errors=operation_errors,
+        participants_count=participants_count,
+        visits_count=visits_count,
+        arm_a=arm_analyses["A"],
+        arm_b=arm_analyses["B"],
+        triggers=triggers,
+        hard_triggers_tripped=hard_triggers_tripped,
+        layer_breakdown=layer_breakdown,
+        cases=tuple(cases),
     )
