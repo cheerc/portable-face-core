@@ -20,12 +20,6 @@ from typing import Any
 import numpy as np
 import pytest
 
-# Qt helpers are imported in the fixture so the default verify job can run
-# geometry/parser tests without the optional research-ui dependency.
-QApplication: Any
-QTest: Any
-Qt: Any
-
 from facecore.live.capture import FakeCapture
 from facecore.live.contracts import (
     FrameObservation,
@@ -49,6 +43,12 @@ from facecore.live.qt_window import (
     crop_frame,
     preview_frame,
 )
+
+# Qt helpers are imported in the fixture so the default verify job can run
+# geometry/parser tests without the optional research-ui dependency.
+QApplication: Any
+QTest: Any
+Qt: Any
 
 
 TEST_PROFILE_DIGEST = "0" * 64
