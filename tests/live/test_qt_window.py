@@ -13,15 +13,21 @@ No camera, real faces, gallery, embeddings, or photos are used.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import json
 import os
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
-from PySide6.QtTest import QTest
+
+try:
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+except ImportError:  # Default CI runs non-Qt tests without the optional extra.
+    QApplication = Any  # type: ignore[misc,assignment]
+    QTest = None
+    Qt = None
 
 from facecore.live.capture import FakeCapture
 from facecore.live.contracts import (
@@ -32,7 +38,11 @@ from facecore.live.contracts import (
 )
 from facecore.live.desktop import DesktopSession
 from facecore.live.session import SessionEngine
-from facecore.research.experiment import AttemptRecord, ExperimentManifest, EvaluationLabel
+from facecore.research.experiment import (
+    AttemptRecord,
+    EvaluationLabel,
+    ExperimentManifest,
+)
 from facecore.research.records import ConsentRecord
 from facecore.research.recorder import ResearchRecorder
 from facecore.live.qt_window import (
@@ -150,9 +160,18 @@ def _attempt(attempt_id: str = "attempt-qt") -> AttemptRecord:
     )
 
 
+def _recorder(tmp_path: Path) -> ResearchRecorder:
+    def clock() -> datetime:
+        return datetime(2026, 9, 16, 8, tzinfo=timezone.utc)
+
+    return ResearchRecorder(tmp_path / "store", tmp_path / "keys", clock=clock)
+
+
 @pytest.fixture(scope="module")
-def qt_app() -> QApplication:
+def qt_app() -> Any:
+    pytest.importorskip("PySide6")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    assert QApplication is not Any
     return QApplication.instance() or QApplication([])
 
 
@@ -186,7 +205,9 @@ class TestSquareCaptureGeometry:
         assert mapping.y == 0
         assert mapping.size == 3
         np.testing.assert_array_equal(cropped, frame[:, 1:4, :])
-        np.testing.assert_array_equal(preview_frame(cropped, mapping), cropped[:, ::-1, :])
+        np.testing.assert_array_equal(
+            preview_frame(cropped, mapping), cropped[:, ::-1, :]
+        )
 
     def test_invalid_geometry_fails_closed(self) -> None:
         with pytest.raises(ValueError, match="positive"):
@@ -231,7 +252,7 @@ class TestQtResearchWindow:
     def test_label_persists_to_encrypted_research_sidecar(
         self, qt_app: QApplication, tmp_path: Path
     ) -> None:
-        recorder = ResearchRecorder(tmp_path / "store", tmp_path / "keys", clock=lambda: datetime(2026, 9, 16, 8, tzinfo=timezone.utc))
+        recorder = _recorder(tmp_path)
         manifest = _manifest()
         attempt = _attempt()
         recorder.begin_attempt(manifest, attempt, _consent())
@@ -267,7 +288,10 @@ class TestQtResearchWindow:
             labeled_at=stored.labeled_at,
         )
         assert window.crop_mapping is not None
-        assert recorder.read_crop_mapping(attempt.attempt_id) == window.crop_mapping.to_dict()
+        assert (
+            recorder.read_crop_mapping(attempt.attempt_id)
+            == window.crop_mapping.to_dict()
+        )
         window.close()
 
     def test_review_band_does_not_display_guessed_identity(
@@ -297,7 +321,7 @@ class TestQtResearchWindow:
     def test_crop_mapping_is_stored_with_fixed_orientation_assumption(
         self, qt_app: QApplication, tmp_path: Path
     ) -> None:
-        recorder = ResearchRecorder(tmp_path / "store", tmp_path / "keys", clock=lambda: datetime(2026, 9, 16, 8, tzinfo=timezone.utc))
+        recorder = _recorder(tmp_path)
         recorder.begin_attempt(_manifest(), _attempt("attempt-geometry"), _consent())
         desktop = DesktopSession(
             engine=SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test"),
@@ -318,7 +342,10 @@ class TestQtResearchWindow:
         assert window.crop_mapping.to_dict().keys() == {
             "x", "y", "size", "frame_w", "frame_h", "mirrored_preview"
         }
-        assert recorder.read_crop_mapping("attempt-geometry") == window.crop_mapping.to_dict()
+        assert (
+            recorder.read_crop_mapping("attempt-geometry")
+            == window.crop_mapping.to_dict()
+        )
         window.close()
 
 
@@ -332,7 +359,9 @@ def test_research_ui_extra_and_notice_are_declared() -> None:
     assert "GNU LESSER GENERAL PUBLIC LICENSE" in notice.read_text()
 
 
-def test_cli_qt_flags_route_without_opening_camera(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_qt_flags_route_without_opening_camera(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Parser exposes the frozen Qt route while preserving fake default."""
     import facecore.research.cli as research_cli
 

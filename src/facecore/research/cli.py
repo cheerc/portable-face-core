@@ -30,6 +30,7 @@ import argparse
 from collections.abc import Callable
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any
@@ -268,6 +269,8 @@ def cmd_live(
     record_consent: bool,
     image_consent: bool,
     fixed_seconds: bool = False,
+    ui: str = "fake",
+    qt_offscreen: bool = False,
     models: Path | None = None,
     corpus: Path | None = None,
     capture_factory: Callable[[str], CaptureSource] | None = None,
@@ -287,6 +290,18 @@ def cmd_live(
         print(
             "research live: explicit --record-consent and --image-consent "
             "are both required",
+            file=sys.stderr,
+        )
+        return 2
+    if ui not in {"fake", "qt"}:
+        print(f"research live: unsupported UI {ui!r}", file=sys.stderr)
+        return 2
+    if qt_offscreen and ui != "qt":
+        print("research live: --qt-offscreen requires --ui qt", file=sys.stderr)
+        return 2
+    if qt_offscreen and device != "fake":
+        print(
+            "research live: --qt-offscreen only supports --device fake",
             file=sys.stderr,
         )
         return 2
@@ -457,24 +472,34 @@ def cmd_live(
         print(f"research live: recorder refused: {exc}", file=sys.stderr)
         return 4
     # t-3: true path stages each sampled frame encrypted as it is scored;
-    # fake path keeps envelope-only behavior.
+    # fake path keeps envelope-only behavior. Qt also receives frames for its
+    # preview/crop mapping, while inference always uses DesktopSession.
     staged_errors: list[str] = []
+    qt_window: Any = None
 
     def _stage_frame(packet: FramePacket) -> None:
-        try:
-            recorder.append_frame(packet)
-        except Exception as exc:
-            staged_errors.append(f"{packet.sequence}:{type(exc).__name__}")
+        if is_true_path:
+            try:
+                recorder.append_frame(packet)
+            except Exception as exc:
+                staged_errors.append(f"{packet.sequence}:{type(exc).__name__}")
+        if qt_window is not None:
+            try:
+                qt_window.set_frame(packet.rgb)
+            except Exception as exc:
+                staged_errors.append(f"crop:{type(exc).__name__}")
 
     desktop = DesktopSession(
         engine=engine,
         source=source,
         scorer=scorer,
         session_id=session_id,
-        frame_sink=_stage_frame if is_true_path else None,
+        frame_sink=_stage_frame if (is_true_path or ui == "qt") else None,
         fixed_seconds=fixed_seconds,
         trace_recorder=recorder if is_true_path else None,
         trace_attempt_id=resolved_attempt_id if is_true_path else None,
+        label_recorder=recorder if ui == "qt" else None,
+        label_attempt_id=resolved_attempt_id if ui == "qt" else None,
     )
     import time as _time
 
@@ -482,8 +507,36 @@ def cmd_live(
     # true path (fake path keeps its synthetic zero-origin stamps, so its
     # start stays 0 and its envelope stays consistent).
     start_ns = _time.monotonic_ns() if is_true_path else 0
+    qt_app: Any = None
+    if ui == "qt":
+        try:
+            from PySide6.QtWidgets import QApplication
+            from facecore.live.qt_window import QtResearchWindow
+        except ImportError as exc:
+            print(
+                f"research live: Qt UI unavailable: {exc}; install research-ui",
+                file=sys.stderr,
+            )
+            _finish_attempt_error("setup_error:qt_dependency_missing")
+            return 2
+        if qt_offscreen:
+            # The Qt smoke path is synthetic and never touches a camera device.
+            os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        qt_app = QApplication.instance() or QApplication([])
+        qt_window = QtResearchWindow(
+            desktop,
+            consent=consent,
+            recorder=recorder,
+            attempt_id=resolved_attempt_id,
+            device_id=device,
+            offscreen=qt_offscreen,
+            clock_ns=lambda: start_ns,
+        )
     try:
-        desktop.on_start(consent, now_ns=start_ns, device_id=device)
+        if qt_window is None:
+            desktop.on_start(consent, now_ns=start_ns, device_id=device)
+        else:
+            qt_window.start_clicked()
     except (PermissionError, ValueError, RuntimeError) as exc:
         print(f"research live: start refused: {exc}", file=sys.stderr)
         recorder.abort(session_id, reason="start_refused")
@@ -499,7 +552,16 @@ def cmd_live(
         return 2
     # Pump frames into the recorder's staging area as they are sampled.
     # (Desktop owns inference; recorder owns encrypted staging.)
-    terminal = desktop.run_until_terminal(max_steps=50)
+    if qt_window is None:
+        terminal = desktop.run_until_terminal(max_steps=50)
+    elif qt_offscreen:
+        qt_window.process_until_terminal(max_steps=200)
+        terminal = desktop.terminal
+    else:
+        qt_window.show()
+        assert qt_app is not None
+        qt_app.exec()
+        terminal = desktop.terminal
     if terminal is None:
         print("research live: no terminal reached", file=sys.stderr)
         desktop.close()
@@ -576,8 +638,11 @@ def cmd_live(
         print(f"research live: finish_attempt failed: {exc}", file=sys.stderr)
         desktop.close()
         return 4
-    desktop.label_terminal(None)
-    desktop.close()
+    if qt_window is None:
+        desktop.label_terminal(None)
+        desktop.close()
+    else:
+        qt_window.close()
     _emit(
         {
             "session_id": session_id,
@@ -967,6 +1032,17 @@ def main(argv: list[str] | None = None) -> int:
     live.add_argument("--record-consent", action="store_true")
     live.add_argument("--image-consent", action="store_true")
     live.add_argument("--fixed-seconds", action="store_true")
+    live.add_argument(
+        "--ui",
+        choices=["fake", "qt"],
+        default="fake",
+        help="Research UI backend; fake is the headless default",
+    )
+    live.add_argument(
+        "--qt-offscreen",
+        action="store_true",
+        help="Use offscreen Qt for synthetic smoke tests (requires --ui qt)",
+    )
     live.add_argument("--corpus", required=False, type=Path, default=None)
     live.add_argument("--models", required=False, type=Path, default=None)
 
@@ -1024,6 +1100,8 @@ def main(argv: list[str] | None = None) -> int:
             record_consent=args.record_consent,
             image_consent=args.image_consent,
             fixed_seconds=args.fixed_seconds,
+            ui=args.ui,
+            qt_offscreen=args.qt_offscreen,
             models=args.models,
             corpus=args.corpus,
         )

@@ -157,3 +157,63 @@ holdout 必須在觀察辨識結果前指定；分析方在候選凍結前不可
 5. 改善只能在證據＋operator go後；新資料驗證與原baseline永遠分開。
 6. 新文件掛入map，PROJECT-STATE僅寫當下授權與短pointer；不得把計畫中的能力寫成已實作。
 7. 無照片／embedding／DB／權重／逐人詳細trace進Git或雲端；舊M1/M3/M5不改寫，不以其資料選2B成功門檻。
+
+## 附錄 A：採集幾何契約
+
+本附錄定義 2B 研究採集的影像幾何契約。它是功能面權威；執行計畫對同一主題的敘述若與此不符，以本附錄為準。
+
+### A.1 適用範圍
+
+適用於 2B 研究採集路徑取得的每一個 sample frame，含 Qt 引導窗與 CLI／synthetic 演練。不適用於 2A 既有產品路徑。
+
+### A.2 方形裁切定義
+
+原 sensor frame 先經 orientation 規範，再依下式取中心方形：
+
+- 邊長 `S = min(W, H)`
+- 左上原點 `((W - S) // 2, (H - S) // 2)`
+
+裁切不得伴隨非等比縮放。此裁切是研究採集的形狀契約，不因裝置回報的 shape 差異而放寬。
+
+### A.3 Overlay 與實際 crop 使用同一 mapping
+
+畫面上顯示的方形引導框與實際送入 inference 的 crop，必須由同一組 mapping 計算。不得一邊用顯示座標、另一邊用 sensor 座標各自推導。
+
+引導框與實際 crop 不一致，即為契約違反，而非顯示誤差。
+
+### A.4 Mirror 只影響 preview
+
+鏡像僅作用於使用者所見的 preview。它不得改變：
+
+- 實際 crop 的座標
+- 送入 inference 的像素
+- 保存的 sample frame
+- 記錄的 `crop_mapping`
+
+### A.5 下游 pipeline 不因 capture square 而改變
+
+既有的 640 letterbox 與 112 align 不因採集端已為方形而取消或跳過。capture 端的方形契約與 pipeline 端的尺寸規範是兩層，不互相替代。
+
+### A.6 identity 不參與 crop
+
+crop 的位置與大小僅由幾何（`W`、`H`）決定。任何身份分數、標籤、辨識結果或 gallery 內容不得進入 crop 的計算。這是 truth 隔離在採集層的延伸（見 §6）。
+
+### A.7 保存策略（第一輪固定）
+
+第一輪固定採用：沿既有有限全幀保存，另記 `crop_mapping`；不額外保存第二份 crop。
+
+已同意的原 sample frame 與所記的 `crop_mapping`，必須足以重建出同一份 inference 輸入。
+
+若後續改為只保存 square input，則必須在 manifest 明示不能回看框外，不得冒稱保留了 sensor 全幀。此變更需先完成規格、同意、TTL 與刪除鏈驗收（見 §6 對新增持久資料種類的要求），不得於實作時逕行切換。
+
+### A.8 不得宣稱的事項
+
+完整背景仍受單人受控場地與 consent 約束。不得宣稱 crop 框外的人必然會被偵測，也不得以本契約作為框外涵蓋範圍的保證。
+
+### A.9 未定項
+
+以下由 plan 與本附錄留待後續凍結，實作時不得自行決定：
+
+1. orientation 規範的具體來源（裝置回報值、EXIF、或固定假設）——本輪採 fixed synthetic assumption；真機階段再議。
+2. `W`、`H` 為奇數且 `W == H` 時的退化情形處理——依 A.2 公式得 `S = W = H`、原點 `(0, 0)`，行為確定；任一邊為 0 時 fail-closed，不補值。
+3. 本輪已由 E7-B premise 凍結 `crop_mapping` schema：`{"x","y","size","frame_w","frame_h","mirrored_preview"}`；後續變更需另行規格、同意、TTL 與刪除鏈驗收。

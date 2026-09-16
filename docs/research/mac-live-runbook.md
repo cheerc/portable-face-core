@@ -13,9 +13,9 @@ no completion fabricated).
 - Python 3.14, dev extra installed (`uv sync --extra dev`).
 - External dirs only: `--store` must resolve outside the repo; symlinks
   escaping the approved root are refused (StorePathError, fail-closed).
-- No GUI toolkit is required for the headless path. pyside6 (D1 §11.1
-  primary) is introduced at the T8 real-device stage with its own import
-  smoke; this PR adds no new dependency for that reason.
+- The headless fake path does not require a GUI toolkit. The optional Qt
+  path uses the tested `research-ui` extra (`pyside6==6.11.2`), dynamically
+  linked under LGPL-3.0-only; the repository `NOTICE` carries the license.
 
 ## 1. Camera-free session (fake device)
 
@@ -36,6 +36,27 @@ uv run --extra dev python -m facecore.research.cli live \
   elapsed_ms/reason_codes). Exit 0 on commit.
 - Fixed-5s comparison mode: append `--fixed-seconds` (inference terminal
   locked; image-consented recording runs to deadline).
+
+### 1a. Qt offscreen synthetic smoke
+
+```bash
+QT_QPA_PLATFORM=offscreen uv run --extra dev --extra research-ui \
+  python -m facecore.research.cli live \
+  --profile <external-profile-json> \
+  --store <external-research-dir> \
+  --device fake \
+  --session <session-id> \
+  --record-consent \
+  --image-consent \
+  --ui qt \
+  --qt-offscreen
+```
+
+`--ui qt` drives the same `DesktopSession` and recorder bindings as the
+headless path. `--qt-offscreen` is synthetic CI smoke only and refuses a
+non-fake device; it is not evidence of macOS camera permissions. The Qt
+window shows a research watermark, square preview mapping, status/countdown,
+Start/Cancel, and post-terminal enrolled/unknown label controls.
 
 ## 2. Replay
 
@@ -113,10 +134,14 @@ uv run --extra dev python experiments/mac_live_capture_probe.py \
 - 5s countdown from the controller (monotonic) clock.
 - Identity shown only on matched terminals; all other bands show no name.
 - Research watermark always visible (研究原型, never 認證).
-- Operator labels sessions post-terminal into the label sidecar only;
+- Operator labels sessions post-terminal into the encrypted label sidecar;
   labels never reach the scorer/engine.
-- Cancel/close/multi-face/error stop immediately; close joins workers.
-- Real-window (pyside6) wiring + real-device evidence: T8 only.
+- Crop uses `S=min(W,H)` and mapping `{x,y,size,frame_w,frame_h,mirrored_preview}`;
+  mirror affects preview only, not saved/inference crop.
+- In fixed mode, an early B terminal is displayed as locked while collection
+  remains cancellable until the original deadline.
+- Real-window (pyside6) wiring is synthetic/offscreen in CI; real-device
+  evidence remains operator-gated and is not claimed here.
 
 ## 6. Failure exits
 
@@ -188,10 +213,15 @@ known timing flake: passes isolated/rerun, untouched by T4–T8 paths).
 
 - Where the system's own UI captures, it presents a **square alignment
   guide and yields a square image** (pyside6, Cocoa closed) — portrait
-  vs landscape must not change face geometry.
+  vs landscape must not change face geometry. The oriented source frame is
+  center-cropped with `S=min(W,H)` and records the authenticated
+  `crop_mapping` sidecar `{x,y,size,frame_w,frame_h,mirrored_preview}`.
 - This is ergonomic/consistency only, **never a correctness
   precondition**: arbitrary-aspect images (corpora, replay, import,
   mobile) must score correctly per the §6 aspect-invariance rule.
+- E7 synthetic fixtures use a fixed orientation assumption; no EXIF or
+  device-reported orientation is read. Real-device orientation remains a
+  separate operator-gated decision.
 - Device notes: macOS AVFoundation default may yield 720x1280 portrait
   with no `CAP_PROP` set by this codebase; do not assume a resolution —
   the numerical path must be invariant to whatever shape arrives.

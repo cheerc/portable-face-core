@@ -30,7 +30,7 @@ Hard boundaries:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hashlib
@@ -151,6 +151,18 @@ def _parse_utc(value: str) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def _mapping_int(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"crop_mapping {name} must be an integer")
+    return value
+
+
+def _mapping_bool(value: object, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"crop_mapping {name} must be bool")
+    return value
 
 
 class ResearchRecorder:
@@ -693,6 +705,7 @@ class ResearchRecorder:
     _ATTEMPTS_DIR = "_attempts"
     _LABELS_DIR = "_labels"
     _TRACES_DIR = "_traces"
+    _CROP_MAPPINGS_DIR = "_crop_mappings"
     _SPLITS_DIR = "_splits"
 
     def _split_dir(self, experiment_id: str) -> Path:
@@ -714,6 +727,112 @@ class ResearchRecorder:
         if not attempt_id or "/" in attempt_id:
             raise ValueError(f"invalid attempt_id {attempt_id!r}")
         return self._store / self._TRACES_DIR / attempt_id
+
+    def _crop_mapping_path(self, attempt_id: str) -> Path:
+        if not attempt_id or "/" in attempt_id:
+            raise ValueError(f"invalid attempt_id {attempt_id!r}")
+        return self._store / self._CROP_MAPPINGS_DIR / f"{attempt_id}.enc"
+
+    def record_crop_mapping(
+        self, attempt_id: str, crop_mapping: Mapping[str, object]
+    ) -> None:
+        """Persist one authenticated capture mapping for an attempt.
+
+        The first mapping is immutable: a later frame with a different geometry
+        is refused instead of silently rewriting the manifest-sidecar evidence.
+        """
+        required = {"x", "y", "size", "frame_w", "frame_h", "mirrored_preview"}
+        if set(crop_mapping) != required:
+            raise ValueError(
+                "crop_mapping must contain exactly "
+                "x, y, size, frame_w, frame_h, mirrored_preview"
+            )
+        x = _mapping_int(crop_mapping["x"], "x")
+        y = _mapping_int(crop_mapping["y"], "y")
+        size = _mapping_int(crop_mapping["size"], "size")
+        frame_w = _mapping_int(crop_mapping["frame_w"], "frame_w")
+        frame_h = _mapping_int(crop_mapping["frame_h"], "frame_h")
+        mirrored_preview = _mapping_bool(
+            crop_mapping["mirrored_preview"], "mirrored_preview"
+        )
+        normalized: dict[str, object] = {
+            "x": x,
+            "y": y,
+            "size": size,
+            "frame_w": frame_w,
+            "frame_h": frame_h,
+            "mirrored_preview": mirrored_preview,
+        }
+        if (
+            x < 0
+            or y < 0
+            or size <= 0
+            or frame_w <= 0
+            or frame_h <= 0
+            or x + size > frame_w
+            or y + size > frame_h
+        ):
+            raise ValueError("crop_mapping geometry is outside the source frame")
+
+        path = self._crop_mapping_path(attempt_id)
+        if path.is_file():
+            existing = self.read_crop_mapping(attempt_id)
+            if existing == normalized:
+                return
+            raise ValueError(
+                f"crop mapping for attempt {attempt_id!r} already exists; "
+                "rewriting capture geometry is prohibited"
+            )
+
+        try:
+            dek = self._keys.get_key(f"rk_{attempt_id}")
+        except KeyNotFoundError as exc:
+            raise KeyError(
+                f"attempt {attempt_id!r} key not found for crop mapping"
+            ) from exc
+        payload = json.dumps(
+            {"schema_version": STUDY_SCHEMA_VERSION, "crop_mapping": normalized},
+            sort_keys=True,
+        ).encode("utf-8")
+        blob = AeadCipher(dek).encrypt(
+            payload,
+            build_research_aad(
+                STUDY_SCHEMA_VERSION, attempt_id, "crop_mapping", "none"
+            ),
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._atomic_write_bytes(path, _blob_to_wire(blob))
+
+    def read_crop_mapping(self, attempt_id: str) -> dict[str, object]:
+        """Read the authenticated capture geometry sidecar."""
+        path = self._crop_mapping_path(attempt_id)
+        if not path.is_file():
+            raise KeyError(f"no crop mapping for attempt {attempt_id!r}")
+        try:
+            wire = path.read_bytes()
+            blob = _blob_from_wire(wire)
+            dek = self._keys.get_key(f"rk_{attempt_id}")
+            plaintext = AeadCipher(dek).decrypt(
+                blob,
+                build_research_aad(
+                    STUDY_SCHEMA_VERSION, attempt_id, "crop_mapping", "none"
+                ),
+            )
+            data = json.loads(plaintext.decode("utf-8"))
+            mapping = data["crop_mapping"]
+            if not isinstance(mapping, dict):
+                raise ValueError("crop_mapping payload is not an object")
+            return dict(mapping)
+        except (
+            KeyNotFoundError,
+            StoreCorruptionError,
+            OSError,
+            ValueError,
+            KeyError,
+        ) as exc:
+            raise StoreCorruptionError(
+                f"crop mapping for attempt {attempt_id!r} is corrupt"
+            ) from exc
 
     # -- E6: prospective holdout & candidate freeze custody (Phase 2B §12 E6) --
     def record_freeze(self, freeze: CandidateFreeze) -> None:
