@@ -446,6 +446,44 @@ def _extent_from_window(window: CollectionWindow | None) -> CollectionExtent:
     return "incomplete"
 
 
+def _closing_frame_ns(
+    trace: SessionTrace, window: CollectionWindow | None
+) -> int | None:
+    """Capture stamp of the collector's closing frame, when it is exempt.
+
+    A ``deadline_reached`` window can only be sealed by sampling the first
+    frame at or past the deadline (``controller._collection_should_stop``),
+    so that frame is the PROOF the window ran its full ``timeout_ms`` — not
+    contamination from outside it. Admitting it keeps ``frames_sampled``
+    reconciled; both arms replay the same trace, so nothing is asymmetric.
+
+    The exemption is deliberately narrow: it applies only to a window whose
+    provenance already claims the deadline was reached, and only when a
+    SINGLE frame sits beyond the deadline and it is the last one captured.
+    A second beyond-deadline frame means the collector overran rather than
+    closed, and every beyond-deadline frame stays a violation — exempting
+    more than one would silently retire the deadline itself.
+
+    ``collection_end_ns`` is a separate bound and is untouched here.
+    """
+    if window is None:
+        return None
+    if not window.collection_complete:
+        return None
+    if window.collection_stop_reason != "deadline_reached":
+        return None
+    beyond = [
+        entry.captured_ns
+        for entry in trace.entries
+        if entry.captured_ns > window.collection_deadline_ns
+    ]
+    if len(beyond) != 1:
+        return None
+    if beyond[0] != max(entry.captured_ns for entry in trace.entries):
+        return None
+    return beyond[0]
+
+
 def _observations_from_entries(
     entries: Sequence[FrameTraceEntry],
 ) -> list[FrameObservation]:
@@ -609,6 +647,7 @@ def evaluate_arms(
     # P4 & P1a: Constrain arm input to the legal collection window
     violations: list[str] = []
     legal_entries: list[FrameTraceEntry] = []
+    closing_frame_ns = _closing_frame_ns(trace, window)
     for entry in trace.entries:
         is_violation = False
         if window is not None:
@@ -621,7 +660,9 @@ def evaluate_arms(
             ):
                 violations.append("frame_beyond_window")
                 is_violation = True
-            elif entry.captured_ns > window.collection_deadline_ns:
+            elif entry.captured_ns > window.collection_deadline_ns and (
+                closing_frame_ns is None or entry.captured_ns != closing_frame_ns
+            ):
                 violations.append("frame_beyond_deadline")
                 is_violation = True
         if not is_violation:
