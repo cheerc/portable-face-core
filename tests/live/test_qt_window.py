@@ -458,6 +458,7 @@ class TestQtResearchWindow:
         assert desktop.terminal is not None
         QTest.mouseClick(window.delete_button, Qt.MouseButton.LeftButton)
         assert desktop.deleted is False
+        assert desktop.delete_failed is True
         assert "delete failed" in window.status_label.text()
         window.close()
 

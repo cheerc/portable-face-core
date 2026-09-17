@@ -684,3 +684,155 @@ def test_corrupt_attempt_index_normalizes_to_tampered_replay_refusal(
         _apply_capture_mapping(rec, session_id, frames)
     assert exc_info2.value.kind == "tampered"
     assert "corrupt attempt wire format" in exc_info2.value.detail
+
+
+def test_linked_attempt_without_mapping_does_not_bypass_sibling_orphan_mapping(
+    tmp_path: Path,
+) -> None:
+    """E7-B r8 W3 RED: sibling mapping must prevent silent legacy fallback."""
+    from facecore.live.qt_window import CropMapping
+    from facecore.research.experiment import AttemptRecord, ExperimentManifest
+
+    clock = _Clock(_utc("2026-09-16T10:00:00Z"))
+    rec = ResearchRecorder(
+        store_root=tmp_path / "store",
+        key_dir=tmp_path / "research_keys",
+        clock=clock,
+    )
+    session_id = "sess-sibling-orphan"
+    rec.begin(session_id, _consent(session_id))
+    rgb = np.zeros((3, 5, 3), dtype=np.uint8)
+    rec.append_frame(FramePacket(sequence=1, captured_ns=200_000_000, rgb=rgb))
+    rec.commit(_result(session_id))
+
+    manifest = ExperimentManifest.from_dict(
+        {
+            "identity": {"experiment_id": "exp-e7-replay"},
+            "software": {},
+            "gallery": {},
+            "policy": {},
+            "capture": {},
+            "privacy": {},
+            "study": {},
+            "analysis": {},
+        }
+    )
+    # Attempt 1: linked to bundle, but has NO mapping
+    rec.begin_attempt(
+        manifest,
+        AttemptRecord(
+            experiment_id="exp-e7-replay",
+            attempt_id="att-linked-no-map",
+            participant_id="part-synth-001",
+            visit_id="visit-001",
+            condition_id="cond-001",
+            attempt_index=1,
+            retry_of=None,
+            consent_ref=session_id,
+            requested_at_utc="2026-09-16T10:00:00Z",
+            accepted_at_utc="2026-09-16T10:00:01Z",
+            started_at_utc=None,
+            ended_at_utc=None,
+            operational_status="accepted",
+            error_code=None,
+            bundle_ref=session_id,
+        ),
+        _consent(session_id),
+    )
+    # Attempt 2: retry attempt for same session (consent_ref==session_id), with mapping
+    rec.begin_attempt(
+        manifest,
+        AttemptRecord(
+            experiment_id="exp-e7-replay",
+            attempt_id="att-sibling-with-map",
+            participant_id="part-synth-001",
+            visit_id="visit-001",
+            condition_id="cond-001",
+            attempt_index=2,
+            retry_of="att-linked-no-map",
+            consent_ref=session_id,
+            requested_at_utc="2026-09-16T10:00:00Z",
+            accepted_at_utc="2026-09-16T10:00:01Z",
+            started_at_utc=None,
+            ended_at_utc=None,
+            operational_status="accepted",
+            error_code=None,
+            bundle_ref=None,
+        ),
+        _consent(session_id),
+    )
+    mapping = CropMapping(x=1, y=0, size=3, frame_w=5, frame_h=3)
+    rec.record_crop_mapping("att-sibling-with-map", mapping.to_dict())
+
+    kwargs = _replay_kwargs(tmp_path, clock)
+    # Sibling mapping exists: must not silently score full frame as legacy!
+    with pytest.raises(ReplayRefusal) as exc_info:
+        replay_session(session_id, **kwargs)
+    assert exc_info.value.kind == "tampered"
+
+
+def test_attempt_id_prefix_collision_does_not_block_legacy_replay(
+    tmp_path: Path,
+) -> None:
+    """E7-B r8 W4 RED: attempt_id prefix must not falsely link unrelated attempts."""
+    from facecore.live.qt_window import CropMapping
+    from facecore.research.experiment import AttemptRecord, ExperimentManifest
+
+    clock = _Clock(_utc("2026-09-16T10:00:00Z"))
+    rec = ResearchRecorder(
+        store_root=tmp_path / "store",
+        key_dir=tmp_path / "research_keys",
+        clock=clock,
+    )
+    legacy_bundle_id = "sess-legacy-pfx"
+    rec.begin(legacy_bundle_id, _consent(legacy_bundle_id))
+    rgb = np.zeros((3, 5, 3), dtype=np.uint8)
+    rec.append_frame(FramePacket(sequence=1, captured_ns=200_000_000, rgb=rgb))
+    rec.commit(_result(legacy_bundle_id))
+
+    manifest = ExperimentManifest.from_dict(
+        {
+            "identity": {"experiment_id": "exp-e7-replay"},
+            "software": {},
+            "gallery": {},
+            "policy": {},
+            "capture": {},
+            "privacy": {},
+            "study": {},
+            "analysis": {},
+        }
+    )
+    # Unrelated attempt: consent_ref is "sess-completely-other", but attempt_id
+    # has prefix "att-sess-legacy-pfx-retry".
+    other_session_id = "sess-completely-other"
+    rec.begin_attempt(
+        manifest,
+        AttemptRecord(
+            experiment_id="exp-e7-replay",
+            attempt_id=f"att-{legacy_bundle_id}-retry",
+            participant_id="part-synth-001",
+            visit_id="visit-001",
+            condition_id="cond-001",
+            attempt_index=1,
+            retry_of=None,
+            consent_ref=other_session_id,
+            requested_at_utc="2026-09-16T10:00:00Z",
+            accepted_at_utc="2026-09-16T10:00:01Z",
+            started_at_utc=None,
+            ended_at_utc=None,
+            operational_status="accepted",
+            error_code=None,
+            bundle_ref=None,
+        ),
+        _consent(other_session_id),
+    )
+    mapping = CropMapping(x=1, y=0, size=3, frame_w=5, frame_h=3)
+    rec.record_crop_mapping(f"att-{legacy_bundle_id}-retry", mapping.to_dict())
+
+    kwargs = _replay_kwargs(tmp_path, clock)
+    # Under W4, prefix collision must not falsely block legacy replay.
+    try:
+        result = replay_session(legacy_bundle_id, **kwargs)
+    except ReplayRefusal as exc:
+        pytest.fail(f"unrelated attempt prefix blocked legacy replay: {exc}")
+    assert result.session_id == legacy_bundle_id

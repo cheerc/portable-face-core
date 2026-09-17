@@ -596,3 +596,74 @@ def test_delete_corrupt_linked_attempt_purges_mapping_sidecar_and_dek(
     assert not mapping_path.exists()
     with pytest.raises(KeyNotFoundError):
         ResearchKeyProvider(tmp_path / "keys").get_key(f"rk_{attempt_id}")
+
+
+def test_delete_unrelated_corrupt_attempt_preserves_sidecar_and_dek(
+    tmp_path: Path,
+) -> None:
+    """E7-B r8 W1 RED: deleting session A must not purge session B assets."""
+    from facecore.contracts.crypto import StoreCorruptionError
+    from facecore.research.experiment import AttemptRecord
+    from facecore.research.keys import ResearchKeyProvider
+
+    now = _utc("2026-09-16T10:00:01Z")
+    recorder = _recorder(tmp_path, now)
+    session_a = "sess-a"
+    session_b = "sess-b"
+    attempt_b = "attempt-b-corrupt"
+
+    manifest = _manifest(tmp_path)
+    recorder.begin(session_a, _consent(session_a))
+    recorder.commit(_timeout_result(session_a))
+
+    recorder.begin_attempt(
+        manifest,
+        AttemptRecord(
+            experiment_id="exp-e1-001",
+            attempt_id=attempt_b,
+            participant_id="part-synth-001",
+            visit_id="visit-001",
+            condition_id="cond-001",
+            attempt_index=1,
+            retry_of=None,
+            consent_ref=session_b,
+            requested_at_utc="2026-09-16T10:00:00Z",
+            accepted_at_utc="2026-09-16T10:00:01Z",
+            started_at_utc=None,
+            ended_at_utc=None,
+            operational_status="accepted",
+            error_code=None,
+            bundle_ref=session_b,
+        ),
+        _consent(session_b),
+    )
+    recorder.record_crop_mapping(
+        attempt_b,
+        {
+            "x": 0,
+            "y": 0,
+            "size": 16,
+            "frame_w": 16,
+            "frame_h": 16,
+            "mirrored_preview": False,
+        },
+    )
+    mapping_path = tmp_path / "store" / "_crop_mappings" / f"{attempt_b}.enc"
+    assert mapping_path.is_file()
+
+    attempt_b_path = (
+        tmp_path / "store" / "_attempts" / "exp-e1-001" / f"{attempt_b}.enc"
+    )
+    assert attempt_b_path.is_file()
+    attempt_b_path.write_bytes(b"corrupt-attempt-wire")
+
+    with pytest.raises(StoreCorruptionError):
+        recorder.delete(session_a)
+
+    # Session B assets must not be destroyed by session A deletion!
+    assert attempt_b_path.is_file()
+    assert mapping_path.is_file()
+    assert (
+        ResearchKeyProvider(tmp_path / "keys").get_key(f"rk_{attempt_b}")
+        is not None
+    )
