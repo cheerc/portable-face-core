@@ -599,7 +599,9 @@ def cmd_live(
     # (Desktop owns inference; recorder owns encrypted staging.)
     try:
         if qt_window is None:
-            terminal = desktop.run_until_terminal(max_steps=50)
+            while desktop.state == "running":
+                desktop.run_until_terminal(max_steps=50)
+            terminal = desktop.terminal
         elif qt_offscreen:
             qt_window.process_until_terminal(max_steps=200)
             terminal = desktop.terminal

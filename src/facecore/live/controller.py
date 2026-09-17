@@ -322,6 +322,7 @@ class LiveController:
     def run_until_terminal(self, max_steps: int = 100) -> SessionResult | None:
         """Pump + consume until the engine terminates or steps exhaust."""
         self._require_active()
+        source_dry = False
         for _ in range(max_steps):
             if self._fixed_seconds:
                 if self._collector_complete:
@@ -332,6 +333,7 @@ class LiveController:
             elif self._terminal is not None:
                 return self._terminal
             if not self._pump_once():
+                source_dry = True
                 drained = self._consume_one()
                 if drained is not None:
                     if self._fixed_seconds:
@@ -352,7 +354,8 @@ class LiveController:
                     continue
                 return terminal
         if self._fixed_seconds:
-            self._finalize_collection()
+            if self._collection_should_stop() or source_dry:
+                self._finalize_collection()
         return self._terminal
 
     def _collection_should_stop(self) -> bool:
