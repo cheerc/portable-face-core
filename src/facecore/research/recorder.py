@@ -715,9 +715,10 @@ class ResearchRecorder:
                     except Exception as exc:
                         # Corrupt linked attempt: fail-closed removal, no
                         # silent skip. The ciphertext is unreadable, so it
-                        # cannot justify retention; record and remove it.
+                        # cannot justify retention; destroy its key, sidecars,
+                        # and path, and record the failure.
                         cascade_errors.append(f"{attempt_id}:{type(exc).__name__}")
-                        path.unlink(missing_ok=True)
+                        self._purge_attempt_assets(attempt_id, path=path)
                         continue
                     try:
                         if (
@@ -1478,12 +1479,23 @@ class ResearchRecorder:
             raise KeyError(f"no labels for attempt {attempt_id!r}")
         return labels
 
-    def withdraw_attempt(self, attempt_id: str) -> None:
-        """Full consent withdrawal: tombstone-first + DEK destruction.
+    def _purge_attempt_assets(
+        self, attempt_id: str, path: Path | None = None
+    ) -> None:
+        """Purge attempt ciphertext, tombstone, DEK, and all sidecars.
 
-        Report denominators must be recalculated after withdrawal.
+        Destroys attempt record DEK, removes attempt ciphertext and tombstone,
+        removes labels, traces, crop mappings, and case records.
         """
-        path, _, _ = self._find_attempt_and_path(attempt_id)
+        if path is None:
+            attempts_root = self._store / self._ATTEMPTS_DIR
+            if attempts_root.is_dir():
+                for exp_dir in attempts_root.iterdir():
+                    if exp_dir.is_dir():
+                        candidate = exp_dir / f"{attempt_id}.enc"
+                        if candidate.is_file():
+                            path = candidate
+                            break
         if path is not None and path.is_file():
             tombstone = path.with_name(f"{attempt_id}.tombstone.json")
             if not tombstone.is_file():
@@ -1499,6 +1511,8 @@ class ResearchRecorder:
             tombstone.unlink(missing_ok=True)
         else:
             self._keys.destroy_key(f"rk_{attempt_id}")
+            if path is not None:
+                path.unlink(missing_ok=True)
         label_dir = self._label_dir(attempt_id)
         if label_dir.is_dir():
             shutil.rmtree(label_dir, ignore_errors=True)
@@ -1513,6 +1527,14 @@ class ResearchRecorder:
                 if exp_dir.is_dir():
                     case_path = exp_dir / f"{attempt_id}.enc"
                     case_path.unlink(missing_ok=True)
+
+    def withdraw_attempt(self, attempt_id: str) -> None:
+        """Full consent withdrawal: tombstone-first + DEK destruction.
+
+        Report denominators must be recalculated after withdrawal.
+        """
+        path, _, _ = self._find_attempt_and_path(attempt_id)
+        self._purge_attempt_assets(attempt_id, path=path)
 
     # -- E2: diagnostic trace (Phase 2B §12 E2) -----------------------------
     def append_trace(self, attempt_id: str, entry: FrameTraceEntry) -> None:

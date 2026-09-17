@@ -595,4 +595,4 @@ def test_delete_corrupt_linked_attempt_purges_mapping_sidecar_and_dek(
     assert not attempt_path.exists()
     assert not mapping_path.exists()
     with pytest.raises(KeyNotFoundError):
-        key_provider.get_key(f"rk_{attempt_id}")
+        ResearchKeyProvider(tmp_path / "keys").get_key(f"rk_{attempt_id}")

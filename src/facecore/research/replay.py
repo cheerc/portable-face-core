@@ -48,6 +48,7 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
+from facecore.contracts.crypto import StoreCorruptionError
 from facecore.live.contracts import (
     FrameObservation,
     FramePacket,
@@ -60,6 +61,7 @@ from facecore.live.session import (
     compute_baseline_best_quality,
 )
 from facecore.research.diagnostics import FrameTraceEntry, SessionTrace
+from facecore.research.experiment import AttemptRecord
 from facecore.research.recorder import MAX_FRAMES_PER_SESSION, ResearchRecorder
 from facecore.research.records import CollectionWindow
 from facecore.research.split import HoldoutSealedError
@@ -178,6 +180,28 @@ def _window_for(frame_count: int, coverage_ns: int, profile: ResearchProfile) ->
     return "early-stop"
 
 
+def _attempt_plausibly_belongs_to_bundle(
+    attempt: AttemptRecord, bundle_id: str
+) -> bool:
+    """Return True if an attempt plausibly belongs to the given bundle/session.
+
+    Accepted-session/consent linkage (attempt.consent_ref == bundle_id) or
+    direct attempt identifier alignment (attempt_id matching or derived from
+    bundle_id) ties an unlinked attempt to this specific session. Unrelated
+    attempts in the same store never block legacy full-frame replays.
+    """
+    if attempt.consent_ref == bundle_id:
+        return True
+    if attempt.attempt_id in (bundle_id, f"att-{bundle_id}"):
+        return True
+    prefix_match = attempt.attempt_id.startswith(
+        f"att-{bundle_id}-"
+    ) or attempt.attempt_id.startswith(f"{bundle_id}-")
+    if prefix_match:
+        return True
+    return False
+
+
 def _apply_capture_mapping(
     recorder: ResearchRecorder, bundle_id: str, frames: list[FramePacket]
 ) -> list[FramePacket]:
@@ -190,18 +214,29 @@ def _apply_capture_mapping(
     """
     from facecore.live.qt_window import CropMapping
 
+    try:
+        attempts = recorder.list_attempts()
+    except Exception as exc:
+        raise ReplayRefusal(
+            bundle_id,
+            "tampered",
+            f"attempt index corrupt while resolving capture mapping: {exc}",
+        ) from exc
+
     attempt_id: str | None = None
-    for attempt in recorder.list_attempts():
+    for attempt in attempts:
         if attempt.bundle_ref == bundle_id:
             attempt_id = attempt.attempt_id
             break
     if attempt_id is None:
-        # U3: a persisted mapping with no bundle link must never silently
-        # fall back to legacy full-frame scoring. Resolve the accepted
-        # attempt by consent/session linkage; an orphan mapping is a
-        # tampered-like refusal, never a quiet legacy replay.
+        # U3 / V2: a persisted mapping for this bundle/session must never
+        # silently fall back to legacy full-frame scoring. Only scan attempts
+        # that plausibly belong to this bundle (consent or naming alignment);
+        # unrelated attempts in the same store never block legacy replay.
         orphan_attempts: list[str] = []
-        for attempt in recorder.list_attempts():
+        for attempt in attempts:
+            if not _attempt_plausibly_belongs_to_bundle(attempt, bundle_id):
+                continue
             try:
                 recorder.read_crop_mapping(attempt.attempt_id)
             except KeyError:
@@ -322,7 +357,7 @@ def replay_session(
         if "deleted" in message:
             raise ReplayRefusal(bundle_id, "deleted", message) from exc
         raise ReplayRefusal(bundle_id, "missing", message) from exc
-    except ValueError as exc:
+    except (ValueError, StoreCorruptionError) as exc:
         raise ReplayRefusal(bundle_id, "tampered", str(exc)) from exc
 
     stored = record.result
