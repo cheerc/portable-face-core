@@ -118,6 +118,8 @@ python scripts/live_teardown.py --store STORE --key-dir KEYDIR --session SESSION
 - preflight `exit 0` 只代表 opencv 可用並完成掃描，**不代表每個 index 都成功讀到影像**；必須讀 JSON 的 `devices[].read` 與實際選用的 index。
 - `live_teardown.py` 不帶 `--device` 就不碰相機（`camera` 欄為 `skipped`，那不是「相機已釋放」的證據）。
 - teardown 的 `store`／`keys` 檢查掃**整個**目錄，不依 `--session` 篩選；多 session 的研究 store 會被它報成殘留。請對隔離的單次驗收目錄執行，**不要為了讓它變綠而刪掉其他 session 的資料**。
+- `--device` 只接受可轉 int 的索引：`live_teardown.py:33` 逐字為 `cap = cv2.VideoCapture(int(device), backend)`。**不能傳 `local`**（那是 `facecore.sh` live 入口的裝置列舉語法），傳入會直接 `ValueError` 中止，不是「相機不可用」。要檢查相機請傳實際解析後的整數索引。
+- 上述命令的 `$CORPUS`／`$MODELS`／`$STORE`／`$KEYS`／`$SESSION`／`$RESOLVED_INDEX` **沒有預設值**，一律由 G3 已批准的採集 manifest 解析後填入；不要沿用他人筆記或前次 session 的路徑與索引。
 
 ## 4. S1 probe re-run (camera-free evidence, T4 acceptance carried)
 
