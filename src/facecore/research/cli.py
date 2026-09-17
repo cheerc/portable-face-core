@@ -38,6 +38,7 @@ from uuid import uuid4
 
 import numpy as np
 
+from facecore.contracts.crypto import StoreCorruptionError
 from facecore.live.capture import CaptureSource, FakeCapture, OpenCVCapture
 from facecore.live.contracts import (
     FrameObservation,
@@ -618,19 +619,34 @@ def cmd_live(
     # T2: an operator Delete in the Qt window already removed the session
     # bundle plus linked attempts. Never commit afterwards: report success
     # only once deletion is complete.
-    if qt_window is not None and desktop.deleted:
-        _emit(
-            {
-                "session_id": session_id,
-                "status": "deleted",
-                "window": window_label,
-                "elapsed_ms": 0.0,
-                "reason_codes": ["operator_deleted"],
-                "generation": model_generation,
-                "gallery_digest": gallery_digest,
-            }
-        )
-        return 0
+    if qt_window is not None:
+        if desktop.deleted:
+            _emit(
+                {
+                    "session_id": session_id,
+                    "status": "deleted",
+                    "window": window_label,
+                    "elapsed_ms": 0.0,
+                    "reason_codes": ["operator_deleted"],
+                    "generation": model_generation,
+                    "gallery_digest": gallery_digest,
+                }
+            )
+            return 0
+        if desktop.delete_failed:
+            print("research live: operator deletion failed", file=sys.stderr)
+            desktop.close()
+            recorder.abort(session_id, reason="delete_failed")
+            try:
+                recorder.finish_attempt(
+                    resolved_attempt_id,
+                    result=None,
+                    operational_status="error",
+                    error_code="delete_failed",
+                )
+            except Exception:
+                pass
+            return 4
     if capture_failure is not None:
         print(f"research live: capture failed: {capture_failure}", file=sys.stderr)
         desktop.close()
@@ -861,7 +877,12 @@ def cmd_delete(*, store: Path, key_dir: Path, session_id: str) -> int:
         print(f"research delete: {exc}", file=sys.stderr)
         return 2
     recorder = ResearchRecorder(store_root=store_root, key_dir=key_dir, clock=_now_utc)
-    ok = recorder.delete(session_id)
+    try:
+        ok = recorder.delete(session_id)
+    except StoreCorruptionError as exc:
+        print(f"research delete: {exc}", file=sys.stderr)
+        _emit({"session_id": session_id, "deleted": False, "error": str(exc)})
+        return 4
     _emit({"session_id": session_id, "deleted": ok})
     return 0 if ok else 4
 

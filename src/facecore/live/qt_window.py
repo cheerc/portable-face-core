@@ -440,6 +440,7 @@ else:
             try:
                 self.desktop.close()
             except Exception as exc:
+                self.desktop.mark_delete_failed()
                 self._set_status(f"delete failed: {type(exc).__name__}")
                 return
             try:
@@ -449,6 +450,7 @@ else:
                 if delete_bundle(self.session_id) is not True:
                     raise RuntimeError("recorder.delete reported incomplete")
             except Exception as exc:
+                self.desktop.mark_delete_failed()
                 self._set_status(f"delete failed: {type(exc).__name__}")
                 return
             self.desktop.mark_deleted()

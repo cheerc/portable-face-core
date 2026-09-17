@@ -627,8 +627,12 @@ class ResearchRecorder:
                 for case_path in sorted(exp_dir.glob("*.enc")):
                     att_id = case_path.stem
                     try:
-                        attempt_path, _, meta = self._find_attempt_and_path(att_id)
-                        if attempt_path is None or not attempt_path.is_file():
+                        attempt_path, record, meta = self._find_attempt_and_path(att_id)
+                        if (
+                            attempt_path is None
+                            or not attempt_path.is_file()
+                            or record is None
+                        ):
                             case_path.unlink(missing_ok=True)
                         elif meta:
                             exp_str = meta.get("record_expires_at_utc")
@@ -713,12 +717,11 @@ class ResearchRecorder:
                     try:
                         record, meta = self._decrypt_attempt(path)
                     except Exception as exc:
-                        # Corrupt linked attempt: fail-closed removal, no
-                        # silent skip. The ciphertext is unreadable, so it
-                        # cannot justify retention; destroy its key, sidecars,
-                        # and path, and record the failure.
+                        # W1: unreadable attempt cannot be proven to belong to
+                        # this session. Do NOT destroy unrelated assets!
+                        # Preserve the file, and record the failure so the
+                        # overall delete operation fails closed.
                         cascade_errors.append(f"{attempt_id}:{type(exc).__name__}")
-                        self._purge_attempt_assets(attempt_id, path=path)
                         continue
                     try:
                         if (
@@ -1386,8 +1389,11 @@ class ResearchRecorder:
                 continue
             path = exp_dir / f"{attempt_id}.enc"
             if path.is_file():
-                record, meta = self._decrypt_attempt(path)
-                return path, record, meta
+                try:
+                    record, meta = self._decrypt_attempt(path)
+                    return path, record, meta
+                except Exception:
+                    return path, None, {}
         return None, None, {}
 
     def write_label(self, label: EvaluationLabel) -> None:

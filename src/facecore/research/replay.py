@@ -180,26 +180,16 @@ def _window_for(frame_count: int, coverage_ns: int, profile: ResearchProfile) ->
     return "early-stop"
 
 
-def _attempt_plausibly_belongs_to_bundle(
+def _attempt_belongs_to_bundle(
     attempt: AttemptRecord, bundle_id: str
 ) -> bool:
-    """Return True if an attempt plausibly belongs to the given bundle/session.
+    """Return True if an attempt belongs to the given bundle/session.
 
-    Accepted-session/consent linkage (attempt.consent_ref == bundle_id) or
-    direct attempt identifier alignment (attempt_id matching or derived from
-    bundle_id) ties an unlinked attempt to this specific session. Unrelated
-    attempts in the same store never block legacy full-frame replays.
+    Uses authoritative persisted relationships (bundle_ref or consent_ref
+    matching the bundle_id). Attempt IDs are treated as opaque to prevent
+    false orphan linkage from prefix collisions.
     """
-    if attempt.consent_ref == bundle_id:
-        return True
-    if attempt.attempt_id in (bundle_id, f"att-{bundle_id}"):
-        return True
-    prefix_match = attempt.attempt_id.startswith(
-        f"att-{bundle_id}-"
-    ) or attempt.attempt_id.startswith(f"{bundle_id}-")
-    if prefix_match:
-        return True
-    return False
+    return attempt.bundle_ref == bundle_id or attempt.consent_ref == bundle_id
 
 
 def _apply_capture_mapping(
@@ -223,53 +213,64 @@ def _apply_capture_mapping(
             f"attempt index corrupt while resolving capture mapping: {exc}",
         ) from exc
 
-    attempt_id: str | None = None
-    for attempt in attempts:
-        if attempt.bundle_ref == bundle_id:
-            attempt_id = attempt.attempt_id
-            break
-    if attempt_id is None:
-        # U3 / V2: a persisted mapping for this bundle/session must never
-        # silently fall back to legacy full-frame scoring. Only scan attempts
-        # that plausibly belong to this bundle (consent or naming alignment);
-        # unrelated attempts in the same store never block legacy replay.
-        orphan_attempts: list[str] = []
-        for attempt in attempts:
-            if not _attempt_plausibly_belongs_to_bundle(attempt, bundle_id):
-                continue
-            try:
-                recorder.read_crop_mapping(attempt.attempt_id)
-            except KeyError:
-                continue
-            except Exception as exc:
-                raise ReplayRefusal(
-                    bundle_id, "tampered", f"capture mapping unreadable: {exc}"
-                ) from exc
-            orphan_attempts.append(attempt.attempt_id)
-        if orphan_attempts:
+    # W3/W4: Identify all attempts belonging to this bundle/session by
+    # authoritative linkage (bundle_ref or consent_ref). Attempt IDs are opaque.
+    related = [a for a in attempts if _attempt_belongs_to_bundle(a, bundle_id)]
+
+    mapped_attempts: list[tuple[AttemptRecord, CropMapping]] = []
+    for a in related:
+        try:
+            stored = recorder.read_crop_mapping(a.attempt_id)
+        except KeyError:
+            continue
+        except Exception as exc:
+            raise ReplayRefusal(
+                bundle_id, "tampered", f"capture mapping unreadable: {exc}"
+            ) from exc
+        try:
+            mapping = CropMapping.from_dict(dict(stored))
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ReplayRefusal(
+                bundle_id, "tampered", f"capture mapping invalid: {exc}"
+            ) from exc
+        mapped_attempts.append((a, mapping))
+
+    if not mapped_attempts:
+        # No related attempt has any mapping: genuinely legacy full-frame session.
+        return frames
+
+    # If any related attempt has a mapping, verify there is no orphan mapping.
+    linked_with_mapping = [a for a, m in mapped_attempts if a.bundle_ref == bundle_id]
+    unlinked_with_mapping = [a for a, m in mapped_attempts if a.bundle_ref != bundle_id]
+
+    if not linked_with_mapping:
+        orphan_ids = sorted(a.attempt_id for a in unlinked_with_mapping)
+        raise ReplayRefusal(
+            bundle_id,
+            "tampered",
+            f"capture mapping exists without bundle link ({','.join(orphan_ids)}); "
+            "refusing legacy replay",
+        )
+
+    if unlinked_with_mapping:
+        orphan_ids = sorted(a.attempt_id for a in unlinked_with_mapping)
+        raise ReplayRefusal(
+            bundle_id,
+            "tampered",
+            f"capture mapping exists without bundle link ({','.join(orphan_ids)}); "
+            "refusing legacy replay",
+        )
+
+    first_mapping = mapped_attempts[0][1]
+    for a, m in mapped_attempts[1:]:
+        if m != first_mapping:
             raise ReplayRefusal(
                 bundle_id,
                 "tampered",
-                f"capture mapping exists without bundle link "
-                f"({','.join(sorted(orphan_attempts))}); refusing legacy replay",
+                "ambiguous capture mappings across linked attempts; refusing replay",
             )
-        return frames
-    try:
-        stored = recorder.read_crop_mapping(attempt_id)
-    except KeyError:
-        return frames
-    except Exception as exc:
-        # U1: every corrupt/mismatched mapping normalizes to tampered.
-        # Only a genuinely absent mapping takes the legacy path above.
-        raise ReplayRefusal(
-            bundle_id, "tampered", f"capture mapping unreadable: {exc}"
-        ) from exc
-    try:
-        mapping = CropMapping.from_dict(dict(stored))
-    except (ValueError, KeyError, TypeError) as exc:
-        raise ReplayRefusal(
-            bundle_id, "tampered", f"capture mapping invalid: {exc}"
-        ) from exc
+
+    mapping = first_mapping
     cropped: list[FramePacket] = []
     for packet in frames:
         height, width = packet.rgb.shape[:2]

@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import time
+from typing import Any
 
 import numpy as np
 import pytest
@@ -541,3 +542,70 @@ def test_injection_leaves_no_readable_bundle_or_worker(tmp_path: Path) -> None:
     controller.close()
     assert controller.workers_joined
     assert controller.source_closed
+
+
+def test_delete_failure_in_cli_aborts_commit_and_returns_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """E7-B r8 W2: failed Qt Delete must abort commit, never commit, return rc=4."""
+    pytest.importorskip("PySide6.QtWidgets")
+    from facecore.live.qt_window import QtResearchWindow
+
+    profile_path = _profile_dict(tmp_path)
+    profile_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "profile_version": "t8-cli-v1",
+                "timeout_ms": 5000,
+                "sample_interval_ms": 200,
+                "max_frames": 25,
+                "queue_limit": 1,
+                "required_support": 1,
+                "min_support_interval_ms": 1,
+                "match_threshold": 0.10,
+                "review_threshold": 0.05,
+                "margin_threshold": 0.01,
+                "detector_version": "yunet-test",
+                "quality_policy_version": "q-test-v1",
+                "continuity_max_center_delta_ratio": 0.50,
+            }
+        )
+    )
+    store = tmp_path / "store"
+    key_dir = tmp_path / "research_keys"
+    f1 = FramePacket(
+        sequence=1, captured_ns=0, rgb=np.zeros((16, 16, 3), dtype=np.uint8)
+    )
+    capture = FakeCapture(frames=[f1])
+
+    # Patch ResearchRecorder.delete to return False
+    monkeypatch.setattr(ResearchRecorder, "delete", lambda self, session_id: False)
+
+    orig_init = QtResearchWindow.__init__
+
+    def _hooked_init(self: Any, *args: Any, **kwargs: Any) -> None:
+        orig_init(self, *args, **kwargs)
+        self.start_clicked()
+        self.process_once()
+        self.delete_clicked()
+
+    monkeypatch.setattr(QtResearchWindow, "__init__", _hooked_init)
+
+    rc = cmd_live(
+        profile_path=profile_path,
+        store=store,
+        key_dir=key_dir,
+        device="fake",
+        session_id="sess-e7-del-fail-cli",
+        record_consent=True,
+        image_consent=True,
+        ui="qt",
+        qt_offscreen=True,
+        capture_factory=lambda _dev: capture,
+    )
+
+    assert rc == 4
+    # Verify session was NOT committed
+    manifest_path = store / "sess-e7-del-fail-cli" / "manifest.json"
+    assert not manifest_path.exists()

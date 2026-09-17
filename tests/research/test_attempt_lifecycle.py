@@ -534,18 +534,18 @@ def test_purge_expired_purges_expired_attempts_and_labels(
         recorder_later.read_label("attempt-expiring")
 
 
-def test_delete_corrupt_linked_attempt_purges_mapping_sidecar_and_dek(
+def test_withdraw_attempt_purges_corrupt_attempt_assets(
     tmp_path: Path,
 ) -> None:
-    """E7-B r7 V1 RED: corrupt linked attempt delete must purge sidecar + DEK."""
-    from facecore.contracts.crypto import KeyNotFoundError, StoreCorruptionError
+    """E7-B r8 W1: withdraw_attempt with exact id must purge corrupt attempt assets."""
+    from facecore.contracts.crypto import KeyNotFoundError
     from facecore.research.experiment import AttemptRecord
     from facecore.research.keys import ResearchKeyProvider
 
     now = _utc("2026-09-16T10:00:01Z")
     recorder = _recorder(tmp_path, now)
-    session_id = "sess-corrupt-del"
-    attempt_id = "attempt-corrupt-del"
+    session_id = "sess-corrupt-withdraw"
+    attempt_id = "attempt-corrupt-withdraw"
 
     consent = _consent(session_id)
     manifest = _manifest(tmp_path)
@@ -589,8 +589,8 @@ def test_delete_corrupt_linked_attempt_purges_mapping_sidecar_and_dek(
     assert attempt_path.is_file()
     attempt_path.write_bytes(b"corrupt-attempt-wire")
 
-    with pytest.raises(StoreCorruptionError):
-        recorder.delete(session_id)
+    # Explicit attempt-id withdrawal must successfully purge even corrupt attempt assets
+    recorder.withdraw_attempt(attempt_id)
 
     assert not attempt_path.exists()
     assert not mapping_path.exists()

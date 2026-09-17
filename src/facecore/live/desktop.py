@@ -86,6 +86,7 @@ class DesktopSession:
         self._terminal: SessionResult | None = None
         self._label: str | None = None
         self._deleted = False
+        self._delete_failed = False
         self._label_recorder = label_recorder
         self._label_attempt_id = label_attempt_id
         self._label_actor_ref = label_actor_ref
@@ -124,9 +125,21 @@ class DesktopSession:
         """True once the operator deleted the session chain via the UI."""
         return self._deleted
 
+    @property
+    def delete_failed(self) -> bool:
+        """True if the operator attempted deletion but the deletion failed."""
+        return self._delete_failed
+
     def mark_deleted(self) -> None:
         """Flag the session chain deleted: stops any later commit path."""
         self._deleted = True
+        self._delete_failed = False
+        self._recording = False
+
+    def mark_delete_failed(self) -> None:
+        """Flag that deletion failed: stops any later commit path."""
+        self._deleted = False
+        self._delete_failed = True
         self._recording = False
 
     def on_start(
