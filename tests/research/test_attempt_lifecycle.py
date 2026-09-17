@@ -532,3 +532,67 @@ def test_purge_expired_purges_expired_attempts_and_labels(
     assert recorder_later.list_attempts(experiment_id="exp-e1-001") == []
     with pytest.raises(KeyError):
         recorder_later.read_label("attempt-expiring")
+
+
+def test_delete_corrupt_linked_attempt_purges_mapping_sidecar_and_dek(
+    tmp_path: Path,
+) -> None:
+    """E7-B r7 V1 RED: corrupt linked attempt delete must purge sidecar + DEK."""
+    from facecore.contracts.crypto import KeyNotFoundError, StoreCorruptionError
+    from facecore.research.experiment import AttemptRecord
+    from facecore.research.keys import ResearchKeyProvider
+
+    now = _utc("2026-09-16T10:00:01Z")
+    recorder = _recorder(tmp_path, now)
+    session_id = "sess-corrupt-del"
+    attempt_id = "attempt-corrupt-del"
+
+    consent = _consent(session_id)
+    manifest = _manifest(tmp_path)
+    attempt = AttemptRecord(
+        experiment_id="exp-e1-001",
+        attempt_id=attempt_id,
+        participant_id="part-synth-001",
+        visit_id="visit-001",
+        condition_id="cond-001",
+        attempt_index=1,
+        retry_of=None,
+        consent_ref=session_id,
+        requested_at_utc="2026-09-16T10:00:00Z",
+        accepted_at_utc="2026-09-16T10:00:01Z",
+        started_at_utc=None,
+        ended_at_utc=None,
+        operational_status="accepted",
+        error_code=None,
+        bundle_ref=session_id,
+    )
+    recorder.begin_attempt(manifest, attempt, consent)
+
+    recorder.record_crop_mapping(
+        attempt_id,
+        {
+            "x": 0,
+            "y": 0,
+            "size": 16,
+            "frame_w": 16,
+            "frame_h": 16,
+            "mirrored_preview": False,
+        },
+    )
+    mapping_path = tmp_path / "store" / "_crop_mappings" / f"{attempt_id}.enc"
+    assert mapping_path.is_file()
+
+    key_provider = ResearchKeyProvider(tmp_path / "keys")
+    assert key_provider.get_key(f"rk_{attempt_id}") is not None
+
+    attempt_path = tmp_path / "store" / "_attempts" / "exp-e1-001" / f"{attempt_id}.enc"
+    assert attempt_path.is_file()
+    attempt_path.write_bytes(b"corrupt-attempt-wire")
+
+    with pytest.raises(StoreCorruptionError):
+        recorder.delete(session_id)
+
+    assert not attempt_path.exists()
+    assert not mapping_path.exists()
+    with pytest.raises(KeyNotFoundError):
+        key_provider.get_key(f"rk_{attempt_id}")
