@@ -69,6 +69,22 @@ pyside6 真窗及方形引導仍為既定方向；未經獨立工程與真機驗
 - **labeled**：有有效且版本化 ground truth 的 attempted；值為 enrolled identity／unenrolled／uncertain。uncertain 是標記狀態，不能算已知真值；監督指標另列 truth-known 數。
 - **eligible**：針對每個指標明列 eligible set，而不是單一「好看的 session」集合。無臉／低品質／timeout 是操作失敗，**不能從端到端分母消失**。
 - **paired-replay eligible**：兩臂具有相同可驗證完整窗口、版本相容且無缺檔／tamper 的集合。這是策略比較分母，不是全部真人辨識成功率分母。
+
+### Replay refusal 與 paired-replay eligibility
+
+`paired-replay eligible` 以 **attempt** 為隔離單位，不以單一 replay run 為隔離單位。
+
+同一 attempt 的任一 replay run／arm outcome 出現 refusal（包含 missing、deleted、expired、tampered、sealed、trace unavailable 或其他無法證成相同完整窗口的 refusal）時：
+
+1. 該 attempt **不得**進入本分析批次的 `paired-replay eligible`／`paired_complete` 集合；同一 attempt 內另有看似乾淨的 replay run，也不得用來救回 paired eligibility。
+2. 原始 live attempt 與既有 outcomes **不得刪除或覆寫**；refused replay run 必須保留為 refused evidence。
+3. refusal **不得增加 attempted 人次**。同一 attempt 重播多次仍是一個真人 attempt；replay run 數另列。
+4. 該 attempt 仍留在端到端 attempted 分母及其適用的 operation-error／truth 分層中；只退出需要可驗證完整配對窗口的策略比較分母。
+5. refusal 應觸發 replay-validity／missing-file 對帳（見 §7），不得透過挑選同 attempt 中較有利的乾淨 run 來隱藏缺檔、tamper 或版本不相容。
+
+**理由**：§5 已定義 `paired-replay eligible` 為「兩臂具有相同可驗證完整窗口、版本相容且無缺檔／tamper」的集合。只要同一 attempt 的任一 replay evidence 出現 refusal，該 attempt 的配對窗口便不再能被整體證成；run 級 cherry-pick 會高估策略比較分母，並讓重播次數影響真人結果。
+
+**相容性例**：六列算例的 s2 原本使 `paired_complete=5`；追加一筆 refused replay run 後，`attempted` 仍為 6、原始 live 結果保留、s2 整個 attempt 退出 paired 集合，因此 `paired_complete=4`，並觸發 T03。這不改變六列未追加 refusal 時的 `paired_complete=5`。
 - **successful**：enrolled truth-known session 的 terminal=`matched` 且 identity=truth；非單純 status=`matched`。
 
 每臂分開報：correct enrolled match、wrong enrolled match、unenrolled false accept、review、unknown、timeout、invalid_input、error、cancelled、unlabeled／uncertain、refused replay。終局分布與真值交叉分類相互對帳，但不強迫兩者用同一分類軸。
@@ -205,6 +221,43 @@ crop 的位置與大小僅由幾何（`W`、`H`）決定。任何身份分數、
 已同意的原 sample frame 與所記的 `crop_mapping`，必須足以重建出同一份 inference 輸入。
 
 若後續改為只保存 square input，則必須在 manifest 明示不能回看框外，不得冒稱保留了 sensor 全幀。此變更需先完成規格、同意、TTL 與刪除鏈驗收（見 §6 對新增持久資料種類的要求），不得於實作時逕行切換。
+
+### A.7.x Legacy bundle 與 `crop_mapping` fallback
+
+第一輪 E7-B 以前建立的 bundle 可能沒有持久化 `crop_mapping`。為保留舊資料的可讀性，replay 可在**嚴格限定條件**下沿用 legacy full-frame 行為；此 fallback 只處理 inference input 的重建方式，不替缺失的 collection provenance 補造證據。
+
+#### Legacy full-frame fallback 的允許條件
+
+只有在下列任一情況下，replay 才可不套用 crop、直接以既有 full-frame packet 重播：
+
+1. 沒有任何 attempt 透過權威持久化關係連到該 bundle／session；或
+2. 所有透過權威關係連到該 bundle／session 的 attempt 都沒有持久化 `crop_mapping`。
+
+此時：
+
+- fallback 僅表示「沿用 E7-B 前的 full-frame inference input 語意」；
+- 不得把缺少 mapping、trace 或 `CollectionWindow` 的 bundle 升級為 `collection_extent="full"`；paired eligibility 仍由 §5 的完整窗口、版本、缺檔／tamper 規則決定；
+- 不得從 attempt ID 的字串格式、prefix 或命名慣例推測 bundle 關聯。attempt ID 一律視為 opaque。
+
+#### 權威關係與 mapping 套用
+
+- attempt 與 bundle／session 的關聯，只能由持久化的 `bundle_ref` 或 `consent_ref` 識別。
+- `consent_ref == bundle_id` 可用來找出與 session 相關的 attempt，但**只有** `bundle_ref == bundle_id` 能證明某份持久化 `crop_mapping` 應套用於該 bundle 的 staged frames。
+- 若至少一個相關 attempt 存有 mapping，replay 不得靜默退回 legacy full-frame；它必須證成 mapping 與 bundle 的權威連結後才可套用。
+
+#### 必須 fail-closed 的情況
+
+遇到下列任一情況，replay 必須產生 refusal，不得 fallback、不得以不同 input 繼續 scoring：
+
+1. attempt index 無法讀取或解密；
+2. mapping 無法讀取、解密、解析或通過 schema 驗證；
+3. mapping 存在，但沒有 `bundle_ref == bundle_id` 的權威連結（orphan mapping）；
+4. 同一 bundle 的多個權威連結 attempt 帶有互不相同的 mapping（ambiguous mapping）；
+5. mapping 宣告的 `frame_w`／`frame_h` 與 staged frame shape 不符；
+6. crop 座標或 size 越界；
+7. 一部分相關 attempt 有 mapping、另一部分 mapping 的 bundle 關聯無法證成，形成混合／歧義狀態。
+
+**不變量**：有 mapping 的新 bundle，replay 必須重建出與 live scoring **同一份 inference input**（附錄 A.7）；無 mapping 的 legacy bundle，fallback 保留舊 full-frame 行為，但不得冒稱具備 E7-B 後的幾何重建證據。
 
 ### A.8 不得宣稱的事項
 
