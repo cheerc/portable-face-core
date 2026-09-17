@@ -87,6 +87,7 @@ EXPERIMENT_ID = "exp-phase2b-e2e"
 PROFILE_VERSION = "phase2b-e2e-v1"
 
 # Orthogonal unit gallery vectors; cosine scores are pure arithmetic.
+LiveVec = tuple[float, float, float] | Callable[[int], tuple[float, float, float]]
 _GALLERY_P1 = (1.0, 0.0, 0.0)
 _GALLERY_P2 = (0.0, 1.0, 0.0)
 _STRONG_P1 = (0.97, 0.20, 0.10)  # top ~0.97, margin ~0.77
@@ -215,7 +216,7 @@ class _ScriptedEmbedder:
     model_version = "sface_2021dec"
 
     def __init__(
-        self, live_vec: tuple[float, float, float] | Callable[[int], tuple[float, float, float]]
+        self, live_vec: LiveVec
     ) -> None:
         self._calls = 0
         self._live_vec = live_vec
@@ -339,7 +340,7 @@ class _Chain:
         self,
         session: str,
         *,
-        live_vec: tuple[float, float, float] | Callable[[int], tuple[float, float, float]] = _STRONG_P2,
+        live_vec: LiveVec = _STRONG_P2,
         face_live_seqs: set[int] | None = None,
         blind_after_gallery: bool = False,
         camera: CaptureSource | None = None,
@@ -497,19 +498,19 @@ class TestPhase2BSixRowEndToEnd:
         # Per-arm endpoints, produced by the real engine — not constructed.
         by_arm = {o.attempt_id: o for o in outcomes if o.arm_id == "A"}
         by_arm_b = {o.attempt_id: o for o in outcomes if o.arm_id == "B"}
-        assert (by_arm["att-sess-e2e-s1"].terminal,
-                by_arm["att-sess-e2e-s1"].matched_identity) == ("matched", "person-01")
+        s1a = by_arm["att-sess-e2e-s1"]
+        assert (s1a.terminal, s1a.matched_identity) == ("matched", "person-01")
         assert by_arm_b["att-sess-e2e-s1"].terminal == "timeout"
-        assert (by_arm["att-sess-e2e-s2"].terminal,
-                by_arm["att-sess-e2e-s2"].matched_identity) == ("matched", "person-02")
-        assert (by_arm_b["att-sess-e2e-s2"].terminal,
-                by_arm_b["att-sess-e2e-s2"].matched_identity) == ("matched", "person-02")
+        s2a = by_arm["att-sess-e2e-s2"]
+        s2b = by_arm_b["att-sess-e2e-s2"]
+        assert (s2a.terminal, s2a.matched_identity) == ("matched", "person-02")
+        assert (s2b.terminal, s2b.matched_identity) == ("matched", "person-02")
         assert by_arm["att-sess-e2e-s3"].terminal == "invalid_input"
         assert by_arm_b["att-sess-e2e-s3"].terminal == "invalid_input"
         assert by_arm["att-sess-e2e-s5"].terminal == "review"
         assert by_arm_b["att-sess-e2e-s5"].terminal == "timeout"
-        assert (by_arm["att-sess-e2e-s6"].terminal,
-                by_arm["att-sess-e2e-s6"].matched_identity) == ("matched", "person-02")
+        s6a = by_arm["att-sess-e2e-s6"]
+        assert (s6a.terminal, s6a.matched_identity) == ("matched", "person-02")
         # s4 has no inference result on either arm.
         assert "att-sess-e2e-s4" not in by_arm
         assert "att-sess-e2e-s4" not in by_arm_b
@@ -563,11 +564,12 @@ class TestPhase2BSixRowEndToEnd:
         ]
         live_s2 = [o for o in outcomes if o.attempt_id == "att-sess-e2e-s2"]
 
+        refused_run = "run-att-sess-e2e-s2-refused"
         refused_a = replace(
-            live_s2[0], run_id="run-att-sess-e2e-s2-refused", refusal="staging_incomplete"
+            live_s2[0], run_id=refused_run, refusal="staging_incomplete"
         )
         refused_b = replace(
-            live_s2[1], run_id="run-att-sess-e2e-s2-refused", refusal="staging_incomplete"
+            live_s2[1], run_id=refused_run, refusal="staging_incomplete"
         )
 
         report = analyze_batch(
@@ -783,7 +785,13 @@ class TestPhase2BChainRemainder:
         manifest_mid = json.loads(
             (chain.store / "sess-e2e-exp" / "manifest.json").read_text()
         )
-        assert manifest_mid["frame_count"] == 0
+        # Image blobs are destroyed and flagged; the count ledger is kept
+        # as evidence of what was collected (the blobs, not the count,
+        # are the privacy surface).
+        assert manifest_mid["images_purged"] is True
+        assert not list((chain.store / "sess-e2e-exp").glob("frame_*.enc"))
+        with pytest.raises(KeyError):
+            recorder.read_frame("sess-e2e-exp", 0)
         # The record itself survives image expiry.
         recorder.read_record("sess-e2e-exp")
 
@@ -831,7 +839,10 @@ class TestPhase2BChainRemainder:
         assert rc == 0
         recorder = chain.recorder()
         mapping = recorder.read_crop_mapping("att-sess-e2e-qt")
-        assert mapping["size"] == 16
+        # The synthetic live frames are 200x200, so the center square is
+        # the full 200x200 frame — the mapping round-trips regardless.
+        assert mapping["size"] == 200
+        assert mapping["x"] == 0 and mapping["y"] == 0
         attempts = [
             a
             for a in recorder.list_attempts(EXPERIMENT_ID)
@@ -894,5 +905,8 @@ class TestPhase2BChainRemainder:
             fresh.read_trace("att-sess-e2e-s5")
         with pytest.raises(KeyError):
             fresh.read_record("sess-e2e-del")
+        # Untouched sessions stay readable through a fresh recorder.
+        # (s1's live terminal is timeout — B never locked — which is
+        # exactly why it carries T06; readability is the assertion here.)
         intact = fresh.read_record("sess-e2e-s1")
-        assert intact.result.status.value == "matched"
+        assert intact.result.status.value == "timeout"
