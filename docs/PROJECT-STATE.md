@@ -1,6 +1,6 @@
 # Project State
 
-更新：2026-09-16。證據基準：main `dab9220c7e1241afddb36679e2b1642e84c73adc`（PR #69）。Phase 2A 結案（decision `d-20260916002300248295-1`）；Phase 2B 文件與研究工具工程已授權開工（decision `d-20260916012440460338-3`），研究能力尚未實作、尚無辨識有效性證據。啟動 session 時仍須查 live main／board；本檔不是 daemon 工作快照。
+更新：2026-09-17。證據基準：main `275b6de3a05d8b5650f625cf9c7bd06b14e1bd05`（PR #77）。Phase 2A 結案（decision `d-20260916002300248295-1`）；Phase 2B 文件與研究工具工程已授權開工（decision `d-20260916012440460338-3`），**工程鏈 E1–E7 已 merge**（見下「Phase 2B 工程進度」），**但尚無任何真實 session、尚無辨識有效性證據**——已實作的是研究工具能力，不是研究結論。啟動 session 時仍須查 live main／board；本檔不是 daemon 工作快照。
 
 ## 現在在哪裡
 
@@ -18,7 +18,25 @@
 
 已有：decode/detect/align/embed/compare、單幀 policy、加密 SQLite／KeyProvider、identity lifecycle、確認候選與 corroboration/promotion/utility/eviction、rollback/delete/export/import、generation migration、drift、replay、capacity 工具。**Phase 2A 新增**：相機 adapter（真機 device 可用＋`local` 列舉解析）、即時 session 聚合器、研究 session recorder（同意／加密／TTL／可恢復刪除）、加密存幀與逐幀 ID ledger、研究 CLI（live/replay/delete）。可用 CLI 語法以 `facecore.sh --help` 與目前 parser 為準；母規格的示意 `identify --confirm-learning` 不等於所有使用情境已有端到端產品 UI。
 
-尚未有：**引導 UI pyside6 真窗未實作（T7 僅 headless bindings）**；既有 replay harness 不替代它。既有人工照片驗收及 synthetic 功能測試，不保證換造型、跨日學習、500 人辨識或相機防翻拍效果。**真機辨識正確性未驗證**——修復後 smoke 只確認鏈路與分數區間，不構成研究有效性證據。
+尚未有：既有人工照片驗收及 synthetic 功能測試，不保證換造型、跨日學習、500 人辨識或相機防翻拍效果。**真機辨識正確性未驗證**——修復後 smoke 只確認鏈路與分數區間，不構成研究有效性證據。
+
+## Phase 2B 工程進度（G1 範圍；能力已落地，證據仍為零）
+
+下列為 `275b6de3` 已 merge 的研究工具能力。**全部只用 synthetic／test double 驗證**：能力存在不等於已用真人 session 驗證，更不等於辨識有效。
+
+| 包 | PR | 落地能力 |
+| --- | --- | --- |
+| E1 | #71 | 研究嘗試帳本前置於 camera／model setup（`research/cli.py:353 recorder.begin_attempt`） |
+| E2 | #72 | 既有量測點補診斷事件原因，未另立第二條 pipeline |
+| E3 | #73 | 固定窗口採集 `--fixed-seconds`（`research/cli.py:1162`、`:698`／`:711`）＋兩個真入口接線 |
+| E4 | #74 | replay 以**原時間**重演＋雙臂評估（`research/replay.py` `ArmOutcome:78`／`evaluate_arms`） |
+| E5 | #75 | attempt-aware 分母、診斷分類與每批分析入口（`research/analysis.py:391 analyze_batch`） |
+| E6 | #76 | prospective holdout candidate freeze（`research/split.py` `CandidateFreeze`／`HoldoutRelease`） |
+| E7-B | #77 | 最小 pyside6 引導真窗＋方形採集幾何契約（`live/qt_window.py`，spec 附錄 A） |
+
+`report.py:summarize()` 的舊分母與 `analyze_batch` 的新 attempt-aware 分母**刻意並存**（執行計畫 `:301`／`:461` 明文要求保留舊 caller 相容性，不以新分母重新詮釋舊 M3 報表）；這不是待統一的技術債。
+
+**仍不可宣稱**：`TOOLING_READY`（屬 G2，且真機 smoke 未做）、採集就緒、任何準確率。Qt 真窗僅以 offscreen 驗證，**offscreen 不構成 macOS 相機權限層或真實裝置的證據**。
 
 ## 現有選型證據（分母與限制不得省略）
 
@@ -52,10 +70,10 @@ Baseline/adaptive 有不同規則；2/13 對 0/13 不是純粹同 operating poin
 
 ## 未驗 retained（不隱含派工授權）
 
-- 真機 disconnect 模擬、OS 相機權限層驗證。
+- 真機 disconnect 模擬、OS 相機權限層驗證（2A 移交）。E8-A 的全鏈 e2e 為 synthetic／offscreen，**不涵蓋也不替代**這兩項；E8-B 真機 smoke 需 operator 在場並另行授權。
 - 辨識正確性（屬 2B；工具工程已開工，尚無任何真實 session 證據）。
-- 引導 UI pyside6 真窗、§5 對照臂、§8 分母、holdout 切分（屬 2B 工程範圍，未實作）；未註冊參與者 session 另需 G3 採集授權與該參與者個別同意。
-- 研究 evidence plumbing 三項已知缺口：attempt 帳本晚於 camera／model setup、`--fixed-seconds` 未實作、replay 以重放時鐘重建 processed（見執行計畫 §10）。修復前，雙臂比較與 session 級分母不得用於任何有效性宣稱。
+- 引導 UI pyside6 真窗、§5 對照臂、§8 分母、holdout 切分之**工程能力已於 E3–E7 落地**（見「Phase 2B 工程進度」），但**全部僅 synthetic 驗證**；未註冊參與者 session 另需 G3 採集授權與該參與者個別同意。
+- 研究 evidence plumbing 三項缺口**已修復**（E1 attempt 帳本前置、E3 `--fixed-seconds`、E4 replay 原時間重演）。修復本身只解除工具面阻擋；在有真實 session 之前，雙臂比較與 session 級分母**仍不得用於任何有效性宣稱**。
 - R4 缺檔 seq/rank 對位、各臂 refused 計數／雜檔處理、ORT teardown crash、continuity 位移界線初值（0.50 仍為初值）、ORT 端到端 5fps 餘量。
 
 ## Next Session
