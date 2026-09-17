@@ -45,3 +45,30 @@ jobs:
         run: pip install -e .[dev]
       - name: Full 500-identity synthetic scale run
         run: python scripts/run_500_scale.py
+
+  qt-smoke:
+    strategy:
+      matrix:
+        os: [macos-14, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install Linux Qt runtime libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1
+      - name: Install package with research UI extra
+        run: pip install -e .[dev,research-ui]
+      - name: Run offscreen synthetic Qt smoke
+        run: python -m pytest tests/live/test_qt_window.py -q
+      - name: Run Qt lifecycle regression (staging fail-closed)
+        run: >-
+          python -m pytest
+          tests/research/test_cli_lifecycle.py::test_staging_failure_refuses_commit_and_marks_error
+          -q

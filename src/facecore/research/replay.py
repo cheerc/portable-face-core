@@ -48,6 +48,7 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
+from facecore.contracts.crypto import StoreCorruptionError
 from facecore.live.contracts import (
     FrameObservation,
     FramePacket,
@@ -60,6 +61,7 @@ from facecore.live.session import (
     compute_baseline_best_quality,
 )
 from facecore.research.diagnostics import FrameTraceEntry, SessionTrace
+from facecore.research.experiment import AttemptRecord
 from facecore.research.recorder import MAX_FRAMES_PER_SESSION, ResearchRecorder
 from facecore.research.records import CollectionWindow
 from facecore.research.split import HoldoutSealedError
@@ -178,6 +180,132 @@ def _window_for(frame_count: int, coverage_ns: int, profile: ResearchProfile) ->
     return "early-stop"
 
 
+def _attempt_belongs_to_bundle(
+    attempt: AttemptRecord, bundle_id: str
+) -> bool:
+    """Return True if an attempt belongs to the given bundle/session.
+
+    Uses authoritative persisted relationships (bundle_ref or consent_ref
+    matching the bundle_id). Attempt IDs are treated as opaque to prevent
+    false orphan linkage from prefix collisions.
+    """
+    return attempt.bundle_ref == bundle_id or attempt.consent_ref == bundle_id
+
+
+def _apply_capture_mapping(
+    recorder: ResearchRecorder, bundle_id: str, frames: list[FramePacket]
+) -> list[FramePacket]:
+    """Crop staged frames with the bundle attempt's capture mapping.
+
+    Returns the original packets unchanged when no attempt links this
+    bundle or no mapping was persisted (legacy backward-compat). A
+    persisted mapping that no longer matches a staged frame fails closed
+    with ReplayRefusal instead of silently scoring a different input.
+    """
+    from facecore.live.qt_window import CropMapping
+
+    try:
+        attempts = recorder.list_attempts()
+    except Exception as exc:
+        raise ReplayRefusal(
+            bundle_id,
+            "tampered",
+            f"attempt index corrupt while resolving capture mapping: {exc}",
+        ) from exc
+
+    # W3/W4: Identify all attempts belonging to this bundle/session by
+    # authoritative linkage (bundle_ref or consent_ref). Attempt IDs are opaque.
+    related = [a for a in attempts if _attempt_belongs_to_bundle(a, bundle_id)]
+
+    mapped_attempts: list[tuple[AttemptRecord, CropMapping]] = []
+    for a in related:
+        try:
+            stored = recorder.read_crop_mapping(a.attempt_id)
+        except KeyError:
+            continue
+        except Exception as exc:
+            raise ReplayRefusal(
+                bundle_id, "tampered", f"capture mapping unreadable: {exc}"
+            ) from exc
+        try:
+            mapping = CropMapping.from_dict(dict(stored))
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ReplayRefusal(
+                bundle_id, "tampered", f"capture mapping invalid: {exc}"
+            ) from exc
+        mapped_attempts.append((a, mapping))
+
+    if not mapped_attempts:
+        # No related attempt has any mapping: genuinely legacy full-frame session.
+        return frames
+
+    # If any related attempt has a mapping, verify there is no orphan mapping.
+    linked_with_mapping = [a for a, m in mapped_attempts if a.bundle_ref == bundle_id]
+    unlinked_with_mapping = [a for a, m in mapped_attempts if a.bundle_ref != bundle_id]
+
+    if not linked_with_mapping:
+        orphan_ids = sorted(a.attempt_id for a in unlinked_with_mapping)
+        raise ReplayRefusal(
+            bundle_id,
+            "tampered",
+            f"capture mapping exists without bundle link ({','.join(orphan_ids)}); "
+            "refusing legacy replay",
+        )
+
+    if unlinked_with_mapping:
+        orphan_ids = sorted(a.attempt_id for a in unlinked_with_mapping)
+        raise ReplayRefusal(
+            bundle_id,
+            "tampered",
+            f"capture mapping exists without bundle link ({','.join(orphan_ids)}); "
+            "refusing legacy replay",
+        )
+
+    first_mapping = mapped_attempts[0][1]
+    for a, m in mapped_attempts[1:]:
+        if m != first_mapping:
+            raise ReplayRefusal(
+                bundle_id,
+                "tampered",
+                "ambiguous capture mappings across linked attempts; refusing replay",
+            )
+
+    mapping = first_mapping
+    cropped: list[FramePacket] = []
+    for packet in frames:
+        height, width = packet.rgb.shape[:2]
+        if (
+            width != mapping.frame_w
+            or height != mapping.frame_h
+            or mapping.x + mapping.size > width
+            or mapping.y + mapping.size > height
+        ):
+            raise ReplayRefusal(
+                bundle_id,
+                "tampered",
+                f"staged frame {packet.sequence} shape "
+                f"({height},{width},3) does not match capture mapping "
+                f"({mapping.frame_h},{mapping.frame_w})",
+            )
+        crop = packet.rgb[
+            mapping.y : mapping.y + mapping.size,
+            mapping.x : mapping.x + mapping.size,
+            :,
+        ]
+        import numpy as np
+
+        cropped.append(
+            FramePacket(
+                sequence=packet.sequence,
+                captured_ns=packet.captured_ns,
+                rgb=np.ascontiguousarray(crop),
+                orientation=packet.orientation,
+                mirrored=packet.mirrored,
+            )
+        )
+    return cropped
+
+
 def replay_session(
     bundle_id: str,
     *,
@@ -230,7 +358,7 @@ def replay_session(
         if "deleted" in message:
             raise ReplayRefusal(bundle_id, "deleted", message) from exc
         raise ReplayRefusal(bundle_id, "missing", message) from exc
-    except ValueError as exc:
+    except (ValueError, StoreCorruptionError) as exc:
         raise ReplayRefusal(bundle_id, "tampered", str(exc)) from exc
 
     stored = record.result
@@ -266,13 +394,19 @@ def replay_session(
         except ValueError as exc:
             raise ReplayRefusal(bundle_id, "tampered", str(exc)) from exc
 
+    # E7-B Appendix A.7: a bundle whose attempt persisted a capture mapping
+    # must replay the same inference input live scored. Resolve the mapping
+    # from the linked attempt and crop before scoring; bundles without a
+    # mapping keep legacy full-frame behavior (backward-compat).
+    score_packets = _apply_capture_mapping(recorder, bundle_id, frames)
+
     coverage_ns = frames[-1].captured_ns - frames[0].captured_ns if frames else 0
     window = _window_for(len(frames), coverage_ns, profile)
 
     engine = SessionEngine(profile, gallery_digest, model_generation)
     engine.start(bundle_id, frames[0].captured_ns)
     terminal: SessionResult | None = None
-    for packet in frames:
+    for packet in score_packets:
         observation = scorer(packet)
         if observation.sequence != packet.sequence:
             raise ReplayRefusal(

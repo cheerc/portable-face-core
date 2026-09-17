@@ -16,7 +16,12 @@ import numpy as np
 
 from facecore.contracts.policy import PolicyProfile
 from facecore.live.capture import FakeCapture
-from facecore.live.contracts import FramePacket, ResearchProfile, SessionStatus
+from facecore.live.contracts import (
+    FrameObservation,
+    FramePacket,
+    ResearchProfile,
+    SessionStatus,
+)
 from facecore.live.controller import LiveController
 from facecore.live.frame_pipeline import (
     ResearchGallery,
@@ -122,3 +127,96 @@ def test_production_wiring_capture_to_scorer_to_engine() -> None:
     if result is not None:
         assert isinstance(result.status, SessionStatus)
         assert result.session_id == "sess-t4-int"
+
+
+def test_square_capture_mapping_reaches_scorer_before_inference() -> None:
+    """E7-B r2 F2: rectangular capture is cropped before score_frame."""
+    from facecore.live.qt_window import crop_frame
+
+    ctx = _context()
+    engine = SessionEngine(_profile(), ctx.gallery.digest, "gen-1")
+    original = np.full((200, 240, 3), 120, dtype=np.uint8)
+    original[::2, ::2] = 160
+    original[1::2, 1::2] = 80
+    frame = FramePacket(sequence=1, captured_ns=0, rgb=original)
+    seen_shapes: list[tuple[int, ...]] = []
+    mappings: list[dict[str, object]] = []
+
+    def transform(packet: FramePacket) -> FramePacket:
+        cropped, mapping = crop_frame(packet.rgb)
+        mappings.append(mapping.to_dict())
+        return FramePacket(
+            sequence=packet.sequence,
+            captured_ns=packet.captured_ns,
+            rgb=cropped,
+            orientation=packet.orientation,
+            mirrored=packet.mirrored,
+        )
+
+    def scorer(packet: FramePacket) -> FrameObservation:
+        seen_shapes.append(packet.rgb.shape)
+        return score_frame(packet, ctx)
+
+    controller = LiveController(
+        engine=engine,
+        source=FakeCapture(frames=[frame]),
+        scorer=scorer,
+        frame_transform=transform,
+    )
+    controller.start_session("sess-e7-square", now_ns=0)
+    result = controller.run_until_terminal(max_steps=5)
+    controller.close()
+
+    assert result is not None
+    assert seen_shapes == [(200, 200, 3)]
+    assert mappings == [
+        {
+            "x": 20,
+            "y": 0,
+            "size": 200,
+            "frame_w": 240,
+            "frame_h": 200,
+            "mirrored_preview": False,
+        }
+    ]
+
+
+def test_sink_receives_original_packet_while_scorer_gets_square() -> None:
+    """E7-B r4 S1 RED: staging/preview keep full frame, scorer gets square."""
+    from facecore.live.qt_window import crop_frame
+
+    ctx = _context()
+    engine = SessionEngine(_profile(), ctx.gallery.digest, "gen-1")
+    original = np.full((200, 240, 3), 120, dtype=np.uint8)
+    frame = FramePacket(sequence=1, captured_ns=0, rgb=original)
+    seen_shapes: list[tuple[int, ...]] = []
+    sunk_shapes: list[tuple[int, ...]] = []
+
+    def transform(packet: FramePacket) -> FramePacket:
+        cropped, _ = crop_frame(packet.rgb)
+        return FramePacket(
+            sequence=packet.sequence,
+            captured_ns=packet.captured_ns,
+            rgb=cropped,
+            orientation=packet.orientation,
+            mirrored=packet.mirrored,
+        )
+
+    def scorer(packet: FramePacket) -> FrameObservation:
+        seen_shapes.append(packet.rgb.shape)
+        return score_frame(packet, ctx)
+
+    controller = LiveController(
+        engine=engine,
+        source=FakeCapture(frames=[frame]),
+        scorer=scorer,
+        frame_sink=lambda packet: sunk_shapes.append(packet.rgb.shape),
+        frame_transform=transform,
+    )
+    controller.start_session("sess-e7-split", now_ns=0)
+    result = controller.run_until_terminal(max_steps=5)
+    controller.close()
+
+    assert result is not None
+    assert seen_shapes == [(200, 200, 3)]
+    assert sunk_shapes == [(200, 240, 3)]

@@ -25,6 +25,7 @@ Hard boundaries:
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Literal
 
 from facecore.live.capture import CaptureSource
@@ -36,6 +37,7 @@ from facecore.live.contracts import (
 )
 from facecore.live.controller import LiveController
 from facecore.live.session import SessionEngine
+from facecore.research.experiment import EvaluationLabel
 from facecore.research.records import ConsentRecord
 
 DesktopState = Literal["idle", "running", "terminal", "labeled", "closed"]
@@ -56,9 +58,13 @@ class DesktopSession:
         sample_interval_ns: int = 200_000_000,
         max_frames: int = 25,
         frame_sink: Callable[[FramePacket], None] | None = None,
+        frame_transform: Callable[[FramePacket], FramePacket] | None = None,
         fixed_seconds: bool = False,
         trace_recorder: object | None = None,
         trace_attempt_id: str | None = None,
+        label_recorder: object | None = None,
+        label_attempt_id: str | None = None,
+        label_actor_ref: str = "desktop-operator",
     ) -> None:
         if not session_id:
             raise ValueError("session_id must not be empty")
@@ -69,6 +75,7 @@ class DesktopSession:
             sample_interval_ns=sample_interval_ns,
             max_frames=max_frames,
             frame_sink=frame_sink,
+            frame_transform=frame_transform,
             fixed_seconds=fixed_seconds,
             trace_recorder=trace_recorder,
             trace_attempt_id=trace_attempt_id,
@@ -78,6 +85,17 @@ class DesktopSession:
         self._state: DesktopState = "idle"
         self._terminal: SessionResult | None = None
         self._label: str | None = None
+        self._deleted = False
+        self._delete_failed = False
+        self._label_recorder = label_recorder
+        self._label_attempt_id = label_attempt_id
+        self._label_actor_ref = label_actor_ref
+        if (label_recorder is None) != (label_attempt_id is None):
+            raise ValueError(
+                "label_recorder and label_attempt_id must be given together"
+            )
+        if not label_actor_ref:
+            raise ValueError("label_actor_ref must not be empty")
         self._recording = False
 
     # -- UI events -----------------------------------------------------------
@@ -97,6 +115,32 @@ class DesktopSession:
     def recording(self) -> bool:
         """Recording indicator: on from successful start until close."""
         return self._recording
+
+    @property
+    def session_id(self) -> str:
+        return self._session_id
+
+    @property
+    def deleted(self) -> bool:
+        """True once the operator deleted the session chain via the UI."""
+        return self._deleted
+
+    @property
+    def delete_failed(self) -> bool:
+        """True if the operator attempted deletion but the deletion failed."""
+        return self._delete_failed
+
+    def mark_deleted(self) -> None:
+        """Flag the session chain deleted: stops any later commit path."""
+        self._deleted = True
+        self._delete_failed = False
+        self._recording = False
+
+    def mark_delete_failed(self) -> None:
+        """Flag that deletion failed: stops any later commit path."""
+        self._deleted = False
+        self._delete_failed = True
+        self._recording = False
 
     def on_start(
         self, consent: ConsentRecord, now_ns: int, device_id: str = "default"
@@ -141,8 +185,14 @@ class DesktopSession:
                 self._controller._controller_now_ns()
             )
         self._terminal = terminal
-        self._state = "terminal"
-        self._recording = False
+        if self._controller._fixed_seconds and not self._controller.collection_complete:
+            # Fixed-window mode keeps the view running after B locks so Cancel
+            # can stop the remaining collector before its original deadline.
+            self._state = "running"
+            self._recording = True
+        else:
+            self._state = "terminal"
+            self._recording = False
         return terminal
 
     def run_background_and_join(self, timeout_s: float = 10.0) -> SessionResult:
@@ -162,8 +212,12 @@ class DesktopSession:
                 self._controller._controller_now_ns()
             )
         self._terminal = terminal
-        self._state = "terminal"
-        self._recording = False
+        if self._controller._fixed_seconds and not self._controller.collection_complete:
+            self._state = "running"
+            self._recording = True
+        else:
+            self._state = "terminal"
+            self._recording = False
         _ = timeout_s
         return terminal
 
@@ -191,11 +245,70 @@ class DesktopSession:
         )
         return max(0, remaining_ns // 1_000_000)
 
-    def label_terminal(self, ground_truth: str | None) -> None:
-        """Operator post-terminal labeling: sidecar only, never scorer input."""
+    def configure_label_persistence(
+        self,
+        recorder: object,
+        attempt_id: str,
+        *,
+        actor_ref: str = "desktop-operator",
+    ) -> None:
+        """Attach the evaluator-only label sidecar before terminal labeling."""
+        if self._state not in ("idle", "terminal"):
+            raise RuntimeError(
+                f"cannot configure label persistence in state {self._state!r}"
+            )
+        if not attempt_id:
+            raise ValueError("attempt_id must not be empty")
+        if not actor_ref:
+            raise ValueError("actor_ref must not be empty")
+        self._label_recorder = recorder
+        self._label_attempt_id = attempt_id
+        self._label_actor_ref = actor_ref
+
+    def label_terminal(
+        self,
+        ground_truth: str | None,
+        *,
+        kind: str | None = None,
+        labeled_at_utc: str | None = None,
+    ) -> None:
+        """Persist evaluator-only label; it never enters scorer/engine inputs.
+
+        A non-None identity is an ``enrolled`` label.  ``kind="unenrolled"``
+        explicitly labels an unknown sample without displaying a guessed name.
+        Existing callers without a recorder remain in-memory compatible.
+        """
         if self._state != "terminal":
             raise RuntimeError(
                 f"can only label a terminal session, not {self._state!r}"
+            )
+        if kind is None:
+            kind = "enrolled" if ground_truth is not None else "unenrolled"
+        if kind not in {"enrolled", "unenrolled", "uncertain"}:
+            raise ValueError(f"unsupported label kind {kind!r}")
+        if kind == "enrolled" and not ground_truth:
+            raise ValueError("enrolled label requires identity")
+        if kind != "enrolled" and ground_truth is not None:
+            raise ValueError(f"{kind} label must not carry identity")
+
+        if self._label_recorder is not None and self._label_attempt_id is not None:
+            read_history = getattr(self._label_recorder, "read_label_history")
+            write_label = getattr(self._label_recorder, "write_label")
+            try:
+                history = read_history(self._label_attempt_id)
+            except KeyError:
+                history = []
+            revision = (history[-1].revision + 1) if history else 1
+            timestamp = labeled_at_utc or datetime.now(timezone.utc).isoformat()
+            write_label(
+                EvaluationLabel(
+                    attempt_id=self._label_attempt_id,
+                    revision=revision,
+                    kind=kind,
+                    identity_id=ground_truth if kind == "enrolled" else None,
+                    actor_ref=self._label_actor_ref,
+                    labeled_at=timestamp,
+                )
             )
         self._label = ground_truth
         self._state = "labeled"
@@ -224,6 +337,11 @@ class DesktopSession:
     def observations(self) -> list[FrameObservation]:
         """Scored observations in sample order (t-3 ledger source)."""
         return self._controller.scored_observations
+
+    @property
+    def controller_consumed_ns(self) -> int | None:
+        """Newest consumed capture stamp (session-clock domain, read-only)."""
+        return self._controller.last_consumed_ns
 
     def cancel_collection(self, now_ns: int) -> SessionResult:
         """E3: stop the fixed-window collector immediately (incomplete)."""

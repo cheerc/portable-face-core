@@ -15,9 +15,11 @@ hardware-ready; participant-smoke blocked (no consent solicited).
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import time
+from typing import Any
 
 import numpy as np
 import pytest
@@ -382,6 +384,83 @@ def test_record_tamper_forces_error_exit(tmp_path: Path) -> None:
     assert rc == 4
 
 
+def test_staging_failure_refuses_commit_and_marks_error(
+    tmp_path: Path,
+) -> None:
+    """E7-B r2 F5: staging errors must fail closed, never commit as success.
+
+    Environment split (r3): without the optional research-ui extra the Qt
+    route is unavailable (rc=2, nothing committable); the fail-closed
+    staging path (rc=4 + error attempt) is covered by qt-smoke.
+    """
+    pytest.importorskip("PySide6.QtWidgets")
+    profile_path = _profile_dict(tmp_path)
+    profile_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "profile_version": "t8-cli-v1",
+                "timeout_ms": 5000,
+                "sample_interval_ms": 200,
+                "max_frames": 25,
+                "queue_limit": 1,
+                "required_support": 2,
+                "min_support_interval_ms": 1,
+                "match_threshold": 0.10,
+                "review_threshold": 0.05,
+                "margin_threshold": 0.01,
+                "detector_version": "yunet-test",
+                "quality_policy_version": "q-test-v1",
+                "continuity_max_center_delta_ratio": 0.50,
+            }
+        )
+    )
+    store = tmp_path / "store"
+    key_dir = tmp_path / "research_keys"
+    # Inject frame-dimension change: frame 1 is 16x16, frame 2 is 16x20.
+    # required_support=2 keeps the session alive past frame 1 (frame 1
+    # alone cannot terminate) so the contradictory second mapping is
+    # actually consumed and must refuse the commit.
+    f1 = FramePacket(
+        sequence=1, captured_ns=0, rgb=np.zeros((16, 16, 3), dtype=np.uint8)
+    )
+    f2 = FramePacket(
+        sequence=2,
+        captured_ns=200_000_000,
+        rgb=np.zeros((16, 20, 3), dtype=np.uint8),
+    )
+    f3 = FramePacket(
+        sequence=3,
+        captured_ns=400_000_000,
+        rgb=np.zeros((16, 16, 3), dtype=np.uint8),
+    )
+    capture = FakeCapture(frames=[f1, f2, f3])
+
+    rc = cmd_live(
+        profile_path=profile_path,
+        store=store,
+        key_dir=key_dir,
+        device="fake",
+        session_id="sess-e7-stage-fail",
+        record_consent=True,
+        image_consent=True,
+        ui="qt",
+        qt_offscreen=True,
+        capture_factory=lambda _dev: capture,
+    )
+
+    assert rc == 4
+    rec = ResearchRecorder(
+        store_root=store, key_dir=key_dir, clock=lambda: datetime.now(timezone.utc)
+    )
+    with pytest.raises(KeyError):
+        rec.read_record("sess-e7-stage-fail")
+    attempts = rec.list_attempts(experiment_id="exp-cli-e3")
+    assert attempts
+    assert attempts[0].operational_status in ("error", "setup_error")
+    assert attempts[0].error_code is not None
+
+
 def test_report_counts_failed_attempt_no_silent_drop() -> None:
     from facecore.research.replay import ReplayResult
     from facecore.live.contracts import SessionResult
@@ -463,3 +542,70 @@ def test_injection_leaves_no_readable_bundle_or_worker(tmp_path: Path) -> None:
     controller.close()
     assert controller.workers_joined
     assert controller.source_closed
+
+
+def test_delete_failure_in_cli_aborts_commit_and_returns_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """E7-B r8 W2: failed Qt Delete must abort commit, never commit, return rc=4."""
+    pytest.importorskip("PySide6.QtWidgets")
+    from facecore.live.qt_window import QtResearchWindow
+
+    profile_path = _profile_dict(tmp_path)
+    profile_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1",
+                "profile_version": "t8-cli-v1",
+                "timeout_ms": 5000,
+                "sample_interval_ms": 200,
+                "max_frames": 25,
+                "queue_limit": 1,
+                "required_support": 1,
+                "min_support_interval_ms": 1,
+                "match_threshold": 0.10,
+                "review_threshold": 0.05,
+                "margin_threshold": 0.01,
+                "detector_version": "yunet-test",
+                "quality_policy_version": "q-test-v1",
+                "continuity_max_center_delta_ratio": 0.50,
+            }
+        )
+    )
+    store = tmp_path / "store"
+    key_dir = tmp_path / "research_keys"
+    f1 = FramePacket(
+        sequence=1, captured_ns=0, rgb=np.zeros((16, 16, 3), dtype=np.uint8)
+    )
+    capture = FakeCapture(frames=[f1])
+
+    # Patch ResearchRecorder.delete to return False
+    monkeypatch.setattr(ResearchRecorder, "delete", lambda self, session_id: False)
+
+    orig_init = QtResearchWindow.__init__
+
+    def _hooked_init(self: Any, *args: Any, **kwargs: Any) -> None:
+        orig_init(self, *args, **kwargs)
+        self.start_clicked()
+        self.process_once()
+        self.delete_clicked()
+
+    monkeypatch.setattr(QtResearchWindow, "__init__", _hooked_init)
+
+    rc = cmd_live(
+        profile_path=profile_path,
+        store=store,
+        key_dir=key_dir,
+        device="fake",
+        session_id="sess-e7-del-fail-cli",
+        record_consent=True,
+        image_consent=True,
+        ui="qt",
+        qt_offscreen=True,
+        capture_factory=lambda _dev: capture,
+    )
+
+    assert rc == 4
+    # Verify session was NOT committed
+    manifest_path = store / "sess-e7-del-fail-cli" / "manifest.json"
+    assert not manifest_path.exists()

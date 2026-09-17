@@ -123,6 +123,7 @@ src/
     │   ├── controller.py
     │   ├── desktop.py
     │   ├── frame_pipeline.py
+    │   ├── qt_window.py
     │   └── session.py
     ├── pipeline/
     │   ├── __init__.py

@@ -30,7 +30,7 @@ Hard boundaries:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hashlib
@@ -153,6 +153,18 @@ def _parse_utc(value: str) -> datetime:
     return parsed
 
 
+def _mapping_int(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"crop_mapping {name} must be an integer")
+    return value
+
+
+def _mapping_bool(value: object, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"crop_mapping {name} must be bool")
+    return value
+
+
 class ResearchRecorder:
     """Consent-gated AEAD recorder for bounded research sessions."""
 
@@ -195,6 +207,10 @@ class ResearchRecorder:
         if not session_id or "/" in session_id:
             raise ValueError(f"invalid session_id {session_id!r}")
         return self._store / session_id
+
+    def session_bundle_exists(self, session_id: str) -> bool:
+        """True when a committed session bundle directory is present."""
+        return (self._sess_dir(session_id) / "manifest.json").is_file()
 
     @staticmethod
     def _frame_name(index: int) -> str:
@@ -587,6 +603,21 @@ class ResearchRecorder:
                                 purged.append(attempt_id)
                     except Exception:
                         continue
+        # Crop mappings share the attempt record TTL: any mapping whose
+        # attempt is withdrawn or already purged must not survive on disk.
+        crop_root = self._store / self._CROP_MAPPINGS_DIR
+        if crop_root.is_dir():
+            for crop_path in sorted(crop_root.glob("*.enc")):
+                crop_attempt_id = crop_path.stem
+                try:
+                    attempt_path, _, _ = self._find_attempt_and_path(crop_attempt_id)
+                    if attempt_path is not None and attempt_path.is_file():
+                        continue
+                    crop_path.unlink(missing_ok=True)
+                except Exception:
+                    # Fail-closed deletion: unverifiable geometry ciphertext
+                    # cannot justify retention once its attempt is gone.
+                    crop_path.unlink(missing_ok=True)
         # Purge any case files under _cases that are expired or whose attempt is gone
         cases_root = self._store / "_cases"
         if cases_root.is_dir():
@@ -596,8 +627,12 @@ class ResearchRecorder:
                 for case_path in sorted(exp_dir.glob("*.enc")):
                     att_id = case_path.stem
                     try:
-                        attempt_path, _, meta = self._find_attempt_and_path(att_id)
-                        if attempt_path is None or not attempt_path.is_file():
+                        attempt_path, record, meta = self._find_attempt_and_path(att_id)
+                        if (
+                            attempt_path is None
+                            or not attempt_path.is_file()
+                            or record is None
+                        ):
                             case_path.unlink(missing_ok=True)
                         elif meta:
                             exp_str = meta.get("record_expires_at_utc")
@@ -647,7 +682,13 @@ class ResearchRecorder:
         return purged
 
     def delete(self, session_id: str) -> bool:
-        """Tombstone-first re-entrant deletion; idempotent success."""
+        """Tombstone-first re-entrant deletion; idempotent success.
+
+        U2 fail-closed: linked-attempt cleanup errors surface instead of
+        being skipped. A corrupt linked attempt is removed fail-closed
+        (unreadable ciphertext cannot justify retention) after recording
+        the failure; the return value reflects full removal.
+        """
         sess_dir = self._sess_dir(session_id)
         if sess_dir.exists():
             tombstone = sess_dir / "tombstone.json"
@@ -665,6 +706,7 @@ class ResearchRecorder:
         else:
             self._active.pop(session_id, None)
         # F2: cascade delete any attempts linked to this session
+        cascade_errors: list[str] = []
         attempts_root = self._store / self._ATTEMPTS_DIR
         if attempts_root.is_dir():
             for exp_dir in sorted(attempts_root.iterdir()):
@@ -674,13 +716,26 @@ class ResearchRecorder:
                     attempt_id = path.stem
                     try:
                         record, meta = self._decrypt_attempt(path)
+                    except Exception as exc:
+                        # W1: unreadable attempt cannot be proven to belong to
+                        # this session. Do NOT destroy unrelated assets!
+                        # Preserve the file, and record the failure so the
+                        # overall delete operation fails closed.
+                        cascade_errors.append(f"{attempt_id}:{type(exc).__name__}")
+                        continue
+                    try:
                         if (
                             record.bundle_ref == session_id
                             or meta.get("consent_session_id") == session_id
                         ):
                             self.withdraw_attempt(attempt_id)
-                    except Exception:
-                        continue
+                    except Exception as exc:
+                        cascade_errors.append(f"{attempt_id}:{type(exc).__name__}")
+        if cascade_errors:
+            raise StoreCorruptionError(
+                f"linked attempt cleanup incomplete for {session_id!r}: "
+                + ";".join(sorted(set(cascade_errors)))
+            )
         return not sess_dir.exists()
 
     # -- E1: attempt ledger & label sidecar (Phase 2B §12 E1) ----------------
@@ -693,6 +748,7 @@ class ResearchRecorder:
     _ATTEMPTS_DIR = "_attempts"
     _LABELS_DIR = "_labels"
     _TRACES_DIR = "_traces"
+    _CROP_MAPPINGS_DIR = "_crop_mappings"
     _SPLITS_DIR = "_splits"
 
     def _split_dir(self, experiment_id: str) -> Path:
@@ -714,6 +770,115 @@ class ResearchRecorder:
         if not attempt_id or "/" in attempt_id:
             raise ValueError(f"invalid attempt_id {attempt_id!r}")
         return self._store / self._TRACES_DIR / attempt_id
+
+    def _crop_mapping_path(self, attempt_id: str) -> Path:
+        if not attempt_id or "/" in attempt_id:
+            raise ValueError(f"invalid attempt_id {attempt_id!r}")
+        return self._store / self._CROP_MAPPINGS_DIR / f"{attempt_id}.enc"
+
+    def record_crop_mapping(
+        self, attempt_id: str, crop_mapping: Mapping[str, object]
+    ) -> None:
+        """Persist one authenticated capture mapping for an attempt.
+
+        The first mapping is immutable: a later frame with a different geometry
+        is refused instead of silently rewriting the manifest-sidecar evidence.
+        Shares the fail-closed clock guard and deletion chain with labels and
+        traces (spec §6).
+        """
+        self._check_clock(self._clock())
+        required = {"x", "y", "size", "frame_w", "frame_h", "mirrored_preview"}
+        if set(crop_mapping) != required:
+            raise ValueError(
+                "crop_mapping must contain exactly "
+                "x, y, size, frame_w, frame_h, mirrored_preview"
+            )
+        x = _mapping_int(crop_mapping["x"], "x")
+        y = _mapping_int(crop_mapping["y"], "y")
+        size = _mapping_int(crop_mapping["size"], "size")
+        frame_w = _mapping_int(crop_mapping["frame_w"], "frame_w")
+        frame_h = _mapping_int(crop_mapping["frame_h"], "frame_h")
+        mirrored_preview = _mapping_bool(
+            crop_mapping["mirrored_preview"], "mirrored_preview"
+        )
+        normalized: dict[str, object] = {
+            "x": x,
+            "y": y,
+            "size": size,
+            "frame_w": frame_w,
+            "frame_h": frame_h,
+            "mirrored_preview": mirrored_preview,
+        }
+        if (
+            x < 0
+            or y < 0
+            or size <= 0
+            or frame_w <= 0
+            or frame_h <= 0
+            or x + size > frame_w
+            or y + size > frame_h
+        ):
+            raise ValueError("crop_mapping geometry is outside the source frame")
+
+        path = self._crop_mapping_path(attempt_id)
+        if path.is_file():
+            existing = self.read_crop_mapping(attempt_id)
+            if existing == normalized:
+                return
+            raise ValueError(
+                f"crop mapping for attempt {attempt_id!r} already exists; "
+                "rewriting capture geometry is prohibited"
+            )
+
+        try:
+            dek = self._keys.get_key(f"rk_{attempt_id}")
+        except KeyNotFoundError as exc:
+            raise KeyError(
+                f"attempt {attempt_id!r} key not found for crop mapping"
+            ) from exc
+        payload = json.dumps(
+            {"schema_version": STUDY_SCHEMA_VERSION, "crop_mapping": normalized},
+            sort_keys=True,
+        ).encode("utf-8")
+        blob = AeadCipher(dek).encrypt(
+            payload,
+            build_research_aad(
+                STUDY_SCHEMA_VERSION, attempt_id, "crop_mapping", "none"
+            ),
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._atomic_write_bytes(path, _blob_to_wire(blob))
+
+    def read_crop_mapping(self, attempt_id: str) -> dict[str, object]:
+        """Read the authenticated capture geometry sidecar."""
+        path = self._crop_mapping_path(attempt_id)
+        if not path.is_file():
+            raise KeyError(f"no crop mapping for attempt {attempt_id!r}")
+        try:
+            wire = path.read_bytes()
+            blob = _blob_from_wire(wire)
+            dek = self._keys.get_key(f"rk_{attempt_id}")
+            plaintext = AeadCipher(dek).decrypt(
+                blob,
+                build_research_aad(
+                    STUDY_SCHEMA_VERSION, attempt_id, "crop_mapping", "none"
+                ),
+            )
+            data = json.loads(plaintext.decode("utf-8"))
+            mapping = data["crop_mapping"]
+            if not isinstance(mapping, dict):
+                raise ValueError("crop_mapping payload is not an object")
+            return dict(mapping)
+        except (
+            KeyNotFoundError,
+            StoreCorruptionError,
+            OSError,
+            ValueError,
+            KeyError,
+        ) as exc:
+            raise StoreCorruptionError(
+                f"crop mapping for attempt {attempt_id!r} is corrupt"
+            ) from exc
 
     # -- E6: prospective holdout & candidate freeze custody (Phase 2B §12 E6) --
     def record_freeze(self, freeze: CandidateFreeze) -> None:
@@ -1224,8 +1389,11 @@ class ResearchRecorder:
                 continue
             path = exp_dir / f"{attempt_id}.enc"
             if path.is_file():
-                record, meta = self._decrypt_attempt(path)
-                return path, record, meta
+                try:
+                    record, meta = self._decrypt_attempt(path)
+                    return path, record, meta
+                except Exception:
+                    return path, None, {}
         return None, None, {}
 
     def write_label(self, label: EvaluationLabel) -> None:
@@ -1317,12 +1485,23 @@ class ResearchRecorder:
             raise KeyError(f"no labels for attempt {attempt_id!r}")
         return labels
 
-    def withdraw_attempt(self, attempt_id: str) -> None:
-        """Full consent withdrawal: tombstone-first + DEK destruction.
+    def _purge_attempt_assets(
+        self, attempt_id: str, path: Path | None = None
+    ) -> None:
+        """Purge attempt ciphertext, tombstone, DEK, and all sidecars.
 
-        Report denominators must be recalculated after withdrawal.
+        Destroys attempt record DEK, removes attempt ciphertext and tombstone,
+        removes labels, traces, crop mappings, and case records.
         """
-        path, _, _ = self._find_attempt_and_path(attempt_id)
+        if path is None:
+            attempts_root = self._store / self._ATTEMPTS_DIR
+            if attempts_root.is_dir():
+                for exp_dir in attempts_root.iterdir():
+                    if exp_dir.is_dir():
+                        candidate = exp_dir / f"{attempt_id}.enc"
+                        if candidate.is_file():
+                            path = candidate
+                            break
         if path is not None and path.is_file():
             tombstone = path.with_name(f"{attempt_id}.tombstone.json")
             if not tombstone.is_file():
@@ -1338,18 +1517,30 @@ class ResearchRecorder:
             tombstone.unlink(missing_ok=True)
         else:
             self._keys.destroy_key(f"rk_{attempt_id}")
+            if path is not None:
+                path.unlink(missing_ok=True)
         label_dir = self._label_dir(attempt_id)
         if label_dir.is_dir():
             shutil.rmtree(label_dir, ignore_errors=True)
         trace_dir = self._trace_dir(attempt_id)
         if trace_dir.is_dir():
             shutil.rmtree(trace_dir, ignore_errors=True)
+        crop_mapping_path = self._crop_mapping_path(attempt_id)
+        crop_mapping_path.unlink(missing_ok=True)
         cases_root = self._store / "_cases"
         if cases_root.is_dir():
             for exp_dir in cases_root.iterdir():
                 if exp_dir.is_dir():
                     case_path = exp_dir / f"{attempt_id}.enc"
                     case_path.unlink(missing_ok=True)
+
+    def withdraw_attempt(self, attempt_id: str) -> None:
+        """Full consent withdrawal: tombstone-first + DEK destruction.
+
+        Report denominators must be recalculated after withdrawal.
+        """
+        path, _, _ = self._find_attempt_and_path(attempt_id)
+        self._purge_attempt_assets(attempt_id, path=path)
 
     # -- E2: diagnostic trace (Phase 2B §12 E2) -----------------------------
     def append_trace(self, attempt_id: str, entry: FrameTraceEntry) -> None:

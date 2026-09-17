@@ -30,6 +30,7 @@ import argparse
 from collections.abc import Callable
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any
@@ -37,6 +38,7 @@ from uuid import uuid4
 
 import numpy as np
 
+from facecore.contracts.crypto import StoreCorruptionError
 from facecore.live.capture import CaptureSource, FakeCapture, OpenCVCapture
 from facecore.live.contracts import (
     FrameObservation,
@@ -268,6 +270,8 @@ def cmd_live(
     record_consent: bool,
     image_consent: bool,
     fixed_seconds: bool = False,
+    ui: str = "fake",
+    qt_offscreen: bool = False,
     models: Path | None = None,
     corpus: Path | None = None,
     capture_factory: Callable[[str], CaptureSource] | None = None,
@@ -287,6 +291,18 @@ def cmd_live(
         print(
             "research live: explicit --record-consent and --image-consent "
             "are both required",
+            file=sys.stderr,
+        )
+        return 2
+    if ui not in {"fake", "qt"}:
+        print(f"research live: unsupported UI {ui!r}", file=sys.stderr)
+        return 2
+    if qt_offscreen and ui != "qt":
+        print("research live: --qt-offscreen requires --ui qt", file=sys.stderr)
+        return 2
+    if qt_offscreen and device != "fake":
+        print(
+            "research live: --qt-offscreen only supports --device fake",
             file=sys.stderr,
         )
         return 2
@@ -356,17 +372,20 @@ def cmd_live(
         model_generation = "cli-fake-gen-1"
         gallery_digest = "cli-fake-gallery"
         engine = SessionEngine(profile, gallery_digest, model_generation)
-        frames = [
-            FramePacket(
-                sequence=seq,
-                captured_ns=seq * 200_000_000,
-                rgb=np.ascontiguousarray(
-                    np.full((16, 16, 3), 120 + (seq % 40), dtype=np.uint8)
-                ),
-            )
-            for seq in range(1, 8)
-        ]
-        source = FakeCapture(frames=frames)
+        if capture_factory is not None:
+            source = capture_factory(device)
+        else:
+            frames = [
+                FramePacket(
+                    sequence=seq,
+                    captured_ns=seq * 200_000_000,
+                    rgb=np.ascontiguousarray(
+                        np.full((16, 16, 3), 120 + (seq % 40), dtype=np.uint8)
+                    ),
+                )
+                for seq in range(1, 8)
+            ]
+            source = FakeCapture(frames=frames)
         scorer = _fake_scorer(model_generation, gallery_digest)
         is_true_path = False
     else:
@@ -457,21 +476,52 @@ def cmd_live(
         print(f"research live: recorder refused: {exc}", file=sys.stderr)
         return 4
     # t-3: true path stages each sampled frame encrypted as it is scored;
-    # fake path keeps envelope-only behavior.
+    # fake path keeps envelope-only behavior. Qt also receives frames for its
+    # preview/crop mapping.
+    #
+    # E7-B Appendix A.2-A.3: the center-square mapping is applied to the
+    # scorer input (capture adapter), while mirror stays preview-only.
+    # The default transform is identity so the headless fake path is
+    # untouched; Qt/offscreen synthetic smoke wires the square crop.
+    from facecore.live.qt_window import crop_packet as _crop_packet
+
     staged_errors: list[str] = []
+    qt_window: Any = None
+
+    def _square_capture_transform(packet: FramePacket) -> FramePacket:
+        cropped_packet, mapping = _crop_packet(packet)
+        try:
+            recorder.record_crop_mapping(resolved_attempt_id, mapping.to_dict())
+        except ValueError as exc:
+            # Geometry mismatch across frames: same-frame evidence would be
+            # unreconstructible, so the scorer input is refused fail-closed.
+            raise ValueError(f"capture geometry changed mid-session: {exc}") from exc
+        except Exception as exc:
+            staged_errors.append(f"crop:{type(exc).__name__}")
+        return cropped_packet
 
     def _stage_frame(packet: FramePacket) -> None:
-        try:
-            recorder.append_frame(packet)
-        except Exception as exc:
-            staged_errors.append(f"{packet.sequence}:{type(exc).__name__}")
+        if is_true_path:
+            try:
+                recorder.append_frame(packet)
+            except Exception as exc:
+                staged_errors.append(f"{packet.sequence}:{type(exc).__name__}")
+        if qt_window is not None:
+            try:
+                # A.7: the preview renders the original full frame; the
+                # scorer-side transform owns the mapping write, so the sink
+                # must not re-crop (that double-crop diverges the mapping).
+                qt_window.render_full_frame(packet.rgb)
+            except Exception as exc:
+                staged_errors.append(f"crop:{type(exc).__name__}")
 
     desktop = DesktopSession(
         engine=engine,
         source=source,
         scorer=scorer,
         session_id=session_id,
-        frame_sink=_stage_frame if is_true_path else None,
+        frame_sink=_stage_frame if (is_true_path or ui == "qt") else None,
+        frame_transform=_square_capture_transform if ui == "qt" else None,
         fixed_seconds=fixed_seconds,
         trace_recorder=recorder if is_true_path else None,
         trace_attempt_id=resolved_attempt_id if is_true_path else None,
@@ -482,8 +532,56 @@ def cmd_live(
     # true path (fake path keeps its synthetic zero-origin stamps, so its
     # start stays 0 and its envelope stays consistent).
     start_ns = _time.monotonic_ns() if is_true_path else 0
+    # S2: the Qt countdown reads the session clock, not wall time. The Qt
+    # smoke path keeps the synthetic zero-origin stamps, so the countdown
+    # clock tracks synthetic session time: session start plus the elapsed
+    # synthetic capture span consumed so far. The window updates it after
+    # each processing tick (see _qt_advance_ns below).
+    _qt_elapsed_ns = 0
+    _qt_last_consumed_ns = start_ns
+
+    def _qt_clock_ns() -> int:
+        return start_ns + _qt_elapsed_ns
+
+    def _qt_advance_ns() -> None:
+        nonlocal _qt_elapsed_ns, _qt_last_consumed_ns
+        consumed = desktop.controller_consumed_ns
+        if consumed is not None and consumed > _qt_last_consumed_ns:
+            _qt_elapsed_ns += consumed - _qt_last_consumed_ns
+            _qt_last_consumed_ns = consumed
+
+    qt_clock_ns: Callable[[], int] = _qt_clock_ns
+    qt_app: Any = None
+    if ui == "qt":
+        try:
+            from PySide6.QtWidgets import QApplication
+            from facecore.live.qt_window import QtResearchWindow
+        except ImportError as exc:
+            print(
+                f"research live: Qt UI unavailable: {exc}; install research-ui",
+                file=sys.stderr,
+            )
+            _finish_attempt_error("setup_error:qt_dependency_missing")
+            return 2
+        if qt_offscreen:
+            # The Qt smoke path is synthetic and never touches a camera device.
+            os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        qt_app = QApplication.instance() or QApplication([])
+        qt_window = QtResearchWindow(
+            desktop,
+            consent=consent,
+            recorder=recorder,
+            attempt_id=resolved_attempt_id,
+            device_id=device,
+            offscreen=qt_offscreen,
+            clock_ns=qt_clock_ns,
+            clock_advance=_qt_advance_ns,
+        )
     try:
-        desktop.on_start(consent, now_ns=start_ns, device_id=device)
+        if qt_window is None:
+            desktop.on_start(consent, now_ns=start_ns, device_id=device)
+        else:
+            qt_window.start_clicked()
     except (PermissionError, ValueError, RuntimeError) as exc:
         print(f"research live: start refused: {exc}", file=sys.stderr)
         recorder.abort(session_id, reason="start_refused")
@@ -499,7 +597,70 @@ def cmd_live(
         return 2
     # Pump frames into the recorder's staging area as they are sampled.
     # (Desktop owns inference; recorder owns encrypted staging.)
-    terminal = desktop.run_until_terminal(max_steps=50)
+    try:
+        if qt_window is None:
+            terminal = desktop.run_until_terminal(max_steps=50)
+        elif qt_offscreen:
+            qt_window.process_until_terminal(max_steps=200)
+            terminal = desktop.terminal
+        else:
+            qt_window.show()
+            assert qt_app is not None
+            qt_app.exec()
+            terminal = desktop.terminal
+    except (ValueError, RuntimeError) as exc:
+        # Capture-geometry drift (e.g. frame-dimension change) refuses the
+        # scorer input fail-closed mid-session. Terminal should be None
+        # here; close safely and refuse the commit.
+        terminal = None
+        capture_failure: Exception | None = exc
+    else:
+        capture_failure = None
+    # T2: an operator Delete in the Qt window already removed the session
+    # bundle plus linked attempts. Never commit afterwards: report success
+    # only once deletion is complete.
+    if qt_window is not None:
+        if desktop.deleted:
+            _emit(
+                {
+                    "session_id": session_id,
+                    "status": "deleted",
+                    "window": window_label,
+                    "elapsed_ms": 0.0,
+                    "reason_codes": ["operator_deleted"],
+                    "generation": model_generation,
+                    "gallery_digest": gallery_digest,
+                }
+            )
+            return 0
+        if desktop.delete_failed:
+            print("research live: operator deletion failed", file=sys.stderr)
+            desktop.close()
+            recorder.abort(session_id, reason="delete_failed")
+            try:
+                recorder.finish_attempt(
+                    resolved_attempt_id,
+                    result=None,
+                    operational_status="error",
+                    error_code="delete_failed",
+                )
+            except Exception:
+                pass
+            return 4
+    if capture_failure is not None:
+        print(f"research live: capture failed: {capture_failure}", file=sys.stderr)
+        desktop.close()
+        recorder.abort(session_id, reason="capture_failed")
+        try:
+            recorder.finish_attempt(
+                resolved_attempt_id,
+                result=None,
+                operational_status="error",
+                error_code="capture_failed",
+            )
+        except Exception:
+            pass
+        return 4
     if terminal is None:
         print("research live: no terminal reached", file=sys.stderr)
         desktop.close()
@@ -510,6 +671,26 @@ def cmd_live(
                 result=None,
                 operational_status="error",
                 error_code="no_terminal",
+            )
+        except Exception:
+            pass
+        return 4
+    # R4 (fail-closed): any capture/staging failure refuses the commit.
+    # Staging errors carry geometry/staging integrity evidence, so a
+    # successful bundle must never mask them.
+    if staged_errors:
+        print(
+            "research live: staging failed: " + ";".join(sorted(set(staged_errors))),
+            file=sys.stderr,
+        )
+        desktop.close()
+        recorder.abort(session_id, reason="staging_failed")
+        try:
+            recorder.finish_attempt(
+                resolved_attempt_id,
+                result=None,
+                operational_status="error",
+                error_code="staging_failed",
             )
         except Exception:
             pass
@@ -576,8 +757,15 @@ def cmd_live(
         print(f"research live: finish_attempt failed: {exc}", file=sys.stderr)
         desktop.close()
         return 4
-    desktop.label_terminal(None)
-    desktop.close()
+    # R3: the fixed-window collector may end running after B locks. Only a
+    # terminal session accepts an evaluator label; an incomplete collector
+    # closes without labeling instead of raising.
+    if qt_window is None:
+        if desktop.state == "terminal":
+            desktop.label_terminal(None)
+        desktop.close()
+    else:
+        qt_window.close()
     _emit(
         {
             "session_id": session_id,
@@ -689,7 +877,12 @@ def cmd_delete(*, store: Path, key_dir: Path, session_id: str) -> int:
         print(f"research delete: {exc}", file=sys.stderr)
         return 2
     recorder = ResearchRecorder(store_root=store_root, key_dir=key_dir, clock=_now_utc)
-    ok = recorder.delete(session_id)
+    try:
+        ok = recorder.delete(session_id)
+    except StoreCorruptionError as exc:
+        print(f"research delete: {exc}", file=sys.stderr)
+        _emit({"session_id": session_id, "deleted": False, "error": str(exc)})
+        return 4
     _emit({"session_id": session_id, "deleted": ok})
     return 0 if ok else 4
 
@@ -785,7 +978,7 @@ def cmd_analyze(
                     },
                     detected_at_utc=_now_utc().isoformat(),
                 )
-    )
+            )
             print(
                 f"research analyze: profile digest {profile_digest} does not match "
                 f"frozen candidate profile digest {freeze.profile_digest}",
@@ -967,6 +1160,17 @@ def main(argv: list[str] | None = None) -> int:
     live.add_argument("--record-consent", action="store_true")
     live.add_argument("--image-consent", action="store_true")
     live.add_argument("--fixed-seconds", action="store_true")
+    live.add_argument(
+        "--ui",
+        choices=["fake", "qt"],
+        default="fake",
+        help="Research UI backend; fake is the headless default",
+    )
+    live.add_argument(
+        "--qt-offscreen",
+        action="store_true",
+        help="Use offscreen Qt for synthetic smoke tests (requires --ui qt)",
+    )
     live.add_argument("--corpus", required=False, type=Path, default=None)
     live.add_argument("--models", required=False, type=Path, default=None)
 
@@ -1024,6 +1228,8 @@ def main(argv: list[str] | None = None) -> int:
             record_consent=args.record_consent,
             image_consent=args.image_consent,
             fixed_seconds=args.fixed_seconds,
+            ui=args.ui,
+            qt_offscreen=args.qt_offscreen,
             models=args.models,
             corpus=args.corpus,
         )
