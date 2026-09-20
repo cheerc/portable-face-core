@@ -60,18 +60,23 @@ class _RealtimeCamera(CaptureSource):
         self._lock = threading.Lock()
         self._opened = False
         self._closed = False
+        self._first_read = True
 
     def open(self, device_id: str) -> None:
         with self._lock:
             self._seq = 0
             self._opened = True
             self._closed = False
+            self._first_read = True
 
     def read(self) -> FramePacket | None:
         with self._lock:
             if self._closed or not self._opened or self._seq >= self._max:
                 return None
-        time.sleep(self._period_s)
+            first = self._first_read
+            self._first_read = False
+        delay = 0.200 if first else self._period_s
+        time.sleep(delay)
         with self._lock:
             if self._closed or not self._opened:
                 return None
@@ -115,6 +120,19 @@ def _profile(
         quality_policy_version="qual-fix81",
         continuity_max_center_delta_ratio=0.50,
     )
+
+
+def _deadline_profile() -> ResearchProfile:
+    """5s window with a frame cap that cannot fire before the deadline.
+
+    Production profile (timeout_ms=5000, sample_interval_ms=200,
+    max_frames=25) samples [0, 4800ms]: the cap fires before the deadline
+    by design (see issue #84 — a profile-contract inconsistency that #81
+    must not touch). Deadline-termination tests must therefore use 26+
+    sample slots; a dedicated low-cap positive control below pins the
+    max_frames_reached incomplete branch instead.
+    """
+    return _profile(max_frames=26)
 
 
 def _matched_scorer(packet: FramePacket) -> FrameObservation:
@@ -225,7 +243,7 @@ class TestHeadlessFixedWindowDeadline:
         tc = _TraceCollector()
         camera = _RealtimeCamera(fps=30)
         desktop, start_ns, profile = _make_desktop(
-            camera, trace_collector=tc
+            camera, profile=_deadline_profile(), trace_collector=tc
         )
 
         calls = _headless_loop(desktop)
@@ -256,7 +274,9 @@ class TestHeadlessFixedWindowDeadline:
     def test_headless_60fps_reaches_deadline(self) -> None:
         """Second cadence: 60 fps also reaches deadline — no magic constant."""
         camera = _RealtimeCamera(fps=60)
-        desktop, start_ns, profile = _make_desktop(camera)
+        desktop, start_ns, profile = _make_desktop(
+            camera, profile=_deadline_profile()
+        )
 
         calls = _headless_loop(desktop)
 
@@ -342,18 +362,23 @@ class TestHeadlessFixedWindowDeadline:
                 self._opened = False
                 self._closed = False
                 self._dropped_seqs = {3, 10}
+                self._first_read = True
 
             def open(self, device_id: str) -> None:
                 with self._lock:
                     self._seq = 0
                     self._opened = True
                     self._closed = False
+                    self._first_read = True
 
             def read(self) -> FramePacket | None:
                 with self._lock:
                     if self._closed or not self._opened:
                         return None
-                time.sleep(self._period_s)
+                    first = self._first_read
+                    self._first_read = False
+                delay = 0.200 if first else self._period_s
+                time.sleep(delay)
                 with self._lock:
                     if self._closed or not self._opened:
                         return None
@@ -378,7 +403,9 @@ class TestHeadlessFixedWindowDeadline:
                     return self._closed
 
         camera = _FlakyCamera(fps=30)
-        desktop, start_ns, profile = _make_desktop(camera)
+        desktop, start_ns, profile = _make_desktop(
+            camera, profile=_deadline_profile()
+        )
 
         calls = _headless_loop(desktop)
 
