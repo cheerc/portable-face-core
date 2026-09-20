@@ -121,6 +121,7 @@ class LiveController:
         self._collector_stop_reason = "in_progress"
         self._collector_safety_flags: list[str] = []
         self._collection_cancelled = False
+        self._consecutive_dry = 0
 
         self._lock = threading.Lock()
         self._pump_thread: threading.Thread | None = None
@@ -160,6 +161,7 @@ class LiveController:
             self._collector_stop_reason = "in_progress"
             self._collector_safety_flags = []
             self._collection_cancelled = False
+            self._consecutive_dry = 0
             self._pump_stop.clear()
 
     def _require_active(self) -> str:
@@ -200,9 +202,9 @@ class LiveController:
         session_id = self._require_active()
         packet = self._queue.drain()
         if packet is None:
-            return self._terminal
+            return None
         if not self._sample_due(packet):
-            return self._terminal
+            return None
         self._last_sequence = packet.sequence
         self._frames_sampled += 1
         assert self._session_start_ns is not None
@@ -322,10 +324,9 @@ class LiveController:
     def run_until_terminal(self, max_steps: int = 100) -> SessionResult | None:
         """Pump + consume until the engine terminates or steps exhaust."""
         self._require_active()
-        source_dry = False
         for _ in range(max_steps):
             if self._fixed_seconds:
-                if self._collector_complete:
+                if self._collector_stop_reason != "in_progress":
                     return self._terminal
                 if self._collection_should_stop():
                     self._finalize_collection()
@@ -333,19 +334,26 @@ class LiveController:
             elif self._terminal is not None:
                 return self._terminal
             if not self._pump_once():
-                source_dry = True
                 drained = self._consume_one()
                 if drained is not None:
+                    self._consecutive_dry = 0
                     if self._fixed_seconds:
                         if self._collection_should_stop():
                             self._finalize_collection()
                         continue
                     return drained
-                # Source dry and queue empty: conclude at controller clock.
+                self._consecutive_dry += 1
+                if self._consecutive_dry < 3 and not getattr(
+                    self._source, "is_closed", False
+                ):
+                    continue
+                # Source dry (>= 3 consecutive empty reads or source closed)
+                # and queue empty: conclude at controller clock.
                 if self._fixed_seconds:
                     self._finalize_collection()
                     return self._terminal
                 return self.finish(self._controller_now_ns())
+            self._consecutive_dry = 0
             terminal = self._consume_one()
             if terminal is not None:
                 if self._fixed_seconds:
@@ -354,7 +362,7 @@ class LiveController:
                     continue
                 return terminal
         if self._fixed_seconds:
-            if self._collection_should_stop() or source_dry:
+            if self._collection_should_stop():
                 self._finalize_collection()
         return self._terminal
 
@@ -384,7 +392,7 @@ class LiveController:
 
     def _finalize_collection(self) -> None:
         """Seal collector evidence without rewriting the B terminal."""
-        if self._collector_complete:
+        if self._collector_stop_reason != "in_progress":
             return
         if self._collection_cancelled:
             self._collector_stop_reason = "cancelled"

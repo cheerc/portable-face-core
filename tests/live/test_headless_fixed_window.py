@@ -170,6 +170,8 @@ def _make_desktop(
         source=camera,
         scorer=_matched_scorer,
         session_id="sess-fix81",
+        sample_interval_ns=int(profile.sample_interval_ms * 1_000_000),
+        max_frames=profile.max_frames,
         fixed_seconds=True,
         trace_recorder=trace_collector,
         trace_attempt_id="att-fix81" if trace_collector is not None else None,
@@ -182,21 +184,17 @@ def _make_desktop(
 def _headless_loop(
     desktop: DesktopSession,
     max_steps: int = 50,
-    safety_factor: float = 2.5,
-    profile: ResearchProfile | None = None,
-) -> None:
-    """Mirror the fixed headless caller loop (the fix for #81).
+) -> int:
+    """Exact mirror of production cli.py:602-604 caller loop.
 
-    A wall-clock safety guard prevents genuine runaway without
-    replacing timeline semantics — the actual completion is driven
-    by the captured timeline reaching the profile deadline.
+    Zero wall-clock escape hatches. Returns the total call count to prove
+    termination is deterministic, bounded, and state-driven.
     """
-    timeout_ms = profile.timeout_ms if profile is not None else 5000
-    safety_deadline = time.monotonic() + timeout_ms / 1000 * safety_factor
+    calls = 0
     while desktop.state == "running":
         desktop.run_until_terminal(max_steps=max_steps)
-        if time.monotonic() > safety_deadline:
-            break
+        calls += 1
+    return calls
 
 
 def _build_window(
@@ -230,12 +228,13 @@ class TestHeadlessFixedWindowDeadline:
             camera, trace_collector=tc
         )
 
-        _headless_loop(desktop, profile=profile)
+        calls = _headless_loop(desktop)
 
         ctrl = desktop._controller
         assert ctrl.collection_stop_reason == "deadline_reached"
         assert ctrl.collection_complete is True
         assert ctrl.frames_sampled >= 20
+        assert calls >= 2
 
         window = _build_window(ctrl, start_ns, profile)
         trace = SessionTrace(
@@ -259,22 +258,47 @@ class TestHeadlessFixedWindowDeadline:
         camera = _RealtimeCamera(fps=60)
         desktop, start_ns, profile = _make_desktop(camera)
 
-        _headless_loop(desktop, profile=profile)
+        calls = _headless_loop(desktop)
 
         ctrl = desktop._controller
         assert ctrl.collection_stop_reason == "deadline_reached"
         assert ctrl.collection_complete is True
+        assert calls >= 4
 
     def test_eof_before_deadline_still_incomplete(self) -> None:
-        """Source truly runs out before deadline → source_exhausted."""
+        """Source truly runs out before deadline → source_exhausted.
+
+        Proves that incomplete terminal exits caller loop without any
+        wall-clock escape hatch (F1/F2 acceptance).
+        """
         camera = _RealtimeCamera(fps=30, max_frames=10)
         desktop, start_ns, profile = _make_desktop(camera)
 
-        _headless_loop(desktop, profile=profile)
+        calls = _headless_loop(desktop)
 
         ctrl = desktop._controller
         assert ctrl.collection_stop_reason == "source_exhausted"
         assert ctrl.collection_complete is False
+        assert desktop.state == "terminal"
+        assert calls <= 5
+
+    def test_max_frames_before_deadline_still_incomplete(self) -> None:
+        """Max frames cap reached before deadline → max_frames_reached.
+
+        Proves that max_frames_reached incomplete terminal exits caller loop
+        deterministically with state == terminal (F1 acceptance).
+        """
+        prof = _profile(timeout_ms=5000, sample_interval_ms=200, max_frames=5)
+        camera = _RealtimeCamera(fps=30)
+        desktop, start_ns, profile = _make_desktop(camera, profile=prof)
+
+        calls = _headless_loop(desktop)
+
+        ctrl = desktop._controller
+        assert ctrl.collection_stop_reason == "max_frames_reached"
+        assert ctrl.collection_complete is False
+        assert desktop.state == "terminal"
+        assert calls <= 10
 
     def test_single_call_bounded(self) -> None:
         """A single run_until_terminal(50) returns well before deadline.
@@ -293,12 +317,72 @@ class TestHeadlessFixedWindowDeadline:
         assert desktop.state == "running"
 
     def test_cancel_during_collection(self) -> None:
-        """Cancel terminates the loop cleanly."""
+        """Cancel stops collection immediately and sets state to terminal."""
         camera = _RealtimeCamera(fps=30)
         desktop, start_ns, profile = _make_desktop(camera)
 
         desktop.run_until_terminal(max_steps=10)
+        assert desktop.state == "running"
         result = desktop.on_cancel(time.monotonic_ns())
 
         assert desktop.state == "terminal"
         assert result.status == SessionStatus.cancelled
+        assert desktop.collection_stop_reason == "cancelled"
+
+        calls = _headless_loop(desktop)
+        assert calls == 0
+
+    def test_transient_dropped_frame_does_not_abort_collection(self) -> None:
+        """N1: transient frame drop on an open camera does not abort collection."""
+        class _FlakyCamera(CaptureSource):
+            def __init__(self, fps: int = 30) -> None:
+                self._period_s = 1.0 / fps
+                self._seq = 0
+                self._lock = threading.Lock()
+                self._opened = False
+                self._closed = False
+                self._dropped_seqs = {3, 10}
+
+            def open(self, device_id: str) -> None:
+                with self._lock:
+                    self._seq = 0
+                    self._opened = True
+                    self._closed = False
+
+            def read(self) -> FramePacket | None:
+                with self._lock:
+                    if self._closed or not self._opened:
+                        return None
+                time.sleep(self._period_s)
+                with self._lock:
+                    if self._closed or not self._opened:
+                        return None
+                    self._seq += 1
+                    if self._seq in self._dropped_seqs:
+                        return None
+                    rgb = np.full((200, 200, 3), 120, dtype=np.uint8)
+                    return FramePacket(
+                        sequence=self._seq,
+                        captured_ns=time.monotonic_ns(),
+                        rgb=rgb,
+                    )
+
+            def close(self) -> None:
+                with self._lock:
+                    self._opened = False
+                    self._closed = True
+
+            @property
+            def is_closed(self) -> bool:
+                with self._lock:
+                    return self._closed
+
+        camera = _FlakyCamera(fps=30)
+        desktop, start_ns, profile = _make_desktop(camera)
+
+        calls = _headless_loop(desktop)
+
+        ctrl = desktop._controller
+        assert ctrl.collection_stop_reason == "deadline_reached"
+        assert ctrl.collection_complete is True
+        assert calls >= 2
