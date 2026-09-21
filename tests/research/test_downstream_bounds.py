@@ -22,6 +22,8 @@ from facecore.live.contracts import (
     FrameObservation,
     FramePacket,
     ResearchProfile,
+    SessionResult,
+    SessionStatus,
 )
 from facecore.live.controller import LiveController
 from facecore.live.session import SessionEngine
@@ -30,6 +32,7 @@ from facecore.research.diagnostics import (
     FrameTraceEntry,
     MAX_TRACE_ENTRIES,
 )
+from facecore.research.experiment import AttemptRecord, ExperimentManifest
 from facecore.research.recorder import (
     MAX_FRAMES_PER_SESSION,
     ResearchRecorder,
@@ -76,24 +79,16 @@ def _trace_entry(seq: int) -> FrameTraceEntry:
         model_generation="gen-1",
         gallery_digest="gal-1",
         diagnostics=FrameDiagnostics(
+            sequence=seq,
+            original_shape=(16, 16, 3),
+            normalized_shape=(16, 16, 3),
+            orientation=0,
+            mirrored=False,
+            face_count=1,
+            detector_confidence=0.9,
+            face_box=(2.0, 2.0, 4.0, 4.0),
+            landmarks=None,
             sharpness=0.9,
-            brightness=0.5,
-            contrast=0.5,
-            illumination_uniformity=0.8,
-            crop_symmetry_ratio=0.5,
-            edge_headroom_ratio=0.2,
-            edge_chin_margin_ratio=0.2,
-            edge_left_margin_ratio=0.2,
-            edge_right_margin_ratio=0.2,
-            pose_pitch=0.0,
-            pose_yaw=0.0,
-            pose_roll=0.0,
-            eye_distance_px=30.0,
-            interocular_distance_ratio=0.3,
-            eye_open_ratio=0.8,
-            mouth_closed_ratio=0.9,
-            motion_blur_score=0.1,
-            occlusion_score=0.0,
         ),
     )
 
@@ -131,15 +126,63 @@ def test_26th_frame_stages_and_traces(tmp_path: Path) -> None:
 
     recorder = ResearchRecorder(store_root=store, key_dir=key_dir, clock=_now)
     session_id = "sess-26th-001"
-    recorder.begin(session_id, _consent(session_id))
+    consent = _consent(session_id)
+    recorder.begin(session_id, consent)
 
     # Stage 26 frames: pre-fix raises ValueError on 26th frame (frame_count >= 25)
     for seq in range(1, 27):
         recorder.append_frame(_frame(seq))
 
+    attempt_id = f"att-{session_id}"
+    manifest = ExperimentManifest.from_dict({
+        "identity": {"experiment_id": "exp-26th"},
+        "software": {},
+        "gallery": {},
+        "policy": {},
+        "capture": {},
+        "privacy": {},
+        "study": {},
+        "analysis": {},
+    })
+    attempt = AttemptRecord(
+        experiment_id="exp-26th",
+        attempt_id=attempt_id,
+        participant_id="part-01",
+        visit_id="visit-001",
+        condition_id="cond-001",
+        attempt_index=1,
+        retry_of=None,
+        consent_ref=session_id,
+        requested_at_utc="2026-09-21T12:00:00+00:00",
+        accepted_at_utc="2026-09-21T12:00:00+00:00",
+        started_at_utc="2026-09-21T12:00:00+00:00",
+        ended_at_utc=None,
+        operational_status="accepted",
+        error_code=None,
+        bundle_ref=session_id,
+    )
+    recorder.begin_attempt(manifest, attempt, consent)
+
+    terminal = SessionResult(
+        session_id=session_id,
+        schema_version="v1",
+        status=SessionStatus.matched,
+        matched_identity="person-01",
+        reason_codes=("supported_3_frames",),
+        elapsed_ms=5000.0,
+        frames_sampled=26,
+        frames_usable=26,
+        frames_rejected=0,
+        frames_dropped=0,
+        support_sequences=(1, 2, 3),
+        profile_digest="bound-test-v1",
+        model_generation="gen-1",
+        gallery_digest="gal-1",
+    )
+    recorder.commit(terminal)
+
     # Trace 26 entries: pre-fix read_trace raises ValueError in
     # SessionTrace.__post_init__
-    attempt_id = f"att-{session_id}"
     for seq in range(1, 27):
         recorder.append_trace(attempt_id, _trace_entry(seq))
 

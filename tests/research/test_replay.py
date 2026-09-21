@@ -257,10 +257,10 @@ def test_generation_mismatch_refuses_as_error(tmp_path: Path) -> None:
 
 def test_full_window_bundle_labeled_full(tmp_path: Path) -> None:
     clock = _Clock(_utc("2026-09-14T10:00:00Z"))
-    _store_bundle(tmp_path, clock, "sess-t6-001", n_frames=25)
+    _store_bundle(tmp_path, clock, "sess-t6-001", n_frames=26)
     replayed = replay_session("sess-t6-001", **_replay_kwargs(tmp_path, clock))
     assert replayed.window == "full"
-    assert replayed.frames_replayed == 25
+    assert replayed.frames_replayed == 26
 
 
 def test_short_bundle_labeled_early_stop_never_full(tmp_path: Path) -> None:

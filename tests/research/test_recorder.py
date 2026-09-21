@@ -269,14 +269,14 @@ def test_abort_on_multiface_clears_uncommitted_images(tmp_path: Path) -> None:
     assert not (sess_dir / "manifest.json").exists()
 
 
-def test_image_cap_25_frames(tmp_path: Path) -> None:
+def test_image_cap_26_frames(tmp_path: Path) -> None:
     clock = _Clock(_utc("2026-09-14T10:00:00Z"))
     rec = _recorder(tmp_path, clock)
     rec.begin("sess-t5-001", _consent())
-    for seq in range(1, 26):
+    for seq in range(1, 27):
         rec.append_frame(_frame(seq))
     with pytest.raises(ValueError):
-        rec.append_frame(_frame(26))
+        rec.append_frame(_frame(27))
 
 
 def test_uncommitted_bundle_hidden_until_commit(tmp_path: Path) -> None:

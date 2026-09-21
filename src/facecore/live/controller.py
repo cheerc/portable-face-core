@@ -7,7 +7,7 @@ Source of truth:
 
 Hard boundaries:
     - The controller owns the pump thread, the latest-slot-1 queue, the
-      200ms sample gate, the 25-frame cap, controller-clock deadline, and
+      200ms sample gate, the execution-layer cap default, controller-clock deadline, and
       drop counters. The T3 SessionEngine owns evidence accumulation;
       its internal ``frames_dropped`` stays 0 by T3 implementation
       boundary (T3 Note 1) — end-to-end drops live on this controller.
@@ -54,6 +54,9 @@ class LiveController:
         scorer: Scorer,
         *,
         sample_interval_ns: int = 200_000_000,
+        # Ruling: max_frames default kept at 25 by design (task -21/-24 ruling).
+        # In fixed mode profile.max_frames wins; in non-fixed mode 25 is a
+        # valid execution-layer clamp pinned by test_execution_max_frames_cap_enforced.
         max_frames: int = 25,
         frame_sink: Callable[[FramePacket], None] | None = None,
         frame_transform: Callable[[FramePacket], FramePacket] | None = None,
@@ -316,9 +319,11 @@ class LiveController:
             )
         try:
             append(self._trace_attempt_id, entry)
-        except ValueError:
+        except ValueError as exc:
             # Duplicate sequence on re-drive: keep first write, stay live.
-            pass
+            if "already exists" in str(exc):
+                return
+            raise
 
     def _collect_safety_flags(self, observation: FrameObservation) -> None:
         """Post-lock safety monitoring: multi-face never goes unnoticed."""

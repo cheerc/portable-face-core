@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 REPO = Path(__file__).resolve().parents[2]
 _SCRIPTS = str(REPO / "scripts")
@@ -452,3 +452,52 @@ def test_summary_has_manual_checkpoints(tmp_path: Path) -> None:
         "camera" in c.lower() or "permission" in c.lower()
         for c in summary["manual_checkpoints"]
     )
+
+
+def test_runner_trace_count_mismatch_fails_closed(tmp_path: Path) -> None:
+    """Trace entry count != required_min must fail live_passed."""
+    from live_checkpoint import run_checkpoint
+
+    profile_path = _write_profile(tmp_path)
+    # Patch read_trace to return an incomplete trace (e.g. 25 entries instead of 26)
+    mock_trace = MagicMock()
+    mock_trace.entries = tuple(range(25))
+
+    with patch(
+        "facecore.research.recorder.ResearchRecorder.read_trace",
+        return_value=mock_trace,
+    ):
+        code, summary = run_checkpoint(
+            device="fake",
+            profile_path=profile_path,
+            record_consent=True,
+            image_consent=True,
+        )
+    assert code == 4
+    assert summary["verdict"] == "FAIL"
+    live_phase = summary["phases"]["live"]
+    assert live_phase["pass"] is False
+    assert live_phase.get("trace_entries") == 25
+
+
+def test_runner_trace_error_surfaces_and_fails_closed(tmp_path: Path) -> None:
+    """Trace read error must populate trace_error key and fail live_passed."""
+    from live_checkpoint import run_checkpoint
+
+    profile_path = _write_profile(tmp_path)
+    with patch(
+        "facecore.research.recorder.ResearchRecorder.read_trace",
+        side_effect=ValueError("corrupt trace sidecar"),
+    ):
+        code, summary = run_checkpoint(
+            device="fake",
+            profile_path=profile_path,
+            record_consent=True,
+            image_consent=True,
+        )
+    assert code == 4
+    assert summary["verdict"] == "FAIL"
+    live_phase = summary["phases"]["live"]
+    assert live_phase["pass"] is False
+    assert "trace_error" in live_phase
+    assert "corrupt trace sidecar" in live_phase["trace_error"]

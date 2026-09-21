@@ -110,7 +110,7 @@ class CollectionWindow:
 
     Records the provenance the paired comparison actually needs: the
     original collection start/deadline/end, why collection stopped, and
-    whether the window is complete. A full 25-frame budget that arrives
+    whether the window is complete. A full 26-frame budget that arrives
     early is ``max_frames_reached`` (incomplete), never a fabricated 5s.
     """
 

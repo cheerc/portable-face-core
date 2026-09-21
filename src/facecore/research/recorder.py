@@ -15,7 +15,7 @@ Hard boundaries:
     - Record/image consent and keys are strictly separated (``rk_`` 30-day
       TTL / ``ik_`` 7-day TTL) in an isolated research key directory; the
       production identity key namespace is never touched.
-    - At most 25 image frames per session; unconsented / revoked /
+    - At most 26 image frames per session; unconsented / revoked /
       multi-face-aborted sessions leave zero committed image bytes.
     - Consented negative samples may be stored but never feed learning
       (this recorder exposes no candidate/learning entry point at all).
@@ -74,7 +74,7 @@ from facecore.research.split import (
 )
 from facecore.storage.cipher import AeadCipher
 
-MAX_FRAMES_PER_SESSION = 25
+MAX_FRAMES_PER_SESSION = 26
 SCHEMA_VERSION = "v1"
 
 # T5 N1 (reviewer-gated): decoded-frame sanity cap — a single frame may not
