@@ -26,6 +26,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import numpy as np
+import pytest
 
 from facecore.live.capture import FakeCapture
 from facecore.live.contracts import (
@@ -53,7 +54,7 @@ def _profile(
     *,
     timeout_ms: int = 5000,
     sample_interval_ms: int = 200,
-    max_frames: int = 25,
+    max_frames: int = 26,
     required_support: int = 3,
     min_support_interval_ms: int = 200,
 ) -> ResearchProfile:
@@ -110,7 +111,7 @@ def _profile_dict(tmp_path: Path) -> Path:
         "profile_version": "t8-cli-v1",
         "timeout_ms": 5000,
         "sample_interval_ms": 200,
-        "max_frames": 25,
+        "max_frames": 26,
         "queue_limit": 1,
         "required_support": 3,
         "min_support_interval_ms": 200,
@@ -197,24 +198,17 @@ class TestFixedWindowCollectorSeparation:
         assert top_late == "person-02"
 
     def test_full_25_frames_does_not_fabricate_5s_evidence(self) -> None:
-        profile = _profile(timeout_ms=5000, max_frames=25)
-        # 25 frames arriving within 5s (200ms spacing): hits the frame cap
-        # at 4.8s, before the 5s deadline — no fabricated 5s evidence.
-        frames = [
-            _packet(seq, (seq - 1) * 200_000_000) for seq in range(1, 27)
-        ]
-        engine = SessionEngine(profile, "gal-e3", "gen-e3")
-        controller = LiveController(
-            engine,
-            FakeCapture(frames=frames),
-            lambda p: _matched_obs(p.sequence, p.captured_ns),
-            fixed_seconds=True,
-        )
-        controller.start_session("sess-fixed-003", 0)
-        controller.run_until_terminal(max_steps=100)
-        assert controller.frames_sampled == 25
-        assert controller.collection_complete is False
-        assert controller.collection_stop_reason == "max_frames_reached"
+        """Negative profile case: 5000/200/25 is now fail-closed (#84).
+
+        The 25-frame triple is exactly the rejected class under the
+        fixed-window cross-field invariant (needs 26), so construction
+        itself must raise with the required minimum — the collector
+        never gets to run. (Pre-invariant, this test pinned the
+        max_frames_reached-at-4.8s execution path; non-fixed execution-layer
+        cap coverage remains in `test_execution_max_frames_cap_enforced`.)
+        """
+        with pytest.raises(ValueError, match="26"):
+            _profile(timeout_ms=5000, max_frames=25)
 
     def test_cancel_close_multi_face_stop_collector_incomplete(self) -> None:
         profile = _profile(required_support=3)

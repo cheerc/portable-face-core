@@ -37,7 +37,7 @@ def _profile() -> ResearchProfile:
         profile_version="t7-test-v1",
         timeout_ms=5000,
         sample_interval_ms=200,
-        max_frames=25,
+        max_frames=26,
         queue_limit=1,
         required_support=3,
         min_support_interval_ms=200,

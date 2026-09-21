@@ -88,6 +88,23 @@ class ResearchProfile:
             )
         if self.max_frames <= 0:
             raise ValueError(f"max_frames must be positive, got {self.max_frames}")
+        # Fixed-window cross-field invariant (#84, decision
+        # d-20260920132145277296-1): a profile that cannot cover the full
+        # deadline window — first frame at t=0, subsequent samples at least
+        # sample_interval_ms apart — must fail closed at construction, never
+        # clamp or auto-fill. Runs after the single-field checks above so
+        # illegal timeout/interval values keep their own error messages.
+        required_min_frames = (
+            math.ceil(self.timeout_ms / self.sample_interval_ms) + 1
+        )
+        if self.max_frames < required_min_frames:
+            raise ValueError(
+                f"max_frames ({self.max_frames}) cannot cover the full "
+                f"deadline window: timeout_ms={self.timeout_ms}, "
+                f"sample_interval_ms={self.sample_interval_ms} require at "
+                f"least {required_min_frames} frames "
+                f"(ceil(timeout_ms / sample_interval_ms) + 1)"
+            )
         if self.queue_limit <= 0:
             raise ValueError(f"queue_limit must be positive, got {self.queue_limit}")
         if self.required_support <= 0:

@@ -61,7 +61,7 @@ def _profile() -> ResearchProfile:
         profile_version="qt-test-v1",
         timeout_ms=5000,
         sample_interval_ms=200,
-        max_frames=25,
+        max_frames=26,
         queue_limit=1,
         required_support=1,
         min_support_interval_ms=1,
@@ -479,13 +479,18 @@ class TestQtResearchWindow:
         assert desktop_open._controller.frames_sampled >= 1
         window_open.close()
 
-        # Part B: Max frames reached before deadline
+        # Part B: Max frames reached before deadline. Cap separation
+        # (#84 production invariant): the profile itself is compliant
+        # (5000/200/26, so construction passes), while the early cap
+        # fires on the execution-layer cap — DesktopSession max_frames=1
+        # (accepted under the [1, profile.max_frames] check). The profile
+        # cap 26 never fires first because the execution cap 1 is lower.
         low_cap_prof = ResearchProfile(
             schema_version="v1",
             profile_version="qt-lowcap",
             timeout_ms=5000,
             sample_interval_ms=200,
-            max_frames=1,
+            max_frames=26,
             queue_limit=1,
             required_support=1,
             min_support_interval_ms=1,

@@ -79,7 +79,7 @@ def _profile() -> ResearchProfile:
         profile_version="fp",
         timeout_ms=8000,
         sample_interval_ms=200,
-        max_frames=25,
+        max_frames=41,
         queue_limit=4,
         required_support=3,
         min_support_interval_ms=400,

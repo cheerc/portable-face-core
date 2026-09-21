@@ -44,7 +44,7 @@ def _profile() -> ResearchProfile:
         profile_version="t4-test-v1",
         timeout_ms=5000,
         sample_interval_ms=200,
-        max_frames=25,
+        max_frames=26,
         queue_limit=1,
         required_support=3,
         min_support_interval_ms=200,
@@ -228,7 +228,7 @@ def test_drop_counts_reachable_end_to_end_with_fast_producer() -> None:
         source=FakeCapture(frames=frames),
         scorer=lambda packet: _obs(packet.sequence, packet.captured_ns),
         sample_interval_ns=200_000_000,
-        max_frames=25,
+        max_frames=26,
     )
     controller.start_session("sess-t4-001", now_ns=0)
     controller.pump_fast_producer()
@@ -272,7 +272,8 @@ def test_deadline_uses_controller_clock_not_model_time() -> None:
     )
 
 
-def test_max_25_frames_cap_enforced() -> None:
+def test_execution_max_frames_cap_enforced() -> None:
+    """Non-fixed execution cap remains independent from profile max_frames."""
     profile = _profile()
     engine = SessionEngine(profile, "0" * 64, "test-gen")
     frames = [_packet(seq, seq * 200_000_000) for seq in range(1, 31)]
