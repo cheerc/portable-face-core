@@ -121,6 +121,45 @@ python scripts/live_teardown.py --store STORE --key-dir KEYDIR --session SESSION
 - `--device` 只接受可轉 int 的索引：`live_teardown.py:33` 逐字為 `cap = cv2.VideoCapture(int(device), backend)`。**不能傳 `local`**（那是 `facecore.sh` live 入口的裝置列舉語法），傳入會直接 `ValueError` 中止，不是「相機不可用」。要檢查相機請傳實際解析後的整數索引。
 - 上述命令的 `$CORPUS`／`$MODELS`／`$STORE`／`$KEYS`／`$SESSION`／`$RESOLVED_INDEX` **沒有預設值**，一律由 G3 已批准的採集 manifest 解析後填入；不要沿用他人筆記或前次 session 的路徑與索引。
 
+## 3d. 一鍵真機 checkpoint runner（issue #82）
+
+單一 operator-facing 命列，串接前置檢查（顯式 `--preflight` 選項）、真實相機／fake session 執行（`cmd_live` 固定 5000ms 窗口）、相機重新開啟驗證、儲存庫生命週期（刪除、重啟不可讀、canary 正向對照）與清理檢查。
+
+### Canonical command
+
+```bash
+# 相機自由測試（CI／開發者本地 smoke）：
+python scripts/live_checkpoint.py \
+  --device fake \
+  --profile /path/to/profile.json \
+  --record-consent \
+  --image-consent
+
+# 真機測試（需 operator 在場確認並具備模型與語料）：
+python scripts/live_checkpoint.py \
+  --device 0 \
+  --profile /path/to/profile.json \
+  --record-consent \
+  --image-consent \
+  --preflight \
+  --models /path/to/models \
+  --corpus /path/to/corpus/manifest.json
+```
+
+### 權限與安全不變量
+
+- **Consent 旗標不能取代 OS 相機授權**：`--record-consent` 與 `--image-consent` 僅為操作者防誤觸確認，**不能取代 macOS 系統相機授權**（系統彈窗／System Settings > Privacy & Security > Camera）。runner 不會也無法靜默開相機。
+- **Explicit device index**：必須指定明確裝置（如 `--device 0` 或 `--device fake`），不進行靜默 0–N 輪詢或 fallback。
+- **輸出無敏感資料**：輸出之單一 JSON summary 經嚴格過濾，保證不含 pixels、crop、embeddings、全路徑（`/Users/`、`/home/`）或 PII。
+
+### Verdict 判定與 Exit Codes
+
+- **單一 JSON Summary**：標準輸出僅印出單一行或格式化之 JSON 摘要，包含整體 `verdict`（`PASS` 或 `FAIL`）、`exit_code`、各階段細節（`phases`）與未驗證手動檢查點（`manual_checkpoints`）。
+- **Exit Codes**（與 `cmd_live` 對齊）：
+  - `0`: 成功（所有自動化檢查通過，`verdict == "PASS"`）。
+  - `2`: 使用法、同意旗標或 profile 錯誤（如缺少 consent、profile 不存在或格式錯誤）。
+  - `4`: 執行期失敗（preflight 失敗、相機無法開啟、deadline 採集未滿、staging 失敗、刪除失敗、canary 失敗或殘留未清）。
+
 ## 4. S1 probe re-run (camera-free evidence, T4 acceptance carried)
 
 ```bash

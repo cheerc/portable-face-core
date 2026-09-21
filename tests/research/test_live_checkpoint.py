@@ -8,18 +8,16 @@ code and a JSON-serializable summary — never a false PASS.
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
+import sys
 from unittest.mock import patch
 
-import pytest
-
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / "src"))
-sys.path.insert(0, str(REPO / "scripts"))
+_SCRIPTS = str(REPO / "scripts")
+if _SCRIPTS not in sys.path:
+    sys.path.insert(0, _SCRIPTS)
 
-from facecore.live.capture import CaptureSource, FakeCapture, FramePacket
-from facecore.live.contracts import ResearchProfile
+from facecore.live.capture import CaptureSource, FakeCapture, FramePacket  # noqa: E402
 
 
 def _write_profile(tmp_path: Path) -> Path:
@@ -56,6 +54,10 @@ class _FailOpenCapture(CaptureSource):
     def close(self) -> None:
         pass
 
+    @property
+    def is_closed(self) -> bool:
+        return True
+
 
 class _FailReadCapture(CaptureSource):
     """Capture source that opens but delivers no frames."""
@@ -68,6 +70,10 @@ class _FailReadCapture(CaptureSource):
 
     def close(self) -> None:
         pass
+
+    @property
+    def is_closed(self) -> bool:
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +209,7 @@ def test_worker_join_failure_exits_nonzero(tmp_path: Path) -> None:
 
     class _ExplodingCapture(CaptureSource):
         _opened = False
+        _closed = False
 
         def open(self, device_id: str) -> None:
             self._opened = True
@@ -213,7 +220,11 @@ def test_worker_join_failure_exits_nonzero(tmp_path: Path) -> None:
             return None
 
         def close(self) -> None:
-            pass
+            self._closed = True
+
+        @property
+        def is_closed(self) -> bool:
+            return self._closed
 
     profile_path = _write_profile(tmp_path)
     code, summary = run_checkpoint(
@@ -267,6 +278,94 @@ def test_canary_failure_exits_nonzero(tmp_path: Path) -> None:
     assert summary["verdict"] == "FAIL"
     assert summary["phases"]["store_lifecycle"]["canary"]["pass"] is False
     json.dumps(summary)
+
+
+def test_camera_reopen_failure_exits_nonzero(tmp_path: Path) -> None:
+    """Camera reopen failure → nonzero + JSON."""
+    from live_checkpoint import run_checkpoint
+
+    profile_path = _write_profile(tmp_path)
+    code, summary = run_checkpoint(
+        device="fake",
+        profile_path=profile_path,
+        record_consent=True,
+        image_consent=True,
+        reopen_fn=lambda dev: {
+            "pass": False,
+            "reopen": False,
+            "error": "simulated device reopen failure",
+        },
+    )
+    assert code == 4
+    assert summary["verdict"] == "FAIL"
+    assert summary["phases"]["camera"]["pass"] is False
+    json.dumps(summary)
+
+
+def test_restart_unreadable_failure_exits_nonzero(tmp_path: Path) -> None:
+    """Deleted session remains readable → nonzero + JSON."""
+    from live_checkpoint import run_checkpoint
+
+    profile_path = _write_profile(tmp_path)
+    code, summary = run_checkpoint(
+        device="fake",
+        profile_path=profile_path,
+        record_consent=True,
+        image_consent=True,
+        restart_unreadable_fn=lambda recorder, sid: {
+            "pass": False,
+            "error": "simulated leak: session was readable after restart",
+        },
+    )
+    assert code == 4
+    assert summary["verdict"] == "FAIL"
+    assert summary["phases"]["store_lifecycle"]["restart_unreadable"]["pass"] is False
+    json.dumps(summary)
+
+
+def test_staged_errors_surfaced_exits_4(tmp_path: Path) -> None:
+    """Staged errors during live session must be surfaced and exit 4."""
+    from live_checkpoint import run_checkpoint
+
+    profile_path = _write_profile(tmp_path)
+
+    def _mock_cmd_live(**kwargs: object) -> int:
+        sys.stderr.write("research live: staging failed: 1:DiskError;2:Corrupt\n")
+        return 4
+
+    with patch("live_checkpoint.cmd_live", side_effect=_mock_cmd_live):
+        code, summary = run_checkpoint(
+            device="fake",
+            profile_path=profile_path,
+            record_consent=True,
+            image_consent=True,
+        )
+    assert code == 4
+    assert summary["verdict"] == "FAIL"
+    live_phase = summary["phases"]["live"]
+    assert live_phase["pass"] is False
+    assert "staged_errors" in live_phase
+    assert "1:DiskError" in live_phase["staged_errors"]
+    assert "2:Corrupt" in live_phase["staged_errors"]
+    json.dumps(summary)
+
+
+def test_cli_main_invocation(tmp_path: Path) -> None:
+    """CLI main entry point emits single JSON line and exits 0 on fake."""
+    from live_checkpoint import main
+
+    profile_path = _write_profile(tmp_path)
+    code = main(
+        [
+            "--device",
+            "fake",
+            "--profile",
+            str(profile_path),
+            "--record-consent",
+            "--image-consent",
+        ]
+    )
+    assert code == 0
 
 
 # ---------------------------------------------------------------------------

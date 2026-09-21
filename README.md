@@ -66,6 +66,7 @@ experiments/
 facecore.sh
 scripts/
 ├── derive_int8bq_deinput.py
+├── live_checkpoint.py
 ├── live_preflight.py
 ├── live_teardown.py
 └── run_500_scale.py
