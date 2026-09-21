@@ -9,10 +9,10 @@ budget exhausts first, and ``_finalize_collection`` stamps
 Qt already works because ``process_once`` (timer tick) calls
 ``run_until_terminal(50)`` repeatedly.  The fix mirrors this for headless.
 
-Camera contract: ``_RealtimeCamera`` paces at ``1/fps`` per read using a real
-``time.sleep``, so ``captured_ns = time.monotonic_ns()`` naturally advances and
-the ``processed_ns >= captured_ns`` contract in ``FrameObservation`` holds
-without synthetic clocks.
+Camera contract: ``DeterministicCadenceCamera`` paces at 1/fps synthetically
+without wall-clock sleep (zero ``time.sleep``), so tests are completely
+independent of host OS scheduler jitter and CI runner load.  Synthetic
+capture timestamps advance deterministically per read.
 """
 
 from __future__ import annotations
@@ -98,10 +98,6 @@ class DeterministicCadenceCamera(CaptureSource):
     def is_closed(self) -> bool:
         with self._lock:
             return self._closed
-
-
-# Backwards compatibility alias for existing test references
-_RealtimeCamera = DeterministicCadenceCamera
 
 
 def _profile(
@@ -250,7 +246,7 @@ class TestHeadlessFixedWindowDeadline:
     def test_headless_30fps_reaches_deadline(self) -> None:
         """Caller loop with 30 fps source reaches deadline_reached."""
         tc = _TraceCollector()
-        camera = _RealtimeCamera(fps=30)
+        camera = DeterministicCadenceCamera(fps=30)
         desktop, start_ns, profile = _make_desktop(
             camera, profile=_deadline_profile(), trace_collector=tc
         )
@@ -282,10 +278,11 @@ class TestHeadlessFixedWindowDeadline:
         assert arm_b.collection_extent == "full"
 
     def test_headless_60fps_reaches_deadline(self) -> None:
-        """Second cadence: 60 fps also reaches deadline — no magic constant."""
-        camera = _RealtimeCamera(fps=60)
+        """Second cadence: 60 fps also reaches deadline and yields full arms."""
+        tc = _TraceCollector()
+        camera = DeterministicCadenceCamera(fps=60)
         desktop, start_ns, profile = _make_desktop(
-            camera, profile=_deadline_profile()
+            camera, profile=_deadline_profile(), trace_collector=tc
         )
 
         calls = _headless_loop(desktop)
@@ -294,7 +291,25 @@ class TestHeadlessFixedWindowDeadline:
         assert ctrl.collection_stop_reason == "deadline_reached"
         assert ctrl.collection_complete is True
         assert desktop.state == "terminal"
+        assert ctrl.frames_sampled >= 20
         assert calls >= 4
+
+        window = _build_window(ctrl, start_ns, profile)
+        trace = SessionTrace(
+            schema_version="v2",
+            attempt_id="att-fix81-60fps",
+            manifest_digest=profile.profile_digest(),
+            session_start_ns=start_ns,
+            deadline_ns=start_ns + int(profile.timeout_ms * 1_000_000),
+            session_end_ns=ctrl._last_sampled_ns(),
+            collection_stop_reason=ctrl.collection_stop_reason,
+            is_complete=ctrl.collection_complete,
+            entries=tuple(tc.entries),
+            terminal_result=desktop.terminal,
+        )
+        arm_a, arm_b = evaluate_arms(trace, profile, window=window)
+        assert arm_a.collection_extent == "full"
+        assert arm_b.collection_extent == "full"
 
     def test_eof_before_deadline_still_incomplete(self) -> None:
         """Source truly runs out before deadline → source_exhausted.
@@ -302,7 +317,7 @@ class TestHeadlessFixedWindowDeadline:
         Proves that incomplete terminal exits caller loop without any
         wall-clock escape hatch (F1/F2 acceptance).
         """
-        camera = _RealtimeCamera(fps=30, max_frames=10)
+        camera = DeterministicCadenceCamera(fps=30, max_frames=10)
         desktop, start_ns, profile = _make_desktop(camera)
 
         calls = _headless_loop(desktop)
@@ -320,7 +335,7 @@ class TestHeadlessFixedWindowDeadline:
         deterministically with state == terminal (F1 acceptance).
         """
         prof = _profile(timeout_ms=5000, sample_interval_ms=200, max_frames=5)
-        camera = _RealtimeCamera(fps=30)
+        camera = DeterministicCadenceCamera(fps=30)
         desktop, start_ns, profile = _make_desktop(camera, profile=prof)
 
         calls = _headless_loop(desktop)
@@ -485,45 +500,82 @@ class TestHeadlessFixedWindowDeadline:
         assert consumed2.sequence == 2
         assert ctrl.frames_sampled == 1
 
-    def test_gated_out_queue_drain_prevents_premature_source_exhaustion(
+    def test_gated_out_queue_drain_continues_to_due_packet_and_deadline(
         self,
     ) -> None:
-        """B4: stream of gated-out queue packets prevents premature source_exhausted."""
+        """B4/B7: gated-out frames reset dry counter and caller cleanly continues.
+
+        Proves:
+        1. When foreground pump returns False (_pump_once() False), packets
+           drained from the queue that are gated out (< 200ms) reset _consecutive_dry
+           to 0 on every step (B4 fix).
+        2. In-progress state is retained across >= 3 gated iterations without
+           prematurely concluding source_exhausted.
+        3. A subsequent sample-due packet is cleanly consumed, advancing
+           frames_sampled and updating the next_sample_ns gate (B7 continuation).
+        4. Continued feeding drives the collection to deadline_reached with
+           collection_complete=True (B7 terminal proof).
+        """
         camera = FakeCapture([])
-        desktop, start_ns, profile = _make_desktop(camera)
+        desktop, start_ns, profile = _make_desktop(
+            camera, profile=_deadline_profile()
+        )
         ctrl = desktop._controller
 
-        # Sample 1
-        ctrl._queue.push(
-            FramePacket(
-                sequence=1,
-                captured_ns=start_ns,
-                rgb=np.zeros((10, 10, 3), dtype=np.uint8),
-            )
+        # Step 1: Initial sample at t=0
+        p1 = FramePacket(
+            sequence=1,
+            captured_ns=start_ns,
+            rgb=np.zeros((10, 10, 3), dtype=np.uint8),
         )
+        ctrl._queue.push(p1)
         desktop.run_until_terminal(max_steps=1)
         assert ctrl.frames_sampled == 1
         assert ctrl._consecutive_dry == 0
+        assert ctrl._next_sample_ns == start_ns + 200_000_000
 
-        # Feed 5 gated-out packets (< 200ms) one by one
-        for i in range(2, 7):
-            ctrl._queue.push(
-                FramePacket(
-                    sequence=i,
-                    captured_ns=start_ns + (i - 1) * 20_000_000,
-                    rgb=np.zeros((10, 10, 3), dtype=np.uint8),
-                )
+        # Step 2: Feed 4 consecutive gated-out packets (< 200ms) with pump False
+        for i in range(2, 6):
+            p_gated = FramePacket(
+                sequence=i,
+                captured_ns=start_ns + (i - 1) * 30_000_000,
+                rgb=np.zeros((10, 10, 3), dtype=np.uint8),
             )
+            ctrl._queue.push(p_gated)
             desktop.run_until_terminal(max_steps=1)
+            # Branch proof: dry counter was reset by gated packet
             assert ctrl._consecutive_dry == 0
+            assert ctrl.frames_sampled == 1
             assert ctrl.collection_stop_reason == "in_progress"
             assert desktop.state == "running"
 
-        # When the queue is genuinely empty and camera has no further frames,
-        # caller loop legitimately concludes source_exhausted without hanging.
-        calls = _headless_loop(desktop)
+        # Step 3 (B7): Feed a DUE packet at t=200ms.
+        # Proves caller continues from gated frames to consume and score due frames.
+        p_due = FramePacket(
+            sequence=6,
+            captured_ns=start_ns + 200_000_000,
+            rgb=np.zeros((10, 10, 3), dtype=np.uint8),
+        )
+        ctrl._queue.push(p_due)
+        desktop.run_until_terminal(max_steps=1)
+        assert ctrl._consecutive_dry == 0
+        assert ctrl.frames_sampled == 2
+        assert ctrl._next_sample_ns == start_ns + 400_000_000
+        assert ctrl.collection_stop_reason == "in_progress"
+        assert desktop.state == "running"
 
-        assert ctrl.collection_stop_reason == "source_exhausted"
-        assert ctrl.collection_complete is False
+        # Step 4 (B7): Drive to deadline_reached by feeding packets to 5000ms.
+        for seq, t_ms in enumerate(range(400, 5200, 200), start=7):
+            p = FramePacket(
+                sequence=seq,
+                captured_ns=start_ns + t_ms * 1_000_000,
+                rgb=np.zeros((10, 10, 3), dtype=np.uint8),
+            )
+            ctrl._queue.push(p)
+            desktop.run_until_terminal(max_steps=1)
+            if desktop.state != "running":
+                break
+
+        assert ctrl.collection_stop_reason == "deadline_reached"
+        assert ctrl.collection_complete is True
         assert desktop.state == "terminal"
-        assert calls <= 5

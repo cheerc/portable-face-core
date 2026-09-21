@@ -20,7 +20,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from facecore.live.capture import FakeCapture
+from facecore.live.capture import CaptureSource, FakeCapture
 from facecore.live.contracts import (
     FrameObservation,
     FramePacket,
@@ -331,8 +331,8 @@ class TestQtResearchWindow:
         1. desktop.state transitions to 'terminal' (F1 fix).
         2. Qt timer stops on process_once (preventing infinite busy ticks).
         """
-        # Part A: Source exhaustion via closed-source fast path
-        source_a = FakeCapture(frames=[_packet(1)])
+        # Part A: Source exhaustion via closed-source fast path (B3/B5)
+        source_a = FakeCapture(frames=[])
         desktop_a = DesktopSession(
             engine=SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test"),
             source=source_a,
@@ -353,16 +353,63 @@ class TestQtResearchWindow:
         assert desktop_a.state == "running"
         assert window_a._timer.isActive() is True
 
-        window_a.process_once()
+        # Close source BEFORE processing: triggers closed fast path on 1st read
         source_a.close()
         assert source_a.is_closed is True
 
         window_a.process_once()
+        # Branch-specific proof: fast path triggered on dry read 1 (dry == 1 < 3)
+        assert desktop_a._controller._consecutive_dry == 1
         assert desktop_a.state == "terminal"
         assert desktop_a.collection_stop_reason == "source_exhausted"
         assert desktop_a.collection_complete is False
         assert window_a._timer.isActive() is False
         window_a.close()
+
+        # Part A2: Closed-source fast path with callable method duck-typing (B3)
+        class _MethodClosedCapture(CaptureSource):
+            def __init__(self) -> None:
+                self._closed = False
+
+            def open(self, device_id: str) -> None:
+                self._closed = False
+
+            def read(self) -> FramePacket | None:
+                return None
+
+            def close(self) -> None:
+                self._closed = True
+
+            def is_closed(self) -> bool:
+                return self._closed
+
+        source_m = _MethodClosedCapture()
+        desktop_m = DesktopSession(
+            engine=SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test"),
+            source=source_m,
+            scorer=_matching_scorer,
+            session_id="qt-session-closed-method",
+            fixed_seconds=True,
+        )
+        clock_m = _AdvancingClock()
+        window_m = QtResearchWindow(
+            desktop_m,
+            consent=_consent("qt-session-closed-method"),
+            offscreen=True,
+            clock_ns=clock_m,
+            clock_advance=clock_m.advance,
+        )
+        window_m.show()
+        QTest.mouseClick(window_m.start_button, Qt.MouseButton.LeftButton)
+        source_m.close()
+        assert source_m.is_closed() is True
+
+        window_m.process_once()
+        assert desktop_m._controller._consecutive_dry == 1
+        assert desktop_m.state == "terminal"
+        assert desktop_m.collection_stop_reason == "source_exhausted"
+        assert window_m._timer.isActive() is False
+        window_m.close()
 
         # Part B: Max frames reached before deadline
         low_cap_prof = ResearchProfile(
