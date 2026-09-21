@@ -39,7 +39,7 @@ def _utc(s: str) -> datetime:
 def _profile(
     *,
     timeout_ms: int = 5000,
-    max_frames: int = 25,
+    max_frames: int = 26,
     required_support: int = 3,
 ) -> ResearchProfile:
     return ResearchProfile(

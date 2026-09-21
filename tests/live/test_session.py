@@ -36,7 +36,7 @@ def make_profile(
         profile_version="provisional_v1",
         timeout_ms=timeout_ms,
         sample_interval_ms=200,
-        max_frames=25,
+        max_frames=26,
         queue_limit=1,
         required_support=required_support,
         min_support_interval_ms=min_support_interval_ms,

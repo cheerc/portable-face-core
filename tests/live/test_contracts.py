@@ -83,7 +83,7 @@ def test_research_profile_valid_creation_and_json_roundtrip() -> None:
         profile_version="provisional_v1",
         timeout_ms=5000,
         sample_interval_ms=200,
-        max_frames=25,
+        max_frames=26,
         queue_limit=1,
         required_support=3,
         min_support_interval_ms=200,
@@ -96,7 +96,7 @@ def test_research_profile_valid_creation_and_json_roundtrip() -> None:
     )
     assert profile.timeout_ms == 5000
     assert profile.sample_interval_ms == 200
-    assert profile.max_frames == 25
+    assert profile.max_frames == 26
     assert profile.queue_limit == 1
     assert profile.required_support == 3
     assert profile.min_support_interval_ms == 200
@@ -138,7 +138,7 @@ def test_research_profile_rejects_invalid_values(
         "profile_version": "provisional_v1",
         "timeout_ms": 5000,
         "sample_interval_ms": 200,
-        "max_frames": 25,
+        "max_frames": 26,
         "queue_limit": 1,
         "required_support": 3,
         "min_support_interval_ms": 200,
@@ -161,7 +161,7 @@ def test_research_profile_continuity_none_rejects_auto_match() -> None:
         profile_version="provisional_v1",
         timeout_ms=5000,
         sample_interval_ms=200,
-        max_frames=25,
+        max_frames=26,
         queue_limit=1,
         required_support=3,
         min_support_interval_ms=200,

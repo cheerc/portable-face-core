@@ -20,6 +20,7 @@ from __future__ import annotations
 import threading
 
 import numpy as np
+import pytest
 
 from facecore.live.capture import CaptureSource, FakeCapture
 from facecore.live.contracts import (
@@ -103,7 +104,7 @@ class DeterministicCadenceCamera(CaptureSource):
 def _profile(
     timeout_ms: int = 5000,
     sample_interval_ms: int = 200,
-    max_frames: int = 25,
+    max_frames: int = 26,
 ) -> ResearchProfile:
     return ResearchProfile(
         schema_version="v1",
@@ -126,12 +127,10 @@ def _profile(
 def _deadline_profile() -> ResearchProfile:
     """5s window with a frame cap that cannot fire before the deadline.
 
-    Production profile (timeout_ms=5000, sample_interval_ms=200,
-    max_frames=25) samples [0, 4800ms]: the cap fires before the deadline
-    by design (see issue #84 — a profile-contract inconsistency that #81
-    must not touch). Deadline-termination tests must therefore use 26+
-    sample slots; a dedicated low-cap positive control below pins the
-    max_frames_reached incomplete branch instead.
+    ResearchProfile now enforces max_frames >= ceil(5000/200)+1 = 26 at
+    construction (#84 production invariant); the default 5000/200/26
+    profile samples [0, 5000ms] so the deadline fires first. Non-fixed
+    execution-layer cap behavior remains covered by controller tests.
     """
     return _profile(max_frames=26)
 
@@ -328,23 +327,18 @@ class TestHeadlessFixedWindowDeadline:
         assert desktop.state == "terminal"
         assert calls <= 5
 
-    def test_max_frames_before_deadline_still_incomplete(self) -> None:
-        """Max frames cap reached before deadline → max_frames_reached.
+    def test_max_frames_before_deadline_profile_is_rejected(self) -> None:
+        """A fixed profile cap below the deadline window fails closed.
 
-        Proves that max_frames_reached incomplete terminal exits caller loop
-        deterministically with state == terminal (F1 acceptance).
+        `fixed_seconds=True` intentionally makes the profile cap authoritative
+        in LiveController, so an execution-layer max_frames argument cannot
+        recreate the old 5000/200/5 fixed-mode branch without changing
+        production semantics. The new #84 invariant rejects that profile at
+        construction; non-fixed execution-layer cap behavior remains covered
+        by controller tests.
         """
-        prof = _profile(timeout_ms=5000, sample_interval_ms=200, max_frames=5)
-        camera = DeterministicCadenceCamera(fps=30)
-        desktop, start_ns, profile = _make_desktop(camera, profile=prof)
-
-        calls = _headless_loop(desktop)
-
-        ctrl = desktop._controller
-        assert ctrl.collection_stop_reason == "max_frames_reached"
-        assert ctrl.collection_complete is False
-        assert desktop.state == "terminal"
-        assert calls <= 10
+        with pytest.raises(ValueError, match="26"):
+            _profile(timeout_ms=5000, sample_interval_ms=200, max_frames=5)
 
     def test_single_call_bounded(self) -> None:
         """A single run_until_terminal(50) is bounded by the step budget.

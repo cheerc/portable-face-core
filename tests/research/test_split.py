@@ -66,7 +66,7 @@ def _now_utc():
 
 
 TEST_PROFILE_DIGEST = (
-    "6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03"
+    "c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265"
 )
 
 
@@ -146,7 +146,7 @@ def _profile(profile_digest: str = TEST_PROFILE_DIGEST) -> ResearchProfile:
         profile_version="prof-e6",
         timeout_ms=5000,
         sample_interval_ms=200,
-        max_frames=25,
+        max_frames=26,
         queue_limit=1,
         required_support=3,
         min_support_interval_ms=200,
@@ -164,12 +164,12 @@ class TestCandidateFreezeAndAuthorizeHoldout:
     def test_freeze_candidate_pure_function(self) -> None:
         manifest = _manifest(
             "exp-e6",
-            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
         )
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future_1", "v_future_2"),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -180,7 +180,7 @@ class TestCandidateFreezeAndAuthorizeHoldout:
         assert freeze.code_sha == "c" * 40
         assert (
             freeze.profile_digest
-            == "6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03"
+            == "c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265"
         )
         assert freeze.analysis_digest == "ana-001"
         assert freeze.planned_visit_ids == ("v_future_1", "v_future_2")
@@ -200,13 +200,13 @@ class TestCandidateFreezeAndAuthorizeHoldout:
     def test_freeze_candidate_rejects_empty_or_invalid_inputs(self) -> None:
         manifest = _manifest(
             "exp-e6",
-            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
         )
         with pytest.raises(ValueError, match="code_sha"):
             freeze_candidate(
                 manifest,
                 code_sha="",
-                profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+                profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
                 analysis_digest="ana-001",
                 planned_visit_ids=("v1",),
             )
@@ -224,7 +224,7 @@ class TestCandidateFreezeAndAuthorizeHoldout:
             freeze_candidate(
                 manifest,
                 code_sha="c" * 40,
-                profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+                profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
                 analysis_digest="",
                 planned_visit_ids=("v1",),
             )
@@ -233,7 +233,7 @@ class TestCandidateFreezeAndAuthorizeHoldout:
             freeze_candidate(
                 manifest,
                 code_sha="c" * 40,
-                profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+                profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
                 analysis_digest="ana-001",
                 planned_visit_ids=(),
             )
@@ -242,7 +242,7 @@ class TestCandidateFreezeAndAuthorizeHoldout:
             freeze_candidate(
                 manifest,
                 code_sha="c" * 40,
-                profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+                profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
                 analysis_digest="ana-001",
                 planned_visit_ids=("v1", "v1"),
             )
@@ -260,12 +260,12 @@ class TestCandidateFreezeAndAuthorizeHoldout:
     def test_authorize_holdout_pure_function(self) -> None:
         manifest = _manifest(
             "exp-e6",
-            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
         )
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future_1",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -295,12 +295,12 @@ class TestCandidateFreezeAndAuthorizeHoldout:
     def test_authorize_holdout_rejects_empty_decision_id(self) -> None:
         manifest = _manifest(
             "exp-e6",
-            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
         )
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future_1",),
         )
@@ -314,12 +314,12 @@ class TestSplitInvariants:
     def test_classify_split(self) -> None:
         manifest = _manifest(
             "exp-e6",
-            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
         )
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
             analysis_digest="ana-001",
             planned_visit_ids=("v_holdout_1", "v_holdout_2"),
         )
@@ -347,7 +347,7 @@ class TestSplitInvariants:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -385,7 +385,7 @@ class TestSplitInvariants:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
             analysis_digest="ana-001",
             planned_visit_ids=("v_past",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -413,7 +413,7 @@ class TestSplitInvariants:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -483,7 +483,7 @@ class TestSplitInvariants:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -494,7 +494,7 @@ class TestSplitInvariants:
         freeze_swapped = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
             analysis_digest="ana-002",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:30:00Z",
@@ -521,7 +521,7 @@ class TestRecorderCustodyAndReadTimeGuards:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -543,7 +543,7 @@ class TestRecorderCustodyAndReadTimeGuards:
                 frames_rejected=0,
                 frames_dropped=0,
                 support_sequences=(1,),
-                profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+                profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
                 model_generation="gen-e6",
                 gallery_digest="gal-e6",
             )
@@ -586,7 +586,7 @@ class TestRecorderCustodyAndReadTimeGuards:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -661,7 +661,7 @@ class TestRecorderCustodyAndReadTimeGuards:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -682,7 +682,7 @@ class TestRecorderCustodyAndReadTimeGuards:
                 frames_rejected=0,
                 frames_dropped=0,
                 support_sequences=(),
-                profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+                profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
                 model_generation="gen-e6",
                 gallery_digest="gal-e6",
             )
@@ -704,7 +704,7 @@ class TestRecorderCustodyAndReadTimeGuards:
                 key_dir=key_dir,
                 clock=_now_utc,
                 profile=_profile(
-                    "6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03"
+                    "c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265"
                 ),
                 scorer=lambda f: None,  # type: ignore[return-value]
                 model_generation="gen-e6",
@@ -723,7 +723,7 @@ class TestRecorderCustodyAndReadTimeGuards:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -757,7 +757,7 @@ class TestHoldoutReleaseAndSingleEvaluation:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -788,7 +788,7 @@ class TestHoldoutReleaseAndSingleEvaluation:
                 attempt_id="s_holdout",
                 run_id="run-1",
                 arm_id="A",
-                profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+                profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
                 selected_sequences=(1,),
                 support_sequences=(1,),
                 terminal=SessionStatus.matched.value,
@@ -805,7 +805,7 @@ class TestHoldoutReleaseAndSingleEvaluation:
                 attempt_id="s_holdout",
                 run_id="run-1",
                 arm_id="B",
-                profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+                profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
                 selected_sequences=(1,),
                 support_sequences=(1,),
                 terminal=SessionStatus.matched.value,
@@ -833,7 +833,7 @@ class TestHoldoutReleaseAndSingleEvaluation:
             freeze=freeze,
             release=release,
             profile=_profile(
-                "6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03"
+                "c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265"
             ),
         )
         assert batch.attempted == 1
@@ -848,7 +848,7 @@ class TestHoldoutReleaseAndSingleEvaluation:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -862,7 +862,7 @@ class TestHoldoutReleaseAndSingleEvaluation:
                 attempt_id="s1",
                 run_id="run-1",
                 arm_id="A",
-                profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+                profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
                 selected_sequences=(),
                 support_sequences=(),
                 terminal=SessionStatus.timeout.value,
@@ -891,7 +891,7 @@ class TestHoldoutReleaseAndSingleEvaluation:
             freeze=freeze,
             release=release,
             profile=_profile(
-                "6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03"
+                "c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265"
             ),
         )
         # Second run (exact reproduction / audit)
@@ -903,7 +903,7 @@ class TestHoldoutReleaseAndSingleEvaluation:
             freeze=freeze,
             release=release,
             profile=_profile(
-                "6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03"
+                "c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265"
             ),
         )
         assert b1.to_dict() == b2.to_dict()
@@ -915,7 +915,7 @@ class TestHoldoutReleaseAndSingleEvaluation:
         freeze = freeze_candidate(
             manifest,
             code_sha="c" * 40,
-            profile_digest="6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03",
+            profile_digest="c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265",
             analysis_digest="ana-001",
             planned_visit_ids=("v_future",),
             frozen_at_utc="2026-09-16T09:00:00Z",
@@ -931,7 +931,7 @@ class TestHoldoutReleaseAndSingleEvaluation:
             profile_version="prof-e6-new",
             timeout_ms=5000,
             sample_interval_ms=200,
-            max_frames=25,
+            max_frames=26,
             queue_limit=1,
             required_support=3,
             min_support_interval_ms=200,
@@ -961,7 +961,7 @@ class TestCLIAnalyzeHoldoutMode:
         key_dir = tmp_path / "keys"
         profile_file = tmp_path / "profile.json"
         prof = _profile(
-            "6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03"
+            "c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265"
         )
         profile_file.write_text(json.dumps(prof.to_dict()))
 
@@ -1003,7 +1003,7 @@ class TestCLIAnalyzeHoldoutMode:
         key_dir = tmp_path / "keys"
         profile_file = tmp_path / "profile.json"
         prof = _profile(
-            "6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03"
+            "c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265"
         )
         profile_file.write_text(json.dumps(prof.to_dict()))
 
@@ -1061,7 +1061,7 @@ class TestCLIAnalyzeHoldoutMode:
         key_dir = tmp_path / "keys"
         profile_file = tmp_path / "profile.json"
         prof = _profile(
-            "6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03"
+            "c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265"
         )
         profile_file.write_text(json.dumps(prof.to_dict()))
 
@@ -1109,7 +1109,7 @@ class TestCLIAnalyzeHoldoutMode:
         key_dir = tmp_path / "keys"
         profile_file = tmp_path / "profile.json"
         prof = _profile(
-            "6f7ee96a2d51eec0a149a8047231f03af719fbdd3e64853740ff3fd1f7889a03"
+            "c77088e765f8f90de132b71e4ccb014a3b08fe6f8fbee8024905575e559a2265"
         )
         profile_file.write_text(json.dumps(prof.to_dict()))
 
