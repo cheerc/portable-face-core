@@ -298,6 +298,7 @@ class _SteppedCamera(CaptureSource):
             self._closed = True
             self._opened = False
 
+    @property
     def is_closed(self) -> bool:
         with self._lock:
             return self._closed

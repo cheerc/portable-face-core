@@ -168,11 +168,14 @@ class DesktopSession:
         """Cancel event: stops immediately with cancelled terminal."""
         if self._state != "running":
             raise RuntimeError(f"cannot cancel from state {self._state!r}")
-        cancelled = self._engine.finish(now_ns, reason="cancelled")
+        if self._controller._fixed_seconds:
+            cancelled = self._controller.cancel_collection(now_ns)
+        else:
+            cancelled = self._engine.finish(now_ns, reason="cancelled")
+            self._controller.close()
         self._terminal = cancelled
         self._state = "terminal"
         self._recording = False
-        self._controller.close()
         return cancelled
 
     def run_until_terminal(self, max_steps: int = 100) -> SessionResult | None:
@@ -181,11 +184,19 @@ class DesktopSession:
             raise RuntimeError(f"cannot run from state {self._state!r}")
         terminal = self._controller.run_until_terminal(max_steps=max_steps)
         if terminal is None:
+            if (
+                self._controller._fixed_seconds
+                and self._controller.collection_stop_reason == "in_progress"
+            ):
+                return None
             terminal = self._controller.finish(
                 self._controller._controller_now_ns()
             )
         self._terminal = terminal
-        if self._controller._fixed_seconds and not self._controller.collection_complete:
+        if (
+            self._controller._fixed_seconds
+            and self._controller.collection_stop_reason == "in_progress"
+        ):
             # Fixed-window mode keeps the view running after B locks so Cancel
             # can stop the remaining collector before its original deadline.
             self._state = "running"
@@ -212,7 +223,12 @@ class DesktopSession:
                 self._controller._controller_now_ns()
             )
         self._terminal = terminal
-        if self._controller._fixed_seconds and not self._controller.collection_complete:
+        if (
+            self._controller._fixed_seconds
+            and self._controller.collection_stop_reason == "in_progress"
+        ):
+            # Fixed-window mode keeps the view running after B locks so Cancel
+            # can stop the remaining collector before its original deadline.
             self._state = "running"
             self._recording = True
         else:

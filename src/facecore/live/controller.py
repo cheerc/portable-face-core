@@ -121,6 +121,7 @@ class LiveController:
         self._collector_stop_reason = "in_progress"
         self._collector_safety_flags: list[str] = []
         self._collection_cancelled = False
+        self._consecutive_dry = 0
 
         self._lock = threading.Lock()
         self._pump_thread: threading.Thread | None = None
@@ -160,6 +161,7 @@ class LiveController:
             self._collector_stop_reason = "in_progress"
             self._collector_safety_flags = []
             self._collection_cancelled = False
+            self._consecutive_dry = 0
             self._pump_stop.clear()
 
     def _require_active(self) -> str:
@@ -168,6 +170,23 @@ class LiveController:
         return self._session_id
 
     # -- pump ----------------------------------------------------------------
+    def _source_closed(self) -> bool:
+        """Closed-source check tolerant of property/method test doubles.
+
+        The ``CaptureSource`` ABC declares ``is_closed`` as a property, but
+        older test doubles expose a plain method of the same name. A bound
+        method object is always truthy, which would silently skip the closed
+        fast path on such doubles. Evaluate callables instead of trusting
+        raw truthiness (B3).
+        """
+        closed = getattr(self._source, "is_closed", False)
+        if callable(closed):
+            try:
+                return bool(closed())
+            except Exception:
+                return False
+        return bool(closed)
+
     def _pump_once(self) -> bool:
         """Move one source packet into the slot-1 queue. False when dry."""
         packet = self._source.read()
@@ -195,14 +214,20 @@ class LiveController:
             return True
         return packet.captured_ns >= self._next_sample_ns
 
-    def _consume_one(self) -> SessionResult | None:
-        """Score one queued packet and feed the engine. None when idle."""
+    def _consume_one(self) -> tuple[FramePacket | None, SessionResult | None]:
+        """Score one queued packet and feed the engine.
+
+        Returns (consumed, terminal) so the caller can distinguish all four
+        outcomes B2/B4 require: terminal ready, packet consumed but pre-B
+        (no terminal), gated-out packet (drained from queue, not dry), and
+        queue empty.
+        """
         session_id = self._require_active()
         packet = self._queue.drain()
         if packet is None:
-            return self._terminal
+            return None, None
         if not self._sample_due(packet):
-            return self._terminal
+            return packet, self._terminal
         self._last_sequence = packet.sequence
         self._frames_sampled += 1
         assert self._session_start_ns is not None
@@ -246,7 +271,7 @@ class LiveController:
             # close (AVFoundation segfaults on close-during-read).
             # No-op when no background pump is running (sync path).
             self._stop_and_release()
-            return self._terminal
+            return packet, self._terminal
         if observation.sequence != packet.sequence:
             raise ValueError(
                 "scorer returned observation for "
@@ -263,17 +288,17 @@ class LiveController:
             # collector (arm A + diagnostics) only — never back into B.
             self._post_lock_observations.append(observation)
             self._collect_safety_flags(observation)
-            return self._inference_terminal
+            return packet, self._inference_terminal
         result = self._engine.observe(observation)
         if result is not None:
             if self._fixed_seconds:
                 # B locks here; the collector continues to the deadline.
                 self._inference_terminal = result
                 self._terminal = result
-                return self._terminal
+                return packet, self._terminal
             self._terminal = result
             self._stop_and_release()
-        return self._terminal
+        return packet, self._terminal
 
     def _append_live_trace(self, observation: FrameObservation) -> None:
         """Persist one scored observation to the encrypted trace sidecar."""
@@ -324,7 +349,7 @@ class LiveController:
         self._require_active()
         for _ in range(max_steps):
             if self._fixed_seconds:
-                if self._collector_complete:
+                if self._collector_stop_reason != "in_progress":
                     return self._terminal
                 if self._collection_should_stop():
                     self._finalize_collection()
@@ -332,19 +357,37 @@ class LiveController:
             elif self._terminal is not None:
                 return self._terminal
             if not self._pump_once():
-                drained = self._consume_one()
-                if drained is not None:
+                consumed, terminal = self._consume_one()
+                if consumed is not None:
+                    # B2: a drained+scored packet is never dry, even when the
+                    # engine has not yet locked B (terminal None pre-lock).
+                    # Transient AVFoundation read failure on an open camera
+                    # must not retire the collector while queue still feeds.
+                    self._consecutive_dry = 0
                     if self._fixed_seconds:
                         if self._collection_should_stop():
                             self._finalize_collection()
                         continue
-                    return drained
-                # Source dry and queue empty: conclude at controller clock.
+                    if terminal is not None:
+                        return terminal
+                    continue
+                self._consecutive_dry += 1
+                closed = self._source_closed()
+                if self._consecutive_dry < 3 and not closed:
+                    continue
+                # Source dry (>= 3 consecutive empty reads after empty queue,
+                # or source explicitly closed) and queue empty: conclude at
+                # controller clock. The 3-read bar (~100ms at 30fps) is a
+                # transient-drop tolerance, not a time semantic: it only
+                # delays the finalize by a bounded camera-jitter window, and
+                # the resulting stop_reason is still decided by
+                # _collection_should_stop / _finalize_collection state.
                 if self._fixed_seconds:
                     self._finalize_collection()
                     return self._terminal
                 return self.finish(self._controller_now_ns())
-            terminal = self._consume_one()
+            self._consecutive_dry = 0
+            _consumed, terminal = self._consume_one()
             if terminal is not None:
                 if self._fixed_seconds:
                     if self._collection_should_stop():
@@ -352,7 +395,8 @@ class LiveController:
                     continue
                 return terminal
         if self._fixed_seconds:
-            self._finalize_collection()
+            if self._collection_should_stop():
+                self._finalize_collection()
         return self._terminal
 
     def _collection_should_stop(self) -> bool:
@@ -381,7 +425,7 @@ class LiveController:
 
     def _finalize_collection(self) -> None:
         """Seal collector evidence without rewriting the B terminal."""
-        if self._collector_complete:
+        if self._collector_stop_reason != "in_progress":
             return
         if self._collection_cancelled:
             self._collector_stop_reason = "cancelled"
@@ -481,7 +525,7 @@ class LiveController:
             while True:
                 if self._terminal is not None:
                     return self._terminal
-                terminal = self._consume_one()
+                _consumed, terminal = self._consume_one()
                 if terminal is not None:
                     return terminal
                 if self._controller_now_ns() >= deadline_ns:

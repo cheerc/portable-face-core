@@ -20,7 +20,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from facecore.live.capture import FakeCapture
+from facecore.live.capture import CaptureSource, FakeCapture
 from facecore.live.contracts import (
     FrameObservation,
     FramePacket,
@@ -43,6 +43,7 @@ from facecore.live.qt_window import (
     crop_frame,
     preview_frame,
 )
+from tests.live.test_headless_fixed_window import DeterministicCadenceCamera
 
 # Qt helpers are imported in the fixture so the default verify job can run
 # geometry/parser tests without the optional research-ui dependency.
@@ -179,6 +180,26 @@ def qt_app() -> Any:
     return ActualQApplication.instance() or ActualQApplication([])
 
 
+class _AdvancingClock:
+    """Deterministic advancing clock for Qt offscreen tests.
+
+    Starts at start_ns (aligned with session start <= frame 1 captured_ns).
+    Each call to advance() increments by step_ns (default 200 ms, matching
+    the profile sample interval and frame cadence).
+    Latency-independent: zero wall-clock sleep, independent of host OS scheduler.
+    """
+
+    def __init__(self, start_ns: int = 0, step_ns: int = 200_000_000) -> None:
+        self.now_ns = start_ns
+        self.step_ns = step_ns
+
+    def __call__(self) -> int:
+        return self.now_ns
+
+    def advance(self) -> None:
+        self.now_ns += self.step_ns
+
+
 class TestSquareCaptureGeometry:
     """Appendix A.2/A.3/A.4 geometry is independent of identity and preview mirror."""
 
@@ -232,11 +253,13 @@ class TestQtResearchWindow:
             session_id="qt-session",
             fixed_seconds=True,
         )
+        clock = _AdvancingClock()
         window = QtResearchWindow(
             desktop,
             consent=_consent(),
             offscreen=True,
-            clock_ns=lambda: 1_000_000_000,
+            clock_ns=clock,
+            clock_advance=clock.advance,
         )
         window.show()
         QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
@@ -252,6 +275,294 @@ class TestQtResearchWindow:
         window.close()
         assert desktop.source_closed
         assert desktop.workers_joined
+
+    def test_cancel_before_inference_lock_stops_collection_and_timer(
+        self, qt_app: QApplication
+    ) -> None:
+        """C2 Scenario 1: Cancel before B locks terminates and stops timer.
+
+        Proves that operator cancellation before inference terminal is reached
+        results in a SessionStatus.cancelled terminal, sets collection_stop_reason
+        to 'cancelled', transitions desktop.state to 'terminal', and stops
+        the Qt processing timer.
+        """
+        profile = _profile()
+        desktop = DesktopSession(
+            engine=SessionEngine(profile, "gallery-qt-test", "gen-qt-test"),
+            source=FakeCapture(frames=[_packet(1), _packet(2), _packet(3)]),
+            scorer=_review_scorer,
+            session_id="qt-session-pre-cancel",
+            fixed_seconds=True,
+        )
+        clock = _AdvancingClock()
+        window = QtResearchWindow(
+            desktop,
+            consent=_consent("qt-session-pre-cancel"),
+            offscreen=True,
+            clock_ns=clock,
+            clock_advance=clock.advance,
+        )
+        window.show()
+        QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
+        assert desktop.state == "running"
+        assert window._timer.isActive() is True
+        assert desktop.inference_terminal is None
+
+        QTest.mouseClick(window.cancel_button, Qt.MouseButton.LeftButton)
+        assert desktop.state == "terminal"
+        assert desktop.terminal is not None
+        assert desktop.terminal.status == SessionStatus.cancelled
+        assert desktop.collection_stop_reason == "cancelled"
+        assert desktop.collection_complete is False
+
+        window.process_once()
+        assert window._timer.isActive() is False
+        window.close()
+
+    def test_incomplete_terminal_stops_timer_and_covers_closed_source_fast_path(
+        self, qt_app: QApplication
+    ) -> None:
+        """C2 Scenario 2: Incomplete terminal stops Qt timer.
+
+        Covers closed source fast path. Proves that when collection stops
+        due to source exhaustion (including explicit closed-source fast path
+        where source.is_closed is True) or reaching max_frames cap before
+        deadline:
+        1. desktop.state transitions to 'terminal' (F1 fix).
+        2. Qt timer stops on process_once (preventing infinite busy ticks).
+        """
+        # Part A: Source exhaustion via closed-source fast path (B3/B5)
+        source_a = FakeCapture(frames=[])
+        desktop_a = DesktopSession(
+            engine=SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test"),
+            source=source_a,
+            scorer=_matching_scorer,
+            session_id="qt-session-closed-fast",
+            fixed_seconds=True,
+        )
+        clock_a = _AdvancingClock()
+        window_a = QtResearchWindow(
+            desktop_a,
+            consent=_consent("qt-session-closed-fast"),
+            offscreen=True,
+            clock_ns=clock_a,
+            clock_advance=clock_a.advance,
+        )
+        window_a.show()
+        QTest.mouseClick(window_a.start_button, Qt.MouseButton.LeftButton)
+        assert desktop_a.state == "running"
+        assert window_a._timer.isActive() is True
+
+        # Close source BEFORE processing: triggers closed fast path on 1st read
+        source_a.close()
+        assert source_a.is_closed is True
+
+        window_a.process_once()
+        # Branch-specific proof: fast path triggered on dry read 1 (dry == 1 < 3)
+        assert desktop_a._controller._consecutive_dry == 1
+        assert desktop_a.state == "terminal"
+        assert desktop_a.collection_stop_reason == "source_exhausted"
+        assert desktop_a.collection_complete is False
+        assert window_a._timer.isActive() is False
+        window_a.close()
+
+        # Part A2: Closed-source fast path with callable method duck-typing (B3/B8)
+        class _MethodDuckCapture(CaptureSource):
+            def __init__(self) -> None:
+                self._closed = False
+                self.is_closed_calls = 0
+
+            def open(self, device_id: str) -> None:
+                self._closed = False
+
+            def read(self) -> FramePacket | None:
+                return None
+
+            def close(self) -> None:
+                self._closed = True
+
+            def is_closed(self) -> bool:
+                self.is_closed_calls += 1
+                return self._closed
+
+        source_m = _MethodDuckCapture()
+        desktop_m = DesktopSession(
+            engine=SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test"),
+            source=source_m,
+            scorer=_matching_scorer,
+            session_id="qt-session-closed-method",
+            fixed_seconds=True,
+        )
+        clock_m = _AdvancingClock()
+        window_m = QtResearchWindow(
+            desktop_m,
+            consent=_consent("qt-session-closed-method"),
+            offscreen=True,
+            clock_ns=clock_m,
+            clock_advance=clock_m.advance,
+        )
+        window_m.show()
+        QTest.mouseClick(window_m.start_button, Qt.MouseButton.LeftButton)
+        source_m.close()
+        assert source_m.is_closed() is True
+        source_m.is_closed_calls = 0
+
+        window_m.process_once()
+        # Branch proof: callable was actually invoked, not just inspected for truthiness
+        assert source_m.is_closed_calls >= 1
+        assert desktop_m._controller._consecutive_dry == 1
+        assert desktop_m.state == "terminal"
+        assert desktop_m.collection_stop_reason == "source_exhausted"
+        assert window_m._timer.isActive() is False
+        window_m.close()
+
+        # Part A3: Open method double mutation defense (B3/B8)
+        # Proves that when source is OPEN, raw bound-method truthiness does NOT
+        # falsely abort on transient drop. Reverted bool(getattr) fails here.
+        class _MethodFlakyCamera(DeterministicCadenceCamera):
+            def __init__(self, fps: int = 30) -> None:
+                super().__init__(fps=fps)
+                self.is_closed_calls = 0
+
+            def read(self) -> FramePacket | None:
+                with self._lock:
+                    if self._closed or not self._opened:
+                        return None
+                    self.read_count += 1
+                    if self.read_count == 1:
+                        # Transient drop on read 1
+                        return None
+                    self._seq += 1
+                    captured_ns = (
+                        self._start_ns
+                        + (self._seq - 1) * self.frame_interval_ns
+                    )
+                    rgb = np.full((200, 200, 3), 120, dtype=np.uint8)
+                    return FramePacket(
+                        sequence=self._seq,
+                        captured_ns=captured_ns,
+                        rgb=rgb,
+                    )
+
+            def is_closed(self) -> bool:
+                self.is_closed_calls += 1
+                return self._closed
+
+        source_open = _MethodFlakyCamera(fps=30)
+        desktop_open = DesktopSession(
+            engine=SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test"),
+            source=source_open,
+            scorer=_matching_scorer,
+            session_id="qt-method-open-tolerance",
+            sample_interval_ns=200_000_000,
+            max_frames=25,
+            fixed_seconds=True,
+        )
+        clock_open = _AdvancingClock()
+        window_open = QtResearchWindow(
+            desktop_open,
+            consent=_consent("qt-method-open-tolerance"),
+            offscreen=True,
+            clock_ns=clock_open,
+            clock_advance=clock_open.advance,
+        )
+        window_open.show()
+        QTest.mouseClick(window_open.start_button, Qt.MouseButton.LeftButton)
+
+        window_open.process_once()
+        # Mutation proof: if _source_closed checked raw truthiness of bound method,
+        # it would evaluate True on read 1 and abort with state='terminal'/frames=0.
+        # Calling is_closed() -> False allows tolerance to continue, sampling frames.
+        assert source_open.is_closed_calls >= 1
+        assert desktop_open.state == "running"
+        assert desktop_open.collection_stop_reason == "in_progress"
+        assert desktop_open._controller.frames_sampled >= 1
+        window_open.close()
+
+        # Part B: Max frames reached before deadline
+        low_cap_prof = ResearchProfile(
+            schema_version="v1",
+            profile_version="qt-lowcap",
+            timeout_ms=5000,
+            sample_interval_ms=200,
+            max_frames=1,
+            queue_limit=1,
+            required_support=1,
+            min_support_interval_ms=1,
+            match_threshold=0.45,
+            review_threshold=0.30,
+            margin_threshold=0.10,
+            detector_version="det-qt-test",
+            quality_policy_version="quality-qt-test",
+            continuity_max_center_delta_ratio=0.5,
+        )
+        desktop_b = DesktopSession(
+            engine=SessionEngine(low_cap_prof, "gallery-qt-test", "gen-qt-test"),
+            source=FakeCapture(frames=[_packet(1), _packet(2)]),
+            scorer=_matching_scorer,
+            session_id="qt-session-max-frames",
+            max_frames=1,
+            fixed_seconds=True,
+        )
+        clock_b = _AdvancingClock()
+        window_b = QtResearchWindow(
+            desktop_b,
+            consent=_consent("qt-session-max-frames"),
+            offscreen=True,
+            clock_ns=clock_b,
+            clock_advance=clock_b.advance,
+        )
+        window_b.show()
+        QTest.mouseClick(window_b.start_button, Qt.MouseButton.LeftButton)
+        window_b.process_once()
+
+        assert desktop_b.state == "terminal"
+        assert desktop_b.collection_stop_reason == "max_frames_reached"
+        assert desktop_b.collection_complete is False
+        assert window_b._timer.isActive() is False
+        window_b.close()
+
+    def test_in_progress_collection_retains_timer_after_inference_lock(
+        self, qt_app: QApplication
+    ) -> None:
+        """C2 Scenario 3: Timer remains active while collection is in progress.
+
+        Proves that in fixed-window mode, after inference B locks (inference_terminal
+        is matched), desktop.state remains 'running' because collection is still
+        in progress, and the Qt timer is NOT prematurely stopped.
+        """
+        clock = _AdvancingClock()
+        camera = DeterministicCadenceCamera(fps=30)
+        profile = _profile()
+        desktop = DesktopSession(
+            engine=SessionEngine(profile, "gallery-qt-test", "gen-qt-test"),
+            source=camera,
+            scorer=_matching_scorer,
+            session_id="qt-session-in-progress",
+            sample_interval_ns=int(profile.sample_interval_ms * 1_000_000),
+            max_frames=profile.max_frames,
+            fixed_seconds=True,
+        )
+        window = QtResearchWindow(
+            desktop,
+            consent=_consent("qt-session-in-progress"),
+            offscreen=True,
+            clock_ns=clock,
+            clock_advance=clock.advance,
+        )
+        window.show()
+        QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
+        assert desktop.state == "running"
+        assert window._timer.isActive() is True
+
+        window.process_once()
+        assert desktop.inference_terminal is not None
+        assert desktop.inference_terminal.status == SessionStatus.matched
+
+        assert desktop.state == "running"
+        assert desktop.collection_stop_reason == "in_progress"
+        assert window._timer.isActive() is True
+        window.close()
 
     def test_label_persists_to_encrypted_research_sidecar(
         self, qt_app: QApplication, tmp_path: Path

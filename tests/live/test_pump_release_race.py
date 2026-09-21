@@ -122,7 +122,7 @@ def test_scorer_failure_stops_pump_before_release() -> None:
         )
     )
     source._read_gate.set()
-    terminal = ctl._consume_one()
+    consumed, terminal = ctl._consume_one()
     assert terminal is not None, "no terminal produced"
     assert terminal.reason_codes == ("scorer_failure: RuntimeError",)
     assert source.close_while_reading is False, (
@@ -157,7 +157,7 @@ def test_stuck_pump_skips_release_but_still_terminates() -> None:
         )
     )
     started = time.monotonic_ns()
-    terminal = ctl._consume_one()
+    consumed, terminal = ctl._consume_one()
     elapsed_s = (time.monotonic_ns() - started) / 1_000_000_000
     assert terminal is not None, "no terminal produced"
     assert terminal.reason_codes == ("scorer_failure: RuntimeError",)
@@ -176,6 +176,6 @@ def test_error_terminal_still_produced_without_background_pump() -> None:
     ctl.start_session("fp-sync", time.monotonic_ns(), device_id="1")
     source._read_gate.set()
     assert ctl._pump_once() is True
-    terminal = ctl._consume_one()
+    consumed, terminal = ctl._consume_one()
     assert terminal is not None
     assert terminal.reason_codes == ("scorer_failure: RuntimeError",)
