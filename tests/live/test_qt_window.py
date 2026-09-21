@@ -43,6 +43,7 @@ from facecore.live.qt_window import (
     crop_frame,
     preview_frame,
 )
+from tests.live.test_headless_fixed_window import DeterministicCadenceCamera
 
 # Qt helpers are imported in the fixture so the default verify job can run
 # geometry/parser tests without the optional research-ui dependency.
@@ -179,6 +180,26 @@ def qt_app() -> Any:
     return ActualQApplication.instance() or ActualQApplication([])
 
 
+class _AdvancingClock:
+    """Deterministic advancing clock for Qt offscreen tests.
+
+    Starts at start_ns (aligned with session start <= frame 1 captured_ns).
+    Each call to advance() increments by step_ns (default 200 ms, matching
+    the profile sample interval and frame cadence).
+    Latency-independent: zero wall-clock sleep, independent of host OS scheduler.
+    """
+
+    def __init__(self, start_ns: int = 0, step_ns: int = 200_000_000) -> None:
+        self.now_ns = start_ns
+        self.step_ns = step_ns
+
+    def __call__(self) -> int:
+        return self.now_ns
+
+    def advance(self) -> None:
+        self.now_ns += self.step_ns
+
+
 class TestSquareCaptureGeometry:
     """Appendix A.2/A.3/A.4 geometry is independent of identity and preview mirror."""
 
@@ -232,11 +253,13 @@ class TestQtResearchWindow:
             session_id="qt-session",
             fixed_seconds=True,
         )
+        clock = _AdvancingClock()
         window = QtResearchWindow(
             desktop,
             consent=_consent(),
             offscreen=True,
-            clock_ns=lambda: 1_000_000_000,
+            clock_ns=clock,
+            clock_advance=clock.advance,
         )
         window.show()
         QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
@@ -271,11 +294,13 @@ class TestQtResearchWindow:
             session_id="qt-session-pre-cancel",
             fixed_seconds=True,
         )
+        clock = _AdvancingClock()
         window = QtResearchWindow(
             desktop,
             consent=_consent("qt-session-pre-cancel"),
             offscreen=True,
-            clock_ns=lambda: 1_000_000_000,
+            clock_ns=clock,
+            clock_advance=clock.advance,
         )
         window.show()
         QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
@@ -315,11 +340,13 @@ class TestQtResearchWindow:
             session_id="qt-session-closed-fast",
             fixed_seconds=True,
         )
+        clock_a = _AdvancingClock()
         window_a = QtResearchWindow(
             desktop_a,
             consent=_consent("qt-session-closed-fast"),
             offscreen=True,
-            clock_ns=lambda: 1_000_000_000,
+            clock_ns=clock_a,
+            clock_advance=clock_a.advance,
         )
         window_a.show()
         QTest.mouseClick(window_a.start_button, Qt.MouseButton.LeftButton)
@@ -362,11 +389,13 @@ class TestQtResearchWindow:
             max_frames=1,
             fixed_seconds=True,
         )
+        clock_b = _AdvancingClock()
         window_b = QtResearchWindow(
             desktop_b,
             consent=_consent("qt-session-max-frames"),
             offscreen=True,
-            clock_ns=lambda: 1_000_000_000,
+            clock_ns=clock_b,
+            clock_advance=clock_b.advance,
         )
         window_b.show()
         QTest.mouseClick(window_b.start_button, Qt.MouseButton.LeftButton)
@@ -387,18 +416,24 @@ class TestQtResearchWindow:
         is matched), desktop.state remains 'running' because collection is still
         in progress, and the Qt timer is NOT prematurely stopped.
         """
+        clock = _AdvancingClock()
+        camera = DeterministicCadenceCamera(fps=30)
+        profile = _profile()
         desktop = DesktopSession(
-            engine=SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test"),
-            source=FakeCapture(frames=[_packet(1), _packet(2), _packet(3)]),
+            engine=SessionEngine(profile, "gallery-qt-test", "gen-qt-test"),
+            source=camera,
             scorer=_matching_scorer,
             session_id="qt-session-in-progress",
+            sample_interval_ns=int(profile.sample_interval_ms * 1_000_000),
+            max_frames=profile.max_frames,
             fixed_seconds=True,
         )
         window = QtResearchWindow(
             desktop,
             consent=_consent("qt-session-in-progress"),
             offscreen=True,
-            clock_ns=lambda: 1_000_000_000,
+            clock_ns=clock,
+            clock_advance=clock.advance,
         )
         window.show()
         QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
