@@ -479,53 +479,30 @@ class TestQtResearchWindow:
         assert desktop_open._controller.frames_sampled >= 1
         window_open.close()
 
-        # Part B: Max frames reached before deadline. Cap separation
-        # (#84 production invariant): the profile itself is compliant
-        # (5000/200/26, so construction passes), while the early cap
-        # fires on the execution-layer cap — DesktopSession max_frames=1
-        # (accepted under the [1, profile.max_frames] check). The profile
-        # cap 26 never fires first because the execution cap 1 is lower.
-        low_cap_prof = ResearchProfile(
-            schema_version="v1",
-            profile_version="qt-lowcap",
-            timeout_ms=5000,
-            sample_interval_ms=200,
-            max_frames=26,
-            queue_limit=1,
-            required_support=1,
-            min_support_interval_ms=1,
-            match_threshold=0.45,
-            review_threshold=0.30,
-            margin_threshold=0.10,
-            detector_version="det-qt-test",
-            quality_policy_version="quality-qt-test",
-            continuity_max_center_delta_ratio=0.5,
-        )
-        desktop_b = DesktopSession(
-            engine=SessionEngine(low_cap_prof, "gallery-qt-test", "gen-qt-test"),
-            source=FakeCapture(frames=[_packet(1), _packet(2)]),
-            scorer=_matching_scorer,
-            session_id="qt-session-max-frames",
-            max_frames=1,
-            fixed_seconds=True,
-        )
-        clock_b = _AdvancingClock()
-        window_b = QtResearchWindow(
-            desktop_b,
-            consent=_consent("qt-session-max-frames"),
-            offscreen=True,
-            clock_ns=clock_b,
-            clock_advance=clock_b.advance,
-        )
-        window_b.show()
-        QTest.mouseClick(window_b.start_button, Qt.MouseButton.LeftButton)
-        window_b.process_once()
-
-        assert desktop_b.state == "terminal"
-        assert desktop_b.collection_stop_reason == "max_frames_reached"
-        assert desktop_b.collection_complete is False
-        assert window_b._timer.isActive() is False
-        window_b.close()
+        # Part B: A fixed profile cap below the deadline window fails closed.
+        # `fixed_seconds=True` makes the profile cap authoritative in
+        # LiveController, so the old 5000/200/1 fixed-mode runtime branch
+        # cannot be recreated with DesktopSession(max_frames=1) without
+        # changing production semantics. Construction must reject it with
+        # the required minimum 26; non-fixed execution cap coverage lives in
+        # test_capture.py.
+        with pytest.raises(ValueError, match="26"):
+            ResearchProfile(
+                schema_version="v1",
+                profile_version="qt-lowcap",
+                timeout_ms=5000,
+                sample_interval_ms=200,
+                max_frames=1,
+                queue_limit=1,
+                required_support=1,
+                min_support_interval_ms=1,
+                match_threshold=0.45,
+                review_threshold=0.30,
+                margin_threshold=0.10,
+                detector_version="det-qt-test",
+                quality_policy_version="quality-qt-test",
+                continuity_max_center_delta_ratio=0.5,
+            )
 
     def test_in_progress_collection_retains_timer_after_inference_lock(
         self, qt_app: QApplication
