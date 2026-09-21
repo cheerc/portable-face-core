@@ -265,7 +265,7 @@ class TestDiagnosticsContracts:
         assert not hasattr(entry, "crop")
         assert not hasattr(entry, "embedding")
 
-    def test_session_trace_bounded_max_25(self) -> None:
+    def test_session_trace_bounded_max_26(self) -> None:
         diag = FrameDiagnostics(
             sequence=1,
             original_shape=(480, 640, 3),
@@ -292,9 +292,9 @@ class TestDiagnosticsContracts:
                 gallery_digest="gal-1",
                 diagnostics=diag,
             )
-            for i in range(26)
+            for i in range(27)
         ]
-        with pytest.raises(ValueError, match="trace exceeded max 25"):
+        with pytest.raises(ValueError, match="trace exceeded max 26"):
             SessionTrace(
                 schema_version="v2",
                 attempt_id="att-overflow",

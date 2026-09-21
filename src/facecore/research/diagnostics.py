@@ -10,7 +10,7 @@ Hard boundaries:
       crop pixels, or raw embeddings.
     - Preserves exact dictionary iteration order for identity scores
       to guarantee tie-break reproducibility.
-    - Maximum 25 frame observations per session trace.
+    - Maximum 26 frame observations per session trace.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from facecore.live.contracts import (
 )
 from facecore.research.experiment import STUDY_SCHEMA_VERSION
 
-MAX_TRACE_ENTRIES = 25
+MAX_TRACE_ENTRIES = 26
 
 
 @dataclass(frozen=True)

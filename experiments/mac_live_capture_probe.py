@@ -513,17 +513,17 @@ def probe_threaded_capture_pump() -> ProbeResult:
 
 
 # ---------------------------------------------------------------------------
-# 6. Bounded Sampling Ceiling (5s Timebox / 200ms Interval / 25 Frames Max)
+# 6. Bounded Sampling Ceiling (historical 25-frame probe; #84 contract is 26)
 # ---------------------------------------------------------------------------
 
 
 def probe_bounded_sampling_ceiling() -> ProbeResult:
-    """Verify research profile bounds: 5.0s hard ceiling, 25 frames max."""
+    """Verify sampling ceiling bounds (historical 25-frame probe; #84 contract is 26)."""
     max_seconds = 5.0
     max_frames = 25
     sample_interval = 0.20  # 200ms
 
-    # Test Scenario A: Normal rate limit enforcement (collect up to 25 frames)
+    # Test Scenario A: Normal rate limit enforcement (historical 25 frames probe)
     simulated_timestamps: list[float] = []
     current_sim_time = 0.0
     for frame_idx in range(max_frames + 10):

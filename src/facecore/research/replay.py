@@ -62,7 +62,7 @@ from facecore.live.session import (
 )
 from facecore.research.diagnostics import FrameTraceEntry, SessionTrace
 from facecore.research.experiment import AttemptRecord
-from facecore.research.recorder import MAX_FRAMES_PER_SESSION, ResearchRecorder
+from facecore.research.recorder import ResearchRecorder
 from facecore.research.records import CollectionWindow
 from facecore.research.split import HoldoutSealedError
 
@@ -173,7 +173,7 @@ class ReplayResult:
 def _window_for(frame_count: int, coverage_ns: int, profile: ResearchProfile) -> Window:
     if frame_count == 0:
         return "none"
-    full_frames = frame_count >= min(profile.max_frames, MAX_FRAMES_PER_SESSION)
+    full_frames = frame_count >= profile.max_frames
     full_time = coverage_ns >= int(profile.timeout_ms * 1_000_000)
     if full_frames or full_time:
         return "full"
@@ -325,7 +325,7 @@ def replay_session(
     decision replay and evaluate_arms for the paired comparison.
 
     Count semantics (small-gaps batch): `manifest.frame_count` counts
-    STAGED encrypted blobs only (capped by MAX_FRAMES_PER_SESSION);
+    STAGED encrypted blobs only (capped by profile.max_frames);
     `window`/`frames_replayed` below derive from those blobs, while
     `frame_scores` derive from scored observations — the two denominators
     differ by design, see runbook §9c.

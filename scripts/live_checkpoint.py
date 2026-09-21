@@ -24,6 +24,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 import io
 import json
+import math
 from pathlib import Path
 import re
 import sys
@@ -293,6 +294,7 @@ def run_checkpoint(
     allocated_key_dir = key_dir
     resolved_store: Path = Path(".")
     resolved_key_dir: Path = Path(".")
+    profile: ResearchProfile | None = None
 
     try:
         # 1. Parameter & Consent Verification (aligned with exit code 2)
@@ -313,7 +315,7 @@ def run_checkpoint(
         else:
             try:
                 profile_data = json.loads(profile_path.read_text())
-                ResearchProfile.from_dict(profile_data)
+                profile = ResearchProfile.from_dict(profile_data)
             except Exception as exc:
                 summary["phases"]["profile"] = {
                     "pass": False,
@@ -421,14 +423,31 @@ def run_checkpoint(
             try:
                 trace = recorder.read_trace(resolved_attempt_id)
                 live_info["trace_entries"] = len(trace.entries)
-            except Exception:
-                pass
+            except KeyError as exc:
+                if device != "fake":
+                    live_info["trace_error"] = str(exc)
+            except Exception as exc:
+                live_info["trace_error"] = str(exc)
+
+            trace_ok = True
+            if profile is not None:
+                required_min_frames = (
+                    math.ceil(profile.timeout_ms / profile.sample_interval_ms)
+                    + 1
+                )
+                if "trace_error" in live_info:
+                    trace_ok = False
+                elif "trace_entries" in live_info:
+                    trace_ok = live_info["trace_entries"] == required_min_frames
+                elif device != "fake":
+                    trace_ok = False
 
             window_status = live_payload.get("window")
             live_passed = (
                 live_rc == 0
                 and window_status == "fixed-window-complete"
                 and not staged_errors
+                and trace_ok
             )
             live_info["pass"] = live_passed
             summary["phases"]["live"] = live_info
