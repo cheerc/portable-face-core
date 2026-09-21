@@ -253,6 +253,167 @@ class TestQtResearchWindow:
         assert desktop.source_closed
         assert desktop.workers_joined
 
+    def test_cancel_before_inference_lock_stops_collection_and_timer(
+        self, qt_app: QApplication
+    ) -> None:
+        """C2 Scenario 1: Cancel before B locks terminates and stops timer.
+
+        Proves that operator cancellation before inference terminal is reached
+        results in a SessionStatus.cancelled terminal, sets collection_stop_reason
+        to 'cancelled', transitions desktop.state to 'terminal', and stops
+        the Qt processing timer.
+        """
+        profile = _profile()
+        desktop = DesktopSession(
+            engine=SessionEngine(profile, "gallery-qt-test", "gen-qt-test"),
+            source=FakeCapture(frames=[_packet(1), _packet(2), _packet(3)]),
+            scorer=_review_scorer,
+            session_id="qt-session-pre-cancel",
+            fixed_seconds=True,
+        )
+        window = QtResearchWindow(
+            desktop,
+            consent=_consent("qt-session-pre-cancel"),
+            offscreen=True,
+            clock_ns=lambda: 1_000_000_000,
+        )
+        window.show()
+        QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
+        assert desktop.state == "running"
+        assert window._timer.isActive() is True
+        assert desktop.inference_terminal is None
+
+        QTest.mouseClick(window.cancel_button, Qt.MouseButton.LeftButton)
+        assert desktop.state == "terminal"
+        assert desktop.terminal is not None
+        assert desktop.terminal.status == SessionStatus.cancelled
+        assert desktop.collection_stop_reason == "cancelled"
+        assert desktop.collection_complete is False
+
+        window.process_once()
+        assert window._timer.isActive() is False
+        window.close()
+
+    def test_incomplete_terminal_stops_timer_and_covers_closed_source_fast_path(
+        self, qt_app: QApplication
+    ) -> None:
+        """C2 Scenario 2: Incomplete terminal stops Qt timer.
+
+        Covers closed source fast path. Proves that when collection stops
+        due to source exhaustion (including explicit closed-source fast path
+        where source.is_closed is True) or reaching max_frames cap before
+        deadline:
+        1. desktop.state transitions to 'terminal' (F1 fix).
+        2. Qt timer stops on process_once (preventing infinite busy ticks).
+        """
+        # Part A: Source exhaustion via closed-source fast path
+        source_a = FakeCapture(frames=[_packet(1)])
+        desktop_a = DesktopSession(
+            engine=SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test"),
+            source=source_a,
+            scorer=_matching_scorer,
+            session_id="qt-session-closed-fast",
+            fixed_seconds=True,
+        )
+        window_a = QtResearchWindow(
+            desktop_a,
+            consent=_consent("qt-session-closed-fast"),
+            offscreen=True,
+            clock_ns=lambda: 1_000_000_000,
+        )
+        window_a.show()
+        QTest.mouseClick(window_a.start_button, Qt.MouseButton.LeftButton)
+        assert desktop_a.state == "running"
+        assert window_a._timer.isActive() is True
+
+        window_a.process_once()
+        source_a.close()
+        assert source_a.is_closed is True
+
+        window_a.process_once()
+        assert desktop_a.state == "terminal"
+        assert desktop_a.collection_stop_reason == "source_exhausted"
+        assert desktop_a.collection_complete is False
+        assert window_a._timer.isActive() is False
+        window_a.close()
+
+        # Part B: Max frames reached before deadline
+        low_cap_prof = ResearchProfile(
+            schema_version="v1",
+            profile_version="qt-lowcap",
+            timeout_ms=5000,
+            sample_interval_ms=200,
+            max_frames=1,
+            queue_limit=1,
+            required_support=1,
+            min_support_interval_ms=1,
+            match_threshold=0.45,
+            review_threshold=0.30,
+            margin_threshold=0.10,
+            detector_version="det-qt-test",
+            quality_policy_version="quality-qt-test",
+            continuity_max_center_delta_ratio=0.5,
+        )
+        desktop_b = DesktopSession(
+            engine=SessionEngine(low_cap_prof, "gallery-qt-test", "gen-qt-test"),
+            source=FakeCapture(frames=[_packet(1), _packet(2)]),
+            scorer=_matching_scorer,
+            session_id="qt-session-max-frames",
+            max_frames=1,
+            fixed_seconds=True,
+        )
+        window_b = QtResearchWindow(
+            desktop_b,
+            consent=_consent("qt-session-max-frames"),
+            offscreen=True,
+            clock_ns=lambda: 1_000_000_000,
+        )
+        window_b.show()
+        QTest.mouseClick(window_b.start_button, Qt.MouseButton.LeftButton)
+        window_b.process_once()
+
+        assert desktop_b.state == "terminal"
+        assert desktop_b.collection_stop_reason == "max_frames_reached"
+        assert desktop_b.collection_complete is False
+        assert window_b._timer.isActive() is False
+        window_b.close()
+
+    def test_in_progress_collection_retains_timer_after_inference_lock(
+        self, qt_app: QApplication
+    ) -> None:
+        """C2 Scenario 3: Timer remains active while collection is in progress.
+
+        Proves that in fixed-window mode, after inference B locks (inference_terminal
+        is matched), desktop.state remains 'running' because collection is still
+        in progress, and the Qt timer is NOT prematurely stopped.
+        """
+        desktop = DesktopSession(
+            engine=SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test"),
+            source=FakeCapture(frames=[_packet(1), _packet(2), _packet(3)]),
+            scorer=_matching_scorer,
+            session_id="qt-session-in-progress",
+            fixed_seconds=True,
+        )
+        window = QtResearchWindow(
+            desktop,
+            consent=_consent("qt-session-in-progress"),
+            offscreen=True,
+            clock_ns=lambda: 1_000_000_000,
+        )
+        window.show()
+        QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
+        assert desktop.state == "running"
+        assert window._timer.isActive() is True
+
+        window.process_once()
+        assert desktop.inference_terminal is not None
+        assert desktop.inference_terminal.status == SessionStatus.matched
+
+        assert desktop.state == "running"
+        assert desktop.collection_stop_reason == "in_progress"
+        assert window._timer.isActive() is True
+        window.close()
+
     def test_label_persists_to_encrypted_research_sidecar(
         self, qt_app: QApplication, tmp_path: Path
     ) -> None:

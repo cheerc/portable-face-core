@@ -218,15 +218,16 @@ class LiveController:
         """Score one queued packet and feed the engine.
 
         Returns (consumed, terminal) so the caller can distinguish all four
-        outcomes B2 requires: terminal ready, packet consumed but pre-B
-        (no terminal), gated-out packet (not a sample), and queue empty.
+        outcomes B2/B4 require: terminal ready, packet consumed but pre-B
+        (no terminal), gated-out packet (drained from queue, not dry), and
+        queue empty.
         """
         session_id = self._require_active()
         packet = self._queue.drain()
         if packet is None:
             return None, None
         if not self._sample_due(packet):
-            return None, self._terminal
+            return packet, self._terminal
         self._last_sequence = packet.sequence
         self._frames_sampled += 1
         assert self._session_start_ns is not None

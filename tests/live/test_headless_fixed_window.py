@@ -18,11 +18,10 @@ without synthetic clocks.
 from __future__ import annotations
 
 import threading
-import time
 
 import numpy as np
 
-from facecore.live.capture import CaptureSource
+from facecore.live.capture import CaptureSource, FakeCapture
 from facecore.live.contracts import (
     FrameObservation,
     FramePacket,
@@ -44,47 +43,49 @@ from facecore.research.replay import evaluate_arms
 # ---------------------------------------------------------------------------
 
 
-class _RealtimeCamera(CaptureSource):
-    """Paces at real wall-clock cadence (1/fps per read).
+class DeterministicCadenceCamera(CaptureSource):
+    """Paces at 1/fps synthetically without wall-clock sleep.
 
-    NOT paced to the 200 ms sample interval — that is the bug's
-    masking mechanism (``_SteppedCamera`` sleeps 200 ms, making 50
-    steps cover 10 s).  This camera sleeps only ``1/fps`` (~33 ms at
-    30 fps), so 50 steps span only ~1.7 s — far short of a 5 s window.
+    Latency-independent: advances captured_ns by 1/fps (in nanoseconds)
+    per read, starting from start_ns. Zero time.sleep(), completely
+    independent of host scheduler jitter or CI runner load.
+    Counts reads to allow asserting exact step budget bounds.
     """
 
-    def __init__(self, fps: int = 30, max_frames: int = 10_000) -> None:
-        self._period_s = 1.0 / fps
+    def __init__(
+        self,
+        fps: int = 30,
+        max_frames: int = 10_000,
+        start_ns: int = 0,
+    ) -> None:
+        self.fps = fps
+        self.frame_interval_ns = 1_000_000_000 // fps
         self._max = max_frames
+        self._start_ns = start_ns
         self._seq = 0
-        self._lock = threading.Lock()
+        self.read_count = 0
         self._opened = False
         self._closed = False
-        self._first_read = True
+        self._lock = threading.Lock()
 
     def open(self, device_id: str) -> None:
         with self._lock:
             self._seq = 0
+            self.read_count = 0
             self._opened = True
             self._closed = False
-            self._first_read = True
 
     def read(self) -> FramePacket | None:
         with self._lock:
+            self.read_count += 1
             if self._closed or not self._opened or self._seq >= self._max:
                 return None
-            first = self._first_read
-            self._first_read = False
-        delay = 0.200 if first else self._period_s
-        time.sleep(delay)
-        with self._lock:
-            if self._closed or not self._opened:
-                return None
             self._seq += 1
+            captured_ns = self._start_ns + (self._seq - 1) * self.frame_interval_ns
             rgb = np.full((200, 200, 3), 120, dtype=np.uint8)
             return FramePacket(
                 sequence=self._seq,
-                captured_ns=time.monotonic_ns(),
+                captured_ns=captured_ns,
                 rgb=rgb,
             )
 
@@ -97,6 +98,10 @@ class _RealtimeCamera(CaptureSource):
     def is_closed(self) -> bool:
         with self._lock:
             return self._closed
+
+
+# Backwards compatibility alias for existing test references
+_RealtimeCamera = DeterministicCadenceCamera
 
 
 def _profile(
@@ -140,7 +145,7 @@ def _matched_scorer(packet: FramePacket) -> FrameObservation:
     return FrameObservation(
         sequence=packet.sequence,
         captured_ns=packet.captured_ns,
-        processed_ns=time.monotonic_ns(),
+        processed_ns=packet.captured_ns + 1_000_000,
         quality_pass=True,
         quality_reasons=(),
         face_count=1,
@@ -179,9 +184,14 @@ def _make_desktop(
     *,
     profile: ResearchProfile | None = None,
     trace_collector: _TraceCollector | None = None,
+    start_ns: int | None = None,
 ) -> tuple[DesktopSession, int, ResearchProfile]:
     if profile is None:
         profile = _profile()
+    if start_ns is None:
+        start_ns = 1_000_000_000_000
+    if hasattr(camera, "_start_ns"):
+        camera._start_ns = start_ns
     engine = SessionEngine(profile, "gal-fix81", "gen-fix81")
     desktop = DesktopSession(
         engine=engine,
@@ -194,7 +204,6 @@ def _make_desktop(
         trace_recorder=trace_collector,
         trace_attempt_id="att-fix81" if trace_collector is not None else None,
     )
-    start_ns = time.monotonic_ns()
     desktop.on_start(_consent(), now_ns=start_ns, device_id="0")
     return desktop, start_ns, profile
 
@@ -251,6 +260,7 @@ class TestHeadlessFixedWindowDeadline:
         ctrl = desktop._controller
         assert ctrl.collection_stop_reason == "deadline_reached"
         assert ctrl.collection_complete is True
+        assert desktop.state == "terminal"
         assert ctrl.frames_sampled >= 20
         assert calls >= 2
 
@@ -283,6 +293,7 @@ class TestHeadlessFixedWindowDeadline:
         ctrl = desktop._controller
         assert ctrl.collection_stop_reason == "deadline_reached"
         assert ctrl.collection_complete is True
+        assert desktop.state == "terminal"
         assert calls >= 4
 
     def test_eof_before_deadline_still_incomplete(self) -> None:
@@ -321,86 +332,109 @@ class TestHeadlessFixedWindowDeadline:
         assert calls <= 10
 
     def test_single_call_bounded(self) -> None:
-        """A single run_until_terminal(50) returns well before deadline.
+        """A single run_until_terminal(50) is bounded by the step budget.
 
-        Proves the shared API contract: bounded by step budget, not by
-        the profile deadline — Qt timer tick is never stretched to 5 s.
+        Proves the shared API contract: one call consumes at most 50
+        pump-consume iterations (asserted via read_count <= 50) and then
+        returns control to the caller while state remains running — the
+        Qt timer tick model. Latency-independent: counts steps, not seconds.
         """
-        camera = _RealtimeCamera(fps=30)
+        camera = DeterministicCadenceCamera(fps=30)
         desktop, start_ns, profile = _make_desktop(camera)
 
-        t0 = time.monotonic()
         desktop.run_until_terminal(max_steps=50)
-        elapsed = time.monotonic() - t0
 
-        assert elapsed < 3.0
+        assert camera.read_count <= 50
         assert desktop.state == "running"
+        assert desktop._controller.collection_stop_reason == "in_progress"
 
-    def test_cancel_during_collection(self) -> None:
-        """Cancel stops collection immediately and sets state to terminal."""
-        camera = _RealtimeCamera(fps=30)
+    def test_production_step_budget_matches_qt_tick(self) -> None:
+        """Headless and Qt share the same max_steps=50 caller budget.
+
+        Guards the F1-adjacent invariant the bounded test relies on: if
+        either caller ever diverges from 50, this fails at review time
+        instead of silently changing tick granularity.
+        """
+        import inspect
+        from pathlib import Path
+
+        from facecore.research import cli as cli_module
+        import facecore.live.qt_window as qt_module
+
+        cli_src = inspect.getsource(cli_module.cmd_live)
+        assert "run_until_terminal(max_steps=50)" in cli_src
+        assert qt_module.__file__ is not None
+        qt_src = Path(qt_module.__file__).read_text(encoding="utf-8")
+        assert "run_until_terminal(max_steps=50)" in qt_src
+
+    def test_cancel_pre_lock_stops_collection(self) -> None:
+        """Deterministic pre-lock Cancel stops immediately with cancelled terminal."""
+        camera = DeterministicCadenceCamera(fps=30)
         desktop, start_ns, profile = _make_desktop(camera)
 
-        desktop.run_until_terminal(max_steps=10)
+        # Drive 1 step (1 sample; profile requires 3 supports to lock B).
+        desktop.run_until_terminal(max_steps=1)
         assert desktop.state == "running"
-        result = desktop.on_cancel(time.monotonic_ns())
+        assert desktop.inference_terminal is None
+        assert desktop._controller.collection_stop_reason == "in_progress"
+
+        result = desktop.on_cancel(start_ns + 50_000_000)
 
         assert desktop.state == "terminal"
         assert result.status == SessionStatus.cancelled
         assert desktop.collection_stop_reason == "cancelled"
+        assert desktop.collection_complete is False
+
+        calls = _headless_loop(desktop)
+        assert calls == 0
+
+    def test_cancel_post_lock_stops_remaining_collection(self) -> None:
+        """Post-lock Cancel stops remaining fixed-window collection."""
+        camera = DeterministicCadenceCamera(fps=30)
+        desktop, start_ns, profile = _make_desktop(camera)
+
+        # Drive 20 steps (3 samples taken, locking B with matched status).
+        desktop.run_until_terminal(max_steps=20)
+        assert desktop.state == "running"
+        assert desktop.inference_terminal is not None
+        assert desktop.inference_terminal.status == SessionStatus.matched
+        assert desktop._controller.collection_stop_reason == "in_progress"
+
+        result = desktop.on_cancel(start_ns + 1_000_000_000)
+
+        assert desktop.state == "terminal"
+        assert result.status == SessionStatus.matched
+        assert desktop.collection_stop_reason == "cancelled"
+        assert desktop.collection_complete is False
 
         calls = _headless_loop(desktop)
         assert calls == 0
 
     def test_transient_dropped_frame_does_not_abort_collection(self) -> None:
         """N1: transient frame drop on an open camera does not abort collection."""
-        class _FlakyCamera(CaptureSource):
-            def __init__(self, fps: int = 30) -> None:
-                self._period_s = 1.0 / fps
-                self._seq = 0
-                self._lock = threading.Lock()
-                self._opened = False
-                self._closed = False
-                self._dropped_seqs = {3, 10}
-                self._first_read = True
 
-            def open(self, device_id: str) -> None:
-                with self._lock:
-                    self._seq = 0
-                    self._opened = True
-                    self._closed = False
-                    self._first_read = True
+        class _FlakyCamera(DeterministicCadenceCamera):
+            def __init__(self, fps: int = 30) -> None:
+                super().__init__(fps=fps)
+                self._dropped_seqs = {3, 10}
 
             def read(self) -> FramePacket | None:
                 with self._lock:
                     if self._closed or not self._opened:
                         return None
-                    first = self._first_read
-                    self._first_read = False
-                delay = 0.200 if first else self._period_s
-                time.sleep(delay)
-                with self._lock:
-                    if self._closed or not self._opened:
-                        return None
+                    self.read_count += 1
                     self._seq += 1
                     if self._seq in self._dropped_seqs:
                         return None
+                    captured_ns = (
+                        self._start_ns + (self._seq - 1) * self.frame_interval_ns
+                    )
                     rgb = np.full((200, 200, 3), 120, dtype=np.uint8)
                     return FramePacket(
                         sequence=self._seq,
-                        captured_ns=time.monotonic_ns(),
+                        captured_ns=captured_ns,
                         rgb=rgb,
                     )
-
-            def close(self) -> None:
-                with self._lock:
-                    self._opened = False
-                    self._closed = True
-
-            @property
-            def is_closed(self) -> bool:
-                with self._lock:
-                    return self._closed
 
         camera = _FlakyCamera(fps=30)
         desktop, start_ns, profile = _make_desktop(
@@ -412,4 +446,84 @@ class TestHeadlessFixedWindowDeadline:
         ctrl = desktop._controller
         assert ctrl.collection_stop_reason == "deadline_reached"
         assert ctrl.collection_complete is True
+        assert desktop.state == "terminal"
         assert calls >= 2
+
+    def test_gated_out_frame_drained_from_queue_resets_dry_counter(self) -> None:
+        """B4: frames drained from queue but gated out must not count as dry.
+
+        When camera read returns None (pump returns False), a packet drained
+        from the slot-1 queue proves the source stream is active. Even if
+        not sample_due (gated out), _consume_one returns a non-None consumed
+        packet, resetting _consecutive_dry to 0.
+        """
+        camera = FakeCapture([])
+        desktop, start_ns, profile = _make_desktop(camera)
+        ctrl = desktop._controller
+
+        # First sample at t=0
+        p1 = FramePacket(
+            sequence=1,
+            captured_ns=start_ns,
+            rgb=np.zeros((10, 10, 3), dtype=np.uint8),
+        )
+        ctrl._queue.push(p1)
+        consumed, _ = ctrl._consume_one()
+        assert consumed is not None
+        assert ctrl.frames_sampled == 1
+
+        # Second packet at t=50ms (< 200ms sample interval) is gated out.
+        p2 = FramePacket(
+            sequence=2,
+            captured_ns=start_ns + 50_000_000,
+            rgb=np.zeros((10, 10, 3), dtype=np.uint8),
+        )
+        ctrl._queue.push(p2)
+
+        consumed2, _ = ctrl._consume_one()
+        assert consumed2 is not None
+        assert consumed2.sequence == 2
+        assert ctrl.frames_sampled == 1
+
+    def test_gated_out_queue_drain_prevents_premature_source_exhaustion(
+        self,
+    ) -> None:
+        """B4: stream of gated-out queue packets prevents premature source_exhausted."""
+        camera = FakeCapture([])
+        desktop, start_ns, profile = _make_desktop(camera)
+        ctrl = desktop._controller
+
+        # Sample 1
+        ctrl._queue.push(
+            FramePacket(
+                sequence=1,
+                captured_ns=start_ns,
+                rgb=np.zeros((10, 10, 3), dtype=np.uint8),
+            )
+        )
+        desktop.run_until_terminal(max_steps=1)
+        assert ctrl.frames_sampled == 1
+        assert ctrl._consecutive_dry == 0
+
+        # Feed 5 gated-out packets (< 200ms) one by one
+        for i in range(2, 7):
+            ctrl._queue.push(
+                FramePacket(
+                    sequence=i,
+                    captured_ns=start_ns + (i - 1) * 20_000_000,
+                    rgb=np.zeros((10, 10, 3), dtype=np.uint8),
+                )
+            )
+            desktop.run_until_terminal(max_steps=1)
+            assert ctrl._consecutive_dry == 0
+            assert ctrl.collection_stop_reason == "in_progress"
+            assert desktop.state == "running"
+
+        # When the queue is genuinely empty and camera has no further frames,
+        # caller loop legitimately concludes source_exhausted without hanging.
+        calls = _headless_loop(desktop)
+
+        assert ctrl.collection_stop_reason == "source_exhausted"
+        assert ctrl.collection_complete is False
+        assert desktop.state == "terminal"
+        assert calls <= 5
