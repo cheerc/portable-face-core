@@ -75,6 +75,7 @@ Baseline/adaptive 有不同規則；2/13 對 0/13 不是純粹同 operating poin
 - 引導 UI pyside6 真窗、§5 對照臂、§8 分母、holdout 切分之**工程能力已於 E3–E7 落地**（見「Phase 2B 工程進度」），但**全部僅 synthetic 驗證**；未註冊參與者 session 另需 G3 採集授權與該參與者個別同意。
 - 研究 evidence plumbing 三項缺口**已修復**（E1 attempt 帳本前置、E3 `--fixed-seconds`、E4 replay 原時間重演）。修復本身只解除工具面阻擋；在有真實 session 之前，雙臂比較與 session 級分母**仍不得用於任何有效性宣稱**。
 - R4 缺檔 seq/rank 對位、各臂 refused 計數／雜檔處理、ORT teardown crash、continuity 位移界線初值（0.50 仍為初值）、ORT 端到端 5fps 餘量。
+- **E8-B fixed-window 契約（decision `d-20260920132145277296-1`，Issue #84 open）：** 正式 profile 改為 5 秒／相鄰樣本至少 200ms／至多 26 張（含 t=0 與 t=5000 兩端點），跨欄位必要條件 `max_frames >= ceil(timeout_ms / sample_interval_ms) + 1`；保留 t=0 立即取樣、5000ms deadline、deadline_reached 與 paired full 語意。#84 為 E8-B 重跑前 blocker。**此為 spec landing，不等於 production implementation go**——production follow-up 須另提 implementation plan 並再次取得 operator go。
 
 ## Next Session
 

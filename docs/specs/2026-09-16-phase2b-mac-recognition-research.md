@@ -42,7 +42,7 @@ pyside6 真窗及方形引導仍為既定方向；未經獨立工程與真機驗
 
 每個實驗版本固定：程式完整 SHA、環境／execution provider、模型 hashes／generation、alignment contract、one-shot gallery 及 digest、研究 profile、相機選擇證據、取樣／時間語義、採集方式、品質規則、兩臂規則與 tie-break。
 
-起始有界預算沿既有研究設計：5 秒、至多 5 fps、25 張、latest-only queue 1；3 個至少相隔 200ms 的同身份支持是候選臂起始規則。這些不是已驗證的準確率水位。match／review／margin 值必須由具版本來源的 profile 顯式凍結；不從舊 M5 表事後挑格，也不由執行者憑記憶填值。
+起始有界預算沿既有研究設計：5 秒、相鄰樣本至少 200ms、至多 26 張（含 t=0 與 t=5000 兩端點；decision `d-20260920132145277296-1`）、latest-only queue 1；3 個至少相隔 200ms 的同身份支持是候選臂起始規則。這些不是已驗證的準確率水位。match／review／margin 值必須由具版本來源的 profile 顯式凍結；不從舊 M5 表事後挑格，也不由執行者憑記憶填值。
 
 ### 4.2 兩臂
 

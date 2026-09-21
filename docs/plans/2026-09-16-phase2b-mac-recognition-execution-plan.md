@@ -41,7 +41,7 @@
 1. offline、open-set 1:N、固定 one-shot gallery；每身份一張既有註冊照，gallery 至少兩身份才有 runner-up。不移除「容易混淆的人」美化 margin。
 2. baseline 的 code／model／gallery／profile／採集方式均凍結。candidate 只改明確批准的一個因子；跨 generation 重建 gallery，不混 embedding。
 3. baseline A 按品質選幀，B 依時間一致性；不換成最高身份分數、any-frame-wins、未批准 score fusion 或 adaptive。
-4. 5 秒／至多5fps／25幀／queue1 是現有研究預算，不保證實際達5fps；慢也不能延長 deadline。任何更動要新版本與 operator go。
+4. 5 秒／相鄰樣本至少200ms／至多26幀（含 t=0 與 t=5000 兩端點）／queue1 是現有研究預算，不保證實際達5fps；慢也不能延長 deadline。任何更動要新版本與 operator go。
 5. 研究同意、影像保存同意、learning confirmation 分開。第一輪無 learning/promotion，也不修改正式身份庫。
 6. 真人照片／embeddings／DB／權重／逐人trace不進Git、一般log、Artifact或雲端；敏感診斷只在本機加密store。禁止plaintext temp、螢幕截圖旁路、未知備份／同步。
 7. 影像TTL7天、評估TTL30天沿既有研究預設，須採集前再次確認；衍生資料不能繞TTL。缺key／tamper／失敗刪除不降級明文。
@@ -279,7 +279,7 @@ T01–T03每件觸發即處理；T04–T12每件先歸類，同signature在兩�
 | `research/cli.py:235–250` 的 `cmd_live`已有fixed_seconds參數，但`:399–408`先跑到terminal，flag僅`_ = fixed_seconds`；`live/controller.py:201–207`得到terminal立即stop/release | **E3 must-fix**：目前真入口不能提供承諾的成功後完整5秒採集；不是加runbook就解決 |
 | `research/cli.py:318–345`先open/probe/model setup，失敗直接return；recorder到`:360–364`才begin | **E1 must-fix**：研究嘗試帳本必須早於會失敗的camera/setup，否則分母只看到走進recorder的成功者 |
 | `research/replay.py:167–195`用first captured作engine start、重新呼叫scorer；`live/frame_pipeline.py:304–312`用當下monotonic作processed；原start／processed未存 | **E4 must-fix**：不能保證原時間決策重演；需synthetic RED鎖定差異。不能直接把離線re-inference稱live reproduction |
-| `research/replay.py:72–79`用frame cap **或**首末captured跨度標full | **E3/E4 must-fix**：完整窗口應由實際collection provenance判斷，非用滿25張推測；少於25張也可能採滿5秒 |
+| `research/replay.py:72–79`用frame cap **或**首末captured跨度標full | **E3/E4 must-fix**：完整窗口應由實際collection provenance判斷，非用滿幀推測（historical 例證取舊版上限；現行 26 張契約見本文件 §1 第 4 項與 decision `d-20260920132145277296-1`）；少於滿幀也可能採滿5秒 |
 | `research/records.py:65–104`只存top1 ID/score/margin；`research/cli.py:143–160`margin=top1−runner_up | top2數值可在浮點容差內由差值推回；真正缺的是wrong-rank時truth score/rank、runner-up identity、原候選排序。不要為錯誤的「無top2不能分析」理由擴工 |
 | `live/frame_pipeline.py:228–287`已有face count、geometry、quality量測；`:298–320`已有全identity scores；quality fail不embed | **E2**在既有量測點補診斷，不重算第二條pipeline、不繞quality gate；quality值多為proxy，landmark confidence在`:260`為常數1.0，不能稱實測confidence |
 | `live/session.py:201–260`清支持／閾值／間隔／換身份；`:357–395`有品質最佳baseline，quality tie用較早sequence | **E2/E4**重用規則並暴露事件原因，不複製另一個決策器。identity score ties目前依mapping迭代順序，trace須保留順序／明確record tie；不要悄改tie-break |
@@ -397,7 +397,7 @@ git diff --check
 
 **步驟：** 在既有detect/quality/score點取原值；identity scores以原迭代順序存pairs，避免serialize sort_keys後改tie結果。engine每個clear/skip/terminal分支發event；record observation、controller deadline、stage index以及staging錯誤，不吞例外假裝bundle完整。
 
-**Acceptance：** wrong-rank可在evaluator重建truth score/rank；quality fail留原因／可用metrics且embedder呼叫數=0；None runner-up、interval skip、score reset、identity change、continuity、late processing各有唯一事件。trace有界≤25 sampled observations，無pixels／embedding。diagnostic關閉與開啟在injected clocks的終局一致；真機另量IO/trace overhead，不保證現場時序零影響。
+**Acceptance：** wrong-rank可在evaluator重建truth score/rank；quality fail留原因／可用metrics且embedder呼叫數=0；None runner-up、interval skip、score reset、identity change、continuity、late processing各有唯一事件。trace有界≤26 sampled observations，無pixels／embedding。diagnostic關閉與開啟在injected clocks的終局一致；真機另量IO/trace overhead，不保證現場時序零影響。
 
 新trace包含score/ID與geometry，視敏感研究資料；評估trace沿record TTL，原像素沿image TTL；任何影像可逆衍生物改走image TTL。新增keys/blobs/labels/cases的刪除、reconcile、tamper、cross-session AAD替換、7/30天分離都需測。儲存失敗產生operation error／window incomplete；若inference早已鎖定仍保留其原terminal，不能覆寫歷史或冒稱成功保存。
 
@@ -415,7 +415,7 @@ git diff --check
 
 **Consumes／produces：** 既有`--fixed-seconds`、engine及trace；產出真實collection_start/deadline/end、stop_reason、complete flag與完整共同observation流。
 
-**最小行為：** 將「B inference terminal」與「collector terminal」分開。普通mode仍早停；fixed mode中B第一次terminal鎖定後，只有已同意影像保存且安全的session才能持續至原deadline；後續幀可供A與診斷，不能再送B改結果。25幀／5fps上限保持，滿25幀也不捏造5秒時間證據。
+**最小行為：** 將「B inference terminal」與「collector terminal」分開。普通mode仍早停；fixed mode中B第一次terminal鎖定後，只有已同意影像保存且安全的session才能持續至原deadline；後續幀可供A與診斷，不能再送B改結果。26幀／相鄰樣本至少200ms上限保持，滿26幀也不捏造5秒時間證據。
 
 **Acceptance：** 0.4秒B matched後仍收集到原5秒邊界；A能看到後段更高品質幀；取消／close／撤回／多人／continuity不明／error即刻停止，collection incomplete。提前鎖定後仍要有安全監測，不能因B不再observe而漏掉多臉／撤回。即使B早已matched，後續collector錯誤也要另列，不把不完整流當full。stop→join→release維持，不能重引入close-during-read競態。
 
@@ -437,7 +437,7 @@ git diff --check
 
 - 原start=0、第一幀晚到、processed跨deadline的合成案例重演原B結果；不能以first-frame timestamp偷換session start，不能用replay wall clock。
 - sequence不連號是合法drop；staged index不是sequence。中間blob缺失、ledger/blob對不上、time回退、非法重複seq拒絕並列原因，不將後幀左移補洞。
-- fixed collector真採滿5秒但只有10幀仍可full；25幀在短流或unknown coverage不能full。cancel/error依其結束原因incomplete，不以frame count洗白。
+- fixed collector真採滿5秒但只有10幀仍可full；26幀在短流或unknown coverage不能full。cancel/error依其結束原因incomplete，不以frame count洗白。
 - A對整個共同合法窗口呼叫原baseline helper；B對原observation重演首次terminal，兩者相同profile並以arm_id區分。single-id/None margin仍不可matched。
 - serialized identity ties可重演；label變更不改任一arm。frames_read、frames_scored、B_consumed、staged分開計數，避免現行read全blob但early-break仍稱全部replayed的混淆。
 - 舊無trace bundle標unproven，只能legacy診斷；model變更研究需要G4新generation gallery及獨立re-inference方案，不能為重播強行關generation gate。
