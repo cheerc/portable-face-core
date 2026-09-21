@@ -696,3 +696,136 @@ class TestHeadlessFixedWindowDeadline:
             stopped.set()
             produce_event.set()
             producer_thread.join(timeout=1.0)
+
+    def test_gated_out_queue_drain_true_foreground_overlap(self) -> None:
+        """B10: producer pushes while foreground source read is in flight.
+
+        The source read hook marks foreground entry and blocks on an Event.
+        A separate producer waits for that marker, pushes the packet while the
+        read is in flight, and then releases the read. This rejects a mutation
+        that preloads each packet before ``run_until_terminal`` begins.
+        """
+
+        class _BlockingReadSource(CaptureSource):
+            def __init__(self) -> None:
+                self._closed = False
+                self._opened = False
+                self.read_started = threading.Event()
+                self.release_read = threading.Event()
+                self.read_in_flight = False
+                self.overlap_pushes = 0
+
+            def prepare_step(self) -> None:
+                """Install fresh handshake Events before each foreground read."""
+                self.read_started = threading.Event()
+                self.release_read = threading.Event()
+
+            def open(self, device_id: str) -> None:
+                self._closed = False
+                self._opened = True
+
+            def read(self) -> FramePacket | None:
+                if self._closed or not self._opened:
+                    return None
+                read_started = self.read_started
+                release_read = self.release_read
+                self.read_in_flight = True
+                read_started.set()
+                if not release_read.wait(timeout=1.0):
+                    raise AssertionError("producer did not release foreground read")
+                self.read_in_flight = False
+                return None
+
+            def close(self) -> None:
+                self._closed = True
+                self.release_read.set()
+
+            @property
+            def is_closed(self) -> bool:
+                return self._closed
+
+        camera = _BlockingReadSource()
+        desktop, start_ns, profile = _make_desktop(
+            camera, profile=_deadline_profile()
+        )
+        ctrl = desktop._controller
+
+        def drive_concurrent(packet: FramePacket) -> None:
+            """Run one foreground tick with an overlapped producer push."""
+            producer_done = threading.Event()
+            camera.prepare_step()
+            read_started = camera.read_started
+            release_read = camera.release_read
+
+            def producer() -> None:
+                assert read_started.wait(timeout=1.0)
+                assert camera.read_in_flight
+                ctrl._queue.push(packet)
+                camera.overlap_pushes += 1
+                producer_done.set()
+                release_read.set()
+
+            producer_thread = threading.Thread(target=producer, daemon=True)
+            producer_thread.start()
+            try:
+                desktop.run_until_terminal(max_steps=1)
+                assert producer_done.wait(timeout=1.0)
+            finally:
+                release_read.set()
+                producer_thread.join(timeout=1.0)
+            assert not producer_thread.is_alive()
+
+        # Initial due packet, supplied only after foreground read begins.
+        drive_concurrent(
+            FramePacket(
+                sequence=1,
+                captured_ns=start_ns,
+                rgb=np.zeros((10, 10, 3), dtype=np.uint8),
+            )
+        )
+        assert ctrl.frames_sampled == 1
+        assert ctrl._consecutive_dry == 0
+
+        # At least four concurrent gated handoffs.
+        for sequence in range(2, 6):
+            drive_concurrent(
+                FramePacket(
+                    sequence=sequence,
+                    captured_ns=start_ns + (sequence - 1) * 30_000_000,
+                    rgb=np.zeros((10, 10, 3), dtype=np.uint8),
+                )
+            )
+            assert ctrl._consecutive_dry == 0
+            assert ctrl.frames_sampled == 1
+            assert ctrl.collection_stop_reason == "in_progress"
+            assert desktop.state == "running"
+            assert not camera.is_closed
+
+        # Due packet after concurrent gated handoffs.
+        drive_concurrent(
+            FramePacket(
+                sequence=6,
+                captured_ns=start_ns + 200_000_000,
+                rgb=np.zeros((10, 10, 3), dtype=np.uint8),
+            )
+        )
+        assert ctrl.frames_sampled == 2
+        assert ctrl._next_sample_ns == start_ns + 400_000_000
+        assert ctrl.collection_stop_reason == "in_progress"
+
+        # Continue concurrent due handoffs to deadline.
+        for sequence, t_ms in enumerate(range(400, 5200, 200), start=7):
+            drive_concurrent(
+                FramePacket(
+                    sequence=sequence,
+                    captured_ns=start_ns + t_ms * 1_000_000,
+                    rgb=np.zeros((10, 10, 3), dtype=np.uint8),
+                )
+            )
+            if desktop.state != "running":
+                break
+
+        assert camera.overlap_pushes >= 4
+        assert ctrl.collection_stop_reason == "deadline_reached"
+        assert ctrl.collection_complete is True
+        assert desktop.state == "terminal"
