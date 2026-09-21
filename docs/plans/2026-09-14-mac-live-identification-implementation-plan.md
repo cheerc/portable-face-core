@@ -15,7 +15,7 @@
 - 固定 gallery：每人一張註冊照、open-set 1:N；gallery 至少兩人，單身份無 runner-up 不支援自動 matched。可由既有單照在隔離記憶體 gallery 建立；第一版不直接掛可寫正式 DB。
 - 研究保持 offline；無 HTTP/server、mobile、雲端、考勤、authenticated、foundation training。未知模型／generation／policy 不相容即拒絕。
 - 單人、有界 session；多臉或 continuity 不明清空窗口並要求重新開始。不用多幀一致性冒充 liveness。
-- 第一版固定 policy profile、5秒窗口、取樣至多5fps/25幀、最新幀槽1；不要求實際硬體達到5fps，也不因慢而延長deadline。工程預算變更須版本化並回設計review。
+- 第一版固定 policy profile、5秒窗口、相鄰取樣至少相隔200ms／至多26幀（含 t=0 與 t=5000 兩端點）、最新幀槽1；不要求實際硬體達到5fps，也不因慢而延長deadline。工程預算變更須版本化並回設計review。
 - 敏感資料不進Git／一般log／plaintext temp；評估紀錄與影像分開同意、分開TTL（30/7天）、分開key，以免7天影像過期需連帶刪除30天紀錄。記錄同意不等於learning confirmation。
 - 既有 detector/match/margin/governance defaults 不改。研究 match/margin 要求由使用者提供的versioned profile明列，不選產品預設；0.15不得由M5自動升格。
 - Task的RED/GREEN為預期指令與失敗／成功形狀，不是已跑結果；test-first遵循fleet immutable RED→GREEN規則。
@@ -35,7 +35,7 @@ M1/M5靜態結果及M3 13事件負向更新證據只支持其原始條件；不�
 - `align_crop(raw_rgb: bytes, width: int, height: int, face: DetectedFace)`目前contract v1為box crop/NEAREST，而非landmark similarity transform；T2保持一致，不順手換alignment。`sharpness_of(crop)`尺度綁112 crop；pose為proxy、landmark confidence固定1.0，不能以品質提示宣稱完整遮擋偵測。
 - `identify(probe, repository, policy, *, gallery, model_version, quality=None, drift_status=None)`要求policy已明列match/review/margin；`frozen_v1()`的空threshold不能直接上線。ScoringContext把ResearchProfile的三門以`with_thresholds(match_threshold=..., review_threshold=..., margin_threshold=...)`轉換，並驗`review_threshold <= match_threshold`；metadata repository使用固定記憶體snapshot，不每幀讀寫加密DB。
 - `storage/cipher.py`：`AeadCipher(dek: bytes).encrypt(plaintext: bytes, aad: bytes) -> EncryptedBlob`、`decrypt(blob, aad) -> bytes`；key為32 bytes。`EncryptedBlob.to_dict()`是既有hex表示；SQLite私有`_seal/_parse_blob`不是可供recorder呼叫的公共API。S2凍結research envelope serializer與AAD，測cross-session/kind/index替換必失敗；不複製私有SQLite格式假稱相容。
-- `FileKeyProvider`是identity命名語義且預設`~/.facecore/keys`；research adapter必須顯式獨立key/master路徑，禁止落到正式預設或沿用正式環境key。每session、每類別分key且影像上限25幀；重試不得重用nonce/ciphertext配對，刪除須處理所有重試產生的key。
+- `FileKeyProvider`是identity命名語義且預設`~/.facecore/keys`；research adapter必須顯式獨立key/master路徑，禁止落到正式預設或沿用正式環境key。每session、每類別分key且影像上限26幀（含 t=0 與 t=5000 兩端點）；重試不得重用nonce/ciphertext配對，刪除須處理所有重試產生的key。
 - `pyproject.toml`釘Python 3.14、ORT 1.30.0、NumPy 2.5.3、Pillow 12.3.0；GUI相容性是S1待驗。現有CI為`python -m pytest tests/ -q`、`ruff check src tests`、`mypy src`；scale用`python scripts/run_500_scale.py`。
 
 ## 3. Documentation gate（所有實作前 blocking）
@@ -69,7 +69,7 @@ M1/M5靜態結果及M3 13事件負向更新證據只支持其原始條件；不�
 **新契約：**
 
 - `FramePacket(sequence: int, captured_ns: int, rgb: ndarray, orientation: int, mirrored: bool)`：正整數sequence、monotonic ns、uint8 H×W×3、擁有buffer不借用camera mutable view。
-- `ResearchProfile`：schema/version/hash、timeout_ms=5000、sample_interval_ms=200、max_frames=25、queue_limit=1、required_support=3、min_support_interval_ms=200、match_threshold、review_threshold、margin_threshold、detector/quality policy版本、continuity_max_center_delta_ratio。thresholds與continuity界線均須明列finite且合法；缺值拒絕啟動。continuity界線由S1非人臉移動標靶測試提出並D1凍結，不宣稱能保證同一真人。
+- `ResearchProfile`：schema/version/hash、timeout_ms=5000、sample_interval_ms=200、max_frames=26、queue_limit=1、required_support=3、min_support_interval_ms=200、match_threshold、review_threshold、margin_threshold、detector/quality policy版本、continuity_max_center_delta_ratio。thresholds與continuity界線均須明列finite且合法；缺值拒絕啟動。跨欄位必要條件 `max_frames >= ceil(timeout_ms / sample_interval_ms) + 1`（5000／200 即 26；第一幀 t=0，後續至少相隔 200ms，第 26 幀名目 t=5000ms）；不滿足則完整 deadline window 不可達，必須 fail closed／拒絕開始（production 實作另待 plan＋operator go）。continuity界線由S1非人臉移動標靶測試提出並D1凍結，不宣稱能保證同一真人。
 - `FrameObservation`：sequence、captured_ns、processed_ns、quality_pass/reasons、face_count、face_box、identity_scores（opaque IDs→finite scores）、quality_rank、model_generation、gallery_digest；沒有ground_truth/display_name。
 - `SessionResult`：session_id、schema_version、status（matched/review/unknown/invalid_input/timeout/cancelled/error）、opaque identity（僅matched）、reason_codes、elapsed_ms、sampled/usable/rejected/dropped、support_sequences、profile/model/gallery版本。session狀態不擴改既有單幀IdentificationResult enum。
 - `SessionEngine(profile, gallery_digest, model_generation)`；`start(session_id: str, now_ns: int) -> None`；`observe(observation: FrameObservation) -> SessionResult | None`；`finish(now_ns: int, reason: str) -> SessionResult`。每次start對應唯一immutable終局；terminal後observe不可新增支持。
@@ -142,7 +142,7 @@ RED：`uv run pytest tests/live/test_session.py -q` → any-frame-wins、跨人�
 
 Files：Create `src/facecore/live/capture.py`, `controller.py`；Test `tests/live/test_capture.py`。Consumes T2/T3、D1已選capture backend；Produces bounded camera controller。
 
-Acceptance：latest-slot1、sample間隔200ms、最多25幀、drop counters；UI收到舊session推論結果必丟棄；Stop/斷線/worker failure/close釋放camera及join worker，不能fire-and-forget；deadline用controller clock而非模型完成時刻。暫不公開產品入口。
+Acceptance：latest-slot1、相鄰取樣至少相隔200ms、最多26幀（含 t=0 與 t=5000 兩端點）、drop counters；UI收到舊session推論結果必丟棄；Stop/斷線/worker failure/close釋放camera及join worker，不能fire-and-forget；deadline用controller clock而非模型完成時刻。暫不公開產品入口。
 
 RED：`uv run pytest tests/live/test_capture.py -q` → fast producer無界queue、stale結果污染新session、close遺留worker。Minimal：CaptureSource/FakeCapture＋有限worker ownership＋one-slot queue。GREEN：同命令通過；S1命令在實作adapter下重跑非人臉smoke，timeout與native crash不得當成功。
 
@@ -150,7 +150,7 @@ RED：`uv run pytest tests/live/test_capture.py -q` → fast producer無界queue
 
 Files：Create `src/facecore/research/recorder.py`, `keys.py`；Test `tests/research/test_recorder.py`。Consumes Records與D1 crypto layout；Produces ResearchRecorder。
 
-Acceptance：record/image分開consent和key；image<=25張/5秒；未同意/撤回/multi-face清未commit影像；可保存已同意negative但不接learning。先加密後write/atomic manifest；partial檔在恢復先reconcile，禁止讀取未commit bundle。記錄30天與影像7天独立expiry；purge在啟動及寫前，wall-clock倒退標時鐘錯誤並停止新增保留，不延長既有expire_at。delete tombstone先封讀，再刪對應keys/blobs/labels/索引與衍生資料；失敗回error並重啟重試，不宣稱已刪。
+Acceptance：record/image分開consent和key；image<=26張/5秒（含 t=0 與 t=5000 兩端點）；未同意/撤回/multi-face清未commit影像；可保存已同意negative但不接learning。先加密後write/atomic manifest；partial檔在恢復先reconcile，禁止讀取未commit bundle。記錄30天與影像7天独立expiry；purge在啟動及寫前，wall-clock倒退標時鐘錯誤並停止新增保留，不延長既有expire_at。delete tombstone先封讀，再刪對應keys/blobs/labels/索引與衍生資料；失敗回error並重啟重試，不宣稱已刪。
 
 RED：`uv run pytest tests/research/test_recorder.py -q` → 無同意落盤、7天expiry仍能解密frame、刪除後重啟可讀、tamper被接受。Minimal：復用審核過AEAD primitive與隔離namespace，injected clock/key provider/filesystem failures。GREEN：同命令通過；每個write/rename/key/delete邊界注入failure驗recovery。測试只用synthetic，不落真實圖。
 
