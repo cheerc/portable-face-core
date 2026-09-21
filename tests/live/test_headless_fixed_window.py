@@ -654,6 +654,7 @@ class TestHeadlessFixedWindowDeadline:
                 assert ctrl.frames_sampled == 1
                 assert ctrl.collection_stop_reason == "in_progress"
                 assert desktop.state == "running"
+                assert not camera.is_closed
 
             # Background thread supplies sample-due packet at t=200ms
             current_packet[0] = FramePacket(
@@ -671,6 +672,26 @@ class TestHeadlessFixedWindowDeadline:
             assert ctrl._next_sample_ns == start_ns + 400_000_000
             assert ctrl.collection_stop_reason == "in_progress"
             assert desktop.state == "running"
+
+            # Step 4: Continue feeding due packets from background producer
+            # to reach deadline
+            for seq, t_ms in enumerate(range(400, 5200, 200), start=7):
+                current_packet[0] = FramePacket(
+                    sequence=seq,
+                    captured_ns=start_ns + t_ms * 1_000_000,
+                    rgb=np.zeros((10, 10, 3), dtype=np.uint8),
+                )
+                produce_event.set()
+                assert consumed_event.wait(timeout=1.0)
+                consumed_event.clear()
+
+                desktop.run_until_terminal(max_steps=1)
+                if desktop.state != "running":
+                    break
+
+            assert ctrl.collection_stop_reason == "deadline_reached"
+            assert ctrl.collection_complete is True
+            assert desktop.state == "terminal"
         finally:
             stopped.set()
             produce_event.set()
