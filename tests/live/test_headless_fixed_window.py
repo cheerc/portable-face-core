@@ -579,3 +579,99 @@ class TestHeadlessFixedWindowDeadline:
         assert ctrl.collection_stop_reason == "deadline_reached"
         assert ctrl.collection_complete is True
         assert desktop.state == "terminal"
+
+    def test_gated_out_queue_drain_with_background_producer(self) -> None:
+        """B9: background producer supplies gated packets with pump False.
+
+        Proves the true producer/consumer handoff shape:
+        1. Background thread pushes packets into slot-1 queue.
+        2. Foreground run_until_terminal(max_steps=1) has _pump_once() == False
+           (camera returns None).
+        3. Drained gated packet resets _consecutive_dry to 0 on each step,
+           retaining in_progress state without premature source_exhausted.
+        4. Background producer then pushes sample-due packet, advancing
+           frames_sampled.
+        Latency-independent: deterministic synchronization via threading.Event,
+        zero time.sleep().
+        """
+        camera = FakeCapture([])
+        desktop, start_ns, profile = _make_desktop(
+            camera, profile=_deadline_profile()
+        )
+        ctrl = desktop._controller
+
+        # Step 1: Initial sample at t=0
+        ctrl._queue.push(
+            FramePacket(
+                sequence=1,
+                captured_ns=start_ns,
+                rgb=np.zeros((10, 10, 3), dtype=np.uint8),
+            )
+        )
+        desktop.run_until_terminal(max_steps=1)
+        assert ctrl.frames_sampled == 1
+        assert ctrl._consecutive_dry == 0
+        assert ctrl._next_sample_ns == start_ns + 200_000_000
+
+        # Step 2: Background producer thread feeding queue
+        produce_event = threading.Event()
+        consumed_event = threading.Event()
+        current_packet: list[FramePacket | None] = [None]
+        stopped = threading.Event()
+
+        def background_producer() -> None:
+            while not stopped.is_set():
+                if produce_event.wait(timeout=1.0):
+                    produce_event.clear()
+                    if stopped.is_set():
+                        break
+                    packet = current_packet[0]
+                    if packet is not None:
+                        ctrl._queue.push(packet)
+                    consumed_event.set()
+
+        producer_thread = threading.Thread(
+            target=background_producer, daemon=True
+        )
+        producer_thread.start()
+
+        try:
+            # 4 gated-out iterations: background thread feeds queue,
+            # foreground pump returns False.
+            for i in range(2, 6):
+                current_packet[0] = FramePacket(
+                    sequence=i,
+                    captured_ns=start_ns + (i - 1) * 30_000_000,
+                    rgb=np.zeros((10, 10, 3), dtype=np.uint8),
+                )
+                produce_event.set()
+                assert consumed_event.wait(timeout=1.0)
+                consumed_event.clear()
+
+                # Foreground tick: _pump_once() is False, drains background packet
+                desktop.run_until_terminal(max_steps=1)
+                assert ctrl._consecutive_dry == 0
+                assert ctrl.frames_sampled == 1
+                assert ctrl.collection_stop_reason == "in_progress"
+                assert desktop.state == "running"
+
+            # Background thread supplies sample-due packet at t=200ms
+            current_packet[0] = FramePacket(
+                sequence=6,
+                captured_ns=start_ns + 200_000_000,
+                rgb=np.zeros((10, 10, 3), dtype=np.uint8),
+            )
+            produce_event.set()
+            assert consumed_event.wait(timeout=1.0)
+            consumed_event.clear()
+
+            desktop.run_until_terminal(max_steps=1)
+            assert ctrl._consecutive_dry == 0
+            assert ctrl.frames_sampled == 2
+            assert ctrl._next_sample_ns == start_ns + 400_000_000
+            assert ctrl.collection_stop_reason == "in_progress"
+            assert desktop.state == "running"
+        finally:
+            stopped.set()
+            produce_event.set()
+            producer_thread.join(timeout=1.0)

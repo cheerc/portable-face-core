@@ -366,10 +366,11 @@ class TestQtResearchWindow:
         assert window_a._timer.isActive() is False
         window_a.close()
 
-        # Part A2: Closed-source fast path with callable method duck-typing (B3)
-        class _MethodClosedCapture(CaptureSource):
+        # Part A2: Closed-source fast path with callable method duck-typing (B3/B8)
+        class _MethodDuckCapture(CaptureSource):
             def __init__(self) -> None:
                 self._closed = False
+                self.is_closed_calls = 0
 
             def open(self, device_id: str) -> None:
                 self._closed = False
@@ -381,9 +382,10 @@ class TestQtResearchWindow:
                 self._closed = True
 
             def is_closed(self) -> bool:
+                self.is_closed_calls += 1
                 return self._closed
 
-        source_m = _MethodClosedCapture()
+        source_m = _MethodDuckCapture()
         desktop_m = DesktopSession(
             engine=SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test"),
             source=source_m,
@@ -403,13 +405,79 @@ class TestQtResearchWindow:
         QTest.mouseClick(window_m.start_button, Qt.MouseButton.LeftButton)
         source_m.close()
         assert source_m.is_closed() is True
+        source_m.is_closed_calls = 0
 
         window_m.process_once()
+        # Branch proof: callable was actually invoked, not just inspected for truthiness
+        assert source_m.is_closed_calls >= 1
         assert desktop_m._controller._consecutive_dry == 1
         assert desktop_m.state == "terminal"
         assert desktop_m.collection_stop_reason == "source_exhausted"
         assert window_m._timer.isActive() is False
         window_m.close()
+
+        # Part A3: Open method double mutation defense (B3/B8)
+        # Proves that when source is OPEN, raw bound-method truthiness does NOT
+        # falsely abort on transient drop. Reverted bool(getattr) fails here.
+        class _MethodFlakyCamera(DeterministicCadenceCamera):
+            def __init__(self, fps: int = 30) -> None:
+                super().__init__(fps=fps)
+                self.is_closed_calls = 0
+
+            def read(self) -> FramePacket | None:
+                with self._lock:
+                    if self._closed or not self._opened:
+                        return None
+                    self.read_count += 1
+                    if self.read_count == 1:
+                        # Transient drop on read 1
+                        return None
+                    self._seq += 1
+                    captured_ns = (
+                        self._start_ns
+                        + (self._seq - 1) * self.frame_interval_ns
+                    )
+                    rgb = np.full((200, 200, 3), 120, dtype=np.uint8)
+                    return FramePacket(
+                        sequence=self._seq,
+                        captured_ns=captured_ns,
+                        rgb=rgb,
+                    )
+
+            def is_closed(self) -> bool:
+                self.is_closed_calls += 1
+                return self._closed
+
+        source_open = _MethodFlakyCamera(fps=30)
+        desktop_open = DesktopSession(
+            engine=SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test"),
+            source=source_open,
+            scorer=_matching_scorer,
+            session_id="qt-method-open-tolerance",
+            sample_interval_ns=200_000_000,
+            max_frames=25,
+            fixed_seconds=True,
+        )
+        clock_open = _AdvancingClock()
+        window_open = QtResearchWindow(
+            desktop_open,
+            consent=_consent("qt-method-open-tolerance"),
+            offscreen=True,
+            clock_ns=clock_open,
+            clock_advance=clock_open.advance,
+        )
+        window_open.show()
+        QTest.mouseClick(window_open.start_button, Qt.MouseButton.LeftButton)
+
+        window_open.process_once()
+        # Mutation proof: if _source_closed checked raw truthiness of bound method,
+        # it would evaluate True on read 1 and abort with state='terminal'/frames=0.
+        # Calling is_closed() -> False allows tolerance to continue, sampling frames.
+        assert source_open.is_closed_calls >= 1
+        assert desktop_open.state == "running"
+        assert desktop_open.collection_stop_reason == "in_progress"
+        assert desktop_open._controller.frames_sampled >= 1
+        window_open.close()
 
         # Part B: Max frames reached before deadline
         low_cap_prof = ResearchProfile(
