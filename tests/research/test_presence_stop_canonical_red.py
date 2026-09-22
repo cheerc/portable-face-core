@@ -174,3 +174,53 @@ def test_canonical_path_faced_run_stops_loud(tmp_path: Path) -> None:
         f"CANON-RED: presence_stop={live.get('presence_stop')!r} "
         f"(expected True — silent pass on the canonical path)"
     )
+    # The faced bundle must NOT be committed: list the store and prove
+    # no session bundle for this run survived (R4 fail-closed spirit).
+    store_dir = tmp_path / "store"
+    leftovers = (
+        [p.name for p in store_dir.rglob("*") if p.is_file()]
+        if store_dir.exists()
+        else []
+    )
+    assert not any(
+        name.endswith(".json") and "clock" not in name for name in leftovers
+    ), f"faced bundle must not be committed; store leftovers: {leftovers}"
+
+
+def _run_canonical_faceless(tmp_path: Path, tag: str):
+    from live_checkpoint import run_checkpoint
+
+    store = tmp_path / "store"
+    keys = tmp_path / "keys"
+    models = tmp_path / "models"
+    models.mkdir(parents=True, exist_ok=True)
+    empty_detector = MagicMock(spec=YuNetDetector)
+    empty_detector.detect.return_value = []
+    return run_checkpoint(
+        device="0",
+        profile_path=_write_profile(tmp_path),
+        record_consent=True,
+        image_consent=True,
+        store=store,
+        key_dir=keys,
+        models=models,
+        corpus=_manifest(tmp_path),
+        capture_factory=lambda _d: FakeCapture(frames=_frames()),
+        detector_factory=lambda _m: empty_detector,
+        embedder_factory=lambda _m: _ScriptedEmbedder(),
+        experiment_id="exp-canon-red",
+        session_id=f"canon-{tag}-{uuid4().hex[:8]}",
+    )
+
+
+def test_canonical_path_faceless_run_completes(tmp_path: Path) -> None:
+    """Negative control: faceless canonical run completes, stop flag False."""
+    code, summary = _run_canonical_faceless(tmp_path, "faceless")
+    live = summary["phases"]["live"]
+    assert live.get("presence_stop") is False, (
+        f"faceless canonical run must carry presence_stop=False "
+        f"(got {live.get('presence_stop')!r})"
+    )
+    assert code != 4 or "presence stop" not in str(
+        live.get("stderr_msg", "")
+    ), "faceless run must not report a presence stop"
