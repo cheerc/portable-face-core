@@ -44,6 +44,7 @@ from facecore.live.contracts import (
 from facecore.research.cli import StorePathError, cmd_live, resolve_store
 from facecore.research.records import ConsentRecord
 from facecore.research.recorder import ResearchRecorder
+from facecore.research.replay import evaluate_arms
 
 MANUAL_CHECKPOINTS = [
     "operator on camera for any identification smoke",
@@ -157,6 +158,91 @@ def _run_default_preflight(
         report["pass"] = False
         report["error"] = str(exc)
         return report
+
+
+def _run_paired_replay(
+    *,
+    device: str,
+    session_id: str,
+    attempt_id: str,
+    profile: ResearchProfile | None,
+    store: Path,
+    key_dir: Path,
+) -> dict[str, Any]:
+    """Verify dual-arm collection_extent via the product paired API.
+
+    Issue #82 last item: read the committed window + diagnostic trace with
+    existing product APIs and run evaluate_arms. No recomputed extent
+    logic, no new seam.
+
+    Fake path is envelope-only by design (cmd_live never persists a trace
+    there), so paired records an explicit skip that never gates the total.
+    True path: any missing step / raise / non-full arm / refusal FAILS
+    closed with an explicit error, never a silent skip.
+    """
+    if device == "fake":
+        return {
+            "pass": True,
+            "skipped": True,
+            "reason": "fake path envelope-only, no trace by design",
+            "extent": "unproven",
+        }
+    if profile is None:
+        return {"pass": False, "error": "no profile for paired replay"}
+    recorder = ResearchRecorder(
+        store_root=store, key_dir=key_dir, clock=_now_utc
+    )
+    try:
+        committed = recorder.read_record(session_id)
+        window = committed.collection_window
+    except Exception as exc:
+        return {
+            "pass": False,
+            "error": f"paired replay cannot read committed window: {exc}",
+        }
+    if window is None:
+        return {
+            "pass": False,
+            "error": "paired replay found no collection window",
+        }
+    try:
+        trace = recorder.read_trace(attempt_id)
+    except Exception as exc:
+        return {
+            "pass": False,
+            "error": f"paired replay cannot read trace: {exc}",
+        }
+    try:
+        arm_a, arm_b = evaluate_arms(trace, profile, window=window)
+    except Exception as exc:
+        return {
+            "pass": False,
+            "error": f"paired replay evaluate_arms failed: {exc}",
+        }
+    result: dict[str, Any] = {
+        "arm_a_extent": arm_a.collection_extent,
+        "arm_b_extent": arm_b.collection_extent,
+        "arm_a_terminal": arm_a.terminal,
+        "arm_b_terminal": arm_b.terminal,
+    }
+    if arm_a.refusal is not None or arm_b.refusal is not None:
+        result["pass"] = False
+        result["error"] = (
+            f"paired replay refused: A={arm_a.refusal} B={arm_b.refusal}"
+        )
+        return result
+    if (
+        arm_a.collection_extent == "full"
+        and arm_b.collection_extent == "full"
+    ):
+        result["pass"] = True
+        return result
+    result["pass"] = False
+    result["error"] = (
+        "paired replay extent not full: "
+        f"A={arm_a.collection_extent} B={arm_b.collection_extent}"
+    )
+    return result
 
 
 def _check_camera_reopen(
@@ -545,8 +631,8 @@ def run_checkpoint(
                 window = committed.collection_window
                 if window is not None:
                     live_info["frames_sampled"] = window.frames_sampled
-            except Exception:
-                pass
+            except Exception as exc:
+                live_info["frames_sampled_error"] = _sanitize_string(str(exc))
 
             # True invariants (not ceil+1-as-count): trace unabridged AND
             # cap not binding. ceil(timeout/interval)+1 remains the cap-side
@@ -581,6 +667,26 @@ def run_checkpoint(
             if live_rc != 0:
                 exit_code = live_rc
             elif not live_passed:
+                exit_code = 4
+
+        # 3b. Paired replay phase (issue #82 last item): dual-arm
+        # collection_extent via the product paired API. Runs whenever the
+        # live phase executed (pass or fail) so the extent evidence stands
+        # on its own; it never masks the existing exit code — a paired
+        # failure only gates the total when everything before it passed.
+        # Fake path records an explicit skip that never gates the total.
+        # True path fails closed.
+        if "live" in summary["phases"]:
+            paired_res = _run_paired_replay(
+                device=device,
+                session_id=resolved_session_id,
+                attempt_id=resolved_attempt_id,
+                profile=profile,
+                store=resolved_store,
+                key_dir=resolved_key_dir,
+            )
+            summary["phases"]["paired_replay"] = paired_res
+            if not paired_res.get("pass", False) and exit_code == 0:
                 exit_code = 4
 
         # 4. Camera reopen check
