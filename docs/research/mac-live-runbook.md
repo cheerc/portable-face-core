@@ -105,6 +105,14 @@ uv run --extra dev python -m facecore.research.cli live \
   `generation` + `gallery_digest`.
 - No real-camera run is performed by CI or by this task; human smoke
   still needs separate participant consent (blocked until then).
+- 常駐模型目錄（pair-1 凍結接線用）：`--models` 指向 `~/` 下的固定
+  目錄（內含 `face_detection_yunet_2023mar.onnx`＋
+  `face_recognition_sface_2021dec.onnx`），以 `$MODELS` 或 `~/` 相對
+  形式引用。兩個 onnx 的 SHA 由對應建構子在啟動時驗證（不符即
+  fail-closed）；授權與 provenance 見
+  `docs/research/2026-09-10-model-candidate-gate.md`（YuNet MIT、
+  SFace Apache-2.0，皆 `PROVENANCE_UNRESOLVED`）。模型權重永不進
+  Git。
 
 ## 3c. 前置與收尾檢查腳本（issue #63；preflight 會開相機）
 
