@@ -24,7 +24,6 @@ from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 import io
 import json
-import math
 from pathlib import Path
 import re
 import sys
@@ -414,7 +413,9 @@ def run_checkpoint(
             if live_payload:
                 live_info.update(live_payload)
 
-            # Check for observable trace drop if trace exists
+            # Check for observable trace drop if trace exists.
+            # frames_sampled comes from the committed collection window
+            # (cmd_live existing output path, no new seam).
             recorder = ResearchRecorder(
                 store_root=resolved_store,
                 key_dir=resolved_key_dir,
@@ -428,17 +429,31 @@ def run_checkpoint(
                     live_info["trace_error"] = str(exc)
             except Exception as exc:
                 live_info["trace_error"] = str(exc)
+            try:
+                committed = recorder.read_record(resolved_session_id)
+                window = committed.collection_window
+                if window is not None:
+                    live_info["frames_sampled"] = window.frames_sampled
+            except Exception:
+                pass
 
+            # True invariants (not ceil+1-as-count): trace unabridged AND
+            # cap not binding. ceil(timeout/interval)+1 remains the cap-side
+            # bound (see ResearchProfile invariant), never an expected count.
             trace_ok = True
             if profile is not None:
-                required_min_frames = (
-                    math.ceil(profile.timeout_ms / profile.sample_interval_ms)
-                    + 1
-                )
                 if "trace_error" in live_info:
                     trace_ok = False
-                elif "trace_entries" in live_info:
-                    trace_ok = live_info["trace_entries"] == required_min_frames
+                elif (
+                    "trace_entries" in live_info
+                    and "frames_sampled" in live_info
+                ):
+                    trace_ok = (
+                        live_info["trace_entries"]
+                        == live_info["frames_sampled"]
+                        and live_info["frames_sampled"]
+                        <= profile.max_frames
+                    )
                 elif device != "fake":
                     trace_ok = False
 

@@ -190,14 +190,14 @@ def _run_checkpoint(tmp_path: Path, mock_fn: object) -> tuple[int, dict]:
 
 def test_red1_real_hardware_shape_22_22_26(tmp_path: Path) -> None:
     """take-2 real shape: trace=sampled=22, max=26 -> pre-False, post-True."""
-    from live_checkpoint import run_checkpoint  # noqa: F401
-
     code, summary = _run_checkpoint(tmp_path, _mock_live(22, 22))
     live = summary["phases"]["live"]
-    # RED assertion documents PRE-fix defect: must be False before the fix.
-    # After GREEN this same scenario must be True; the test is updated then.
-    print(f"RED1 code={code} pass={live.get('pass')} "
-          f"trace={live.get('trace_entries')}")
+    # GREEN: true invariants hold (22==22, 22<=26) -> pass True, exit 0.
+    # (RED commit bc49638 recorded pre-fix code=4 pass=False here.)
+    assert code == 0
+    assert live.get("pass") is True
+    assert live.get("trace_entries") == 22
+    assert live.get("frames_sampled") == 22
     json.dumps(summary)
 
 
