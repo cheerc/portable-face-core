@@ -272,6 +272,11 @@ def run_checkpoint(
     canary_fn: (
         Callable[[ResearchRecorder, Path, Path], dict[str, object]] | None
     ) = None,
+    expected_builtin_unique_id: str | None = None,
+    expected_builtin_shape: str | None = None,
+    camera_identity_probe: (
+        Callable[[], tuple[list[str], int]] | None
+    ) = None,
 ) -> tuple[int, dict[str, Any]]:
     """Execute one-command live checkpoint and return (exit_code, summary)."""
     resolved_session_id = session_id or f"chk-{uuid4().hex[:12]}"
@@ -337,7 +342,97 @@ def run_checkpoint(
                 summary["phases"]["store"] = {"pass": False, "error": str(exc)}
                 exit_code = 2
 
-        # 2. Preflight phase (explicit opt-in only)
+        # 2. Built-in camera identity assertion (issue #89, assertion-only).
+        # True-device runs must carry the pinned built-in uniqueID; every
+        # ambiguity REFUSES (exit 2), never warns, never falls through to
+        # capture. Fake-device runs skip this layer (no identity to assert).
+        if exit_code == 0 and device != "fake":
+            if device == "local":
+                summary["phases"]["camera_identity"] = {
+                    "pass": False,
+                    "error": (
+                        "--device local is not authorized while issue #89 "
+                        "is open; pass an explicit --device index plus "
+                        "--expected-builtin-unique-id"
+                    ),
+                }
+                exit_code = 2
+            elif expected_builtin_unique_id is None:
+                summary["phases"]["camera_identity"] = {
+                    "pass": False,
+                    "error": (
+                        "true-device run requires "
+                        "--expected-builtin-unique-id (pinned built-in "
+                        "camera uniqueID); refusing without identity evidence"
+                    ),
+                }
+                exit_code = 2
+            else:
+                from facecore.live.camera_identity import (  # noqa: PLC0415
+                    CameraIdentityError,
+                    assert_builtin_camera,
+                    count_openable_devices,
+                    enumerate_camera_unique_ids,
+                )
+
+                try:
+                    if camera_identity_probe is not None:
+                        enumerated, openable = camera_identity_probe()
+                    else:
+                        enumerated = enumerate_camera_unique_ids()
+                        openable = count_openable_devices()
+                    probe_shape: tuple[int, int] | None = None
+                    expected_shape: tuple[int, int] | None = None
+                    if expected_builtin_shape is not None:
+                        try:
+                            h_str, w_str = expected_builtin_shape.lower().split(
+                                "x"
+                            )
+                            expected_shape = (int(h_str), int(w_str))
+                        except ValueError as exc:
+                            raise CameraIdentityError(
+                                "expected-builtin-shape must look like "
+                                f"'720x1280', got {expected_builtin_shape!r}"
+                            ) from exc
+                    # Enumeration-independent cross-check: one probe frame
+                    # from the requested index via the injected (or real)
+                    # capture path. The factory path keeps tests hermetic;
+                    # without a factory a single OpenCV open+read+release
+                    # runs here (device I/O, no capture session).
+                    if capture_factory is not None:
+                        probe_src = capture_factory(device)
+                        try:
+                            probe_src.open(device)
+                            probe_frame = probe_src.read()
+                        finally:
+                            probe_src.close()
+                        if probe_frame is not None:
+                            probe_shape = (
+                                probe_frame.rgb.shape[0],
+                                probe_frame.rgb.shape[1],
+                            )
+                    predicted = assert_builtin_camera(
+                        device=device,
+                        pinned_uid=expected_builtin_unique_id,
+                        enumerated_ids=enumerated,
+                        openable_count=openable,
+                        probe_shape_hw=probe_shape,
+                        expected_shape_hw=expected_shape,
+                    )
+                    summary["phases"]["camera_identity"] = {
+                        "pass": True,
+                        "predicted_index": predicted,
+                        "enumerated": len(enumerated),
+                        "openable": openable,
+                    }
+                except CameraIdentityError as exc:
+                    summary["phases"]["camera_identity"] = {
+                        "pass": False,
+                        "error": _sanitize_string(str(exc)),
+                    }
+                    exit_code = 2
+
+        # 3. Preflight phase (explicit opt-in only)
         if exit_code == 0:
             if preflight:
                 if preflight_fn is not None:
@@ -680,6 +775,24 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Optional session ID",
     )
+    parser.add_argument(
+        "--expected-builtin-unique-id",
+        default=None,
+        help=(
+            "Pinned built-in camera uniqueID (issue #89): true-device runs "
+            "refuse unless enumeration evidence says --device is that "
+            "camera. No pin lives in product code; pass it here."
+        ),
+    )
+    parser.add_argument(
+        "--expected-builtin-shape",
+        default=None,
+        help=(
+            "Enumeration-independent cross-check, e.g. '720x1280' "
+            "(HxW probe-frame shape of the built-in camera); mismatch "
+            "refuses. Optional but recommended."
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -697,6 +810,8 @@ def main(argv: list[str] | None = None) -> int:
         corpus=args.corpus,
         experiment_id=args.experiment_id,
         session_id=args.session,
+        expected_builtin_unique_id=args.expected_builtin_unique_id,
+        expected_builtin_shape=args.expected_builtin_shape,
     )
 
     print(json.dumps(summary, indent=2, sort_keys=True))

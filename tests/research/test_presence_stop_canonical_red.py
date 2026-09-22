@@ -159,6 +159,10 @@ def _run_canonical(tmp_path: Path, tag: str):
         embedder_factory=lambda _m: _ScriptedEmbedder(),
         experiment_id="exp-canon-red",
         session_id=f"canon-{tag}-{uuid4().hex[:8]}",
+        # Pre-existing test path: bypass the #89 identity gate via the
+        # same injection seam the gate itself uses for hermetic tests.
+        camera_identity_probe=lambda: (["pinned-builtin-uid"], 1),
+        expected_builtin_unique_id="pinned-builtin-uid",
     )
 
 
@@ -210,6 +214,8 @@ def _run_canonical_faceless(tmp_path: Path, tag: str):
         embedder_factory=lambda _m: _ScriptedEmbedder(),
         experiment_id="exp-canon-red",
         session_id=f"canon-{tag}-{uuid4().hex[:8]}",
+        camera_identity_probe=lambda: (["pinned-builtin-uid"], 1),
+        expected_builtin_unique_id="pinned-builtin-uid",
     )
 
 

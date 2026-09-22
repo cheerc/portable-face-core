@@ -113,6 +113,17 @@ uv run --extra dev python -m facecore.research.cli live \
   `docs/research/2026-09-10-model-candidate-gate.md`（YuNet MIT、
   SFace Apache-2.0，皆 `PROVENANCE_UNRESOLVED`）。模型權重永不進
   Git。
+- 內建相機斷言（issue #89；assertion-only，不做自動選擇）：真機
+  runner 須帶 `--expected-builtin-unique-id <pin>`（pin 由 operator
+  以參數傳入，產品代碼內無硬編碼）；系統以 `system_profiler` 列舉
+  uniqueID、依 OpenCV 同規則排序推算 index，不符即 exit 2 拒絕
+  （pin 缺席、列舉數≠可開數、index 不符、形狀交叉檢查不符皆拒）。
+  `--expected-builtin-shape 'HxW'` 為列舉外獨立交叉檢查，建議帶。
+  本機範例值（僅範例，不得寫進代碼）：內建 `EAB7A68F-…`、
+  iPhone `D9B9EBF1-…`。`--device local` 在 #89 結案前維持未授權。
+  列舉方法見 `scripts/verify_camera_identity.py`。已知限制：
+  跨重開機 uniqueID 穩定性未驗（mismatch 即大聲拒絕，非 blocker）；
+  虛擬相機未覆蓋；iPhone 不在場列舉待補。
 
 ## 3c. 前置與收尾檢查腳本（issue #63；preflight 會開相機）
 
@@ -126,7 +137,10 @@ python scripts/live_teardown.py --store STORE --key-dir KEYDIR --session SESSION
 - preflight `exit 0` 只代表 opencv 可用並完成掃描，**不代表每個 index 都成功讀到影像**；必須讀 JSON 的 `devices[].read` 與實際選用的 index。
 - `live_teardown.py` 不帶 `--device` 就不碰相機（`camera` 欄為 `skipped`，那不是「相機已釋放」的證據）。
 - teardown 的 `store`／`keys` 檢查掃**整個**目錄，不依 `--session` 篩選；多 session 的研究 store 會被它報成殘留。請對隔離的單次驗收目錄執行，**不要為了讓它變綠而刪掉其他 session 的資料**。
-- `--device` 只接受可轉 int 的索引：`live_teardown.py:33` 逐字為 `cap = cv2.VideoCapture(int(device), backend)`。**不能傳 `local`**（那是 `facecore.sh` live 入口的裝置列舉語法），傳入會直接 `ValueError` 中止，不是「相機不可用」。要檢查相機請傳實際解析後的整數索引。
+- `--device` 只接受可轉 int 的索引。要檢查相機請傳實際解析後的整數索引。
+  `--device local` 在 issue #89 結案前未授權：`live_teardown.py` 與
+  runner 皆明確拒絕並給出訊息（exit 非零），不再是 `ValueError`
+  traceback。
 - 上述命令的 `$CORPUS`／`$MODELS`／`$STORE`／`$KEYS`／`$SESSION`／`$RESOLVED_INDEX` **沒有預設值**，一律由 G3 已批准的採集 manifest 解析後填入；不要沿用他人筆記或前次 session 的路徑與索引。
 
 ## 3d. 一鍵真機 checkpoint runner（issue #82）

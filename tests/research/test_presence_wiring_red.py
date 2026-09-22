@@ -106,6 +106,10 @@ def _true_device_kwargs(tmp_path: Path) -> dict:
             record_consent=True,
             image_consent=True,
             capture_factory=lambda _d: _ScriptedCapture(),
+            # Pre-existing test path: bypass the #89 identity gate via the
+            # same injection seam the gate itself uses for hermetic tests.
+            camera_identity_probe=lambda: (["pinned-builtin-uid"], 1),
+            expected_builtin_unique_id="pinned-builtin-uid",
         )
     return seen
 
@@ -142,6 +146,8 @@ def test_red2_faced_run_is_observable_presence_stop(tmp_path: Path) -> None:
             record_consent=True,
             image_consent=True,
             capture_factory=lambda _d: _ScriptedCapture(),
+            camera_identity_probe=lambda: (["pinned-builtin-uid"], 1),
+            expected_builtin_unique_id="pinned-builtin-uid",
         )
     assert code == 4, f"RED2: expected exit 4, got {code}"
     live = summary["phases"]["live"]
