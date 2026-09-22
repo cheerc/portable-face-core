@@ -152,6 +152,12 @@ python scripts/live_checkpoint.py \
 - **Explicit device index**：必須指定明確裝置（如 `--device 0` 或 `--device fake`），不進行靜默 0–N 輪詢或 fallback。
 - **輸出無敏感資料**：輸出之單一 JSON summary 經嚴格過濾，保證不含 pixels、crop、embeddings、全路徑（`/Users/`、`/home/`）或 PII。
 
+### 在場偵測限制（presence guard）
+
+- 無參與者 checkpoint 可用混合 scorer（真 YuNet 偵測 `face_count`／`face_box`／quality＋合成 identity）對入鏡人臉 fail-closed 停止（`presence stop`，exit 4）。
+- 此停止條件是**盡力而為、具未知漏檢率**：**不等於無人看顧即安全**。在漏檢率未經量測前，**不得**以「已有偵測」作為放寬 operator 在場要求的理由。
+- 採集模式預設不繼承 checkpoint 停止語意（`presence_mode` 預設為 `collection`，checkpoint 呼叫端須顯式 opt-in）。
+
 ### Verdict 判定與 Exit Codes
 
 - **單一 JSON Summary**：標準輸出僅印出單一行或格式化之 JSON 摘要，包含整體 `verdict`（`PASS` 或 `FAIL`）、`exit_code`、各階段細節（`phases`）與未驗證手動檢查點（`manual_checkpoints`）。

@@ -136,6 +136,78 @@ def _fake_scorer(
     return _score
 
 
+class PresenceDetectedError(ValueError):
+    """A face was detected in no-participant checkpoint mode (fail-closed)."""
+
+
+def presence_scorer(
+    detector: Any,
+    model_generation: str,
+    gallery_digest: str,
+    *,
+    presence_mode: str = "collection",
+) -> Callable[[FramePacket], FrameObservation]:
+    """Hybrid scorer: true detector presence + synthetic identity.
+
+    face_count/face_box/quality_pass/quality_reasons come from running the
+    true detector on the true pixels; identity_scores stay synthetic fixed
+    values (identity NEVER goes true for convenience).
+
+    presence_mode splits the stop semantics (never a global rule):
+    - "checkpoint": any detected face (>= 1) raises PresenceDetectedError
+      (fail-closed abort; surfaces as exit 4 + stderr, never a silent pass).
+    - "collection" (default): no presence stop; faced frames score
+      normally so future collection callers never inherit checkpoint
+      semantics by omission. The default is deliberately the non-stopping
+      side: checkpoint callers must opt in explicitly.
+    """
+    if presence_mode not in ("checkpoint", "collection"):
+        raise ValueError(f"unknown presence_mode {presence_mode!r}")
+
+    def _score(packet: FramePacket) -> FrameObservation:
+        from facecore.pipeline.decode import DecodedImage  # noqa: PLC0415
+        from facecore.pipeline.detect import enforce_single_face  # noqa: PLC0415
+
+        height, width, _ = packet.rgb.shape
+        decoded = DecodedImage(
+            width=width,
+            height=height,
+            color_order="RGB",
+            pixels=packet.rgb.tobytes(),
+        )
+        detected = detector.detect(decoded)
+        status, reason, face = enforce_single_face(detected)
+        face_count = len(detected)
+        if presence_mode == "checkpoint" and face_count >= 1:
+            raise PresenceDetectedError(
+                f"presence_face_detected: {face_count} face(s) in "
+                f"no-participant checkpoint frame {packet.sequence}"
+            )
+        if status == "ok" and face is not None:
+            quality_pass = True
+            quality_reasons: tuple[str, ...] = ()
+            face_box = face.box
+        else:
+            quality_pass = False
+            quality_reasons = (reason,) if reason else ()
+            face_box = None
+        return FrameObservation(
+            sequence=packet.sequence,
+            captured_ns=packet.captured_ns,
+            processed_ns=packet.captured_ns + 1_000_000,
+            quality_pass=quality_pass,
+            quality_reasons=quality_reasons,
+            face_count=face_count,
+            face_box=face_box,
+            identity_scores={"person-01": 0.50, "person-02": 0.30},
+            quality_rank=0.5,
+            model_generation=model_generation,
+            gallery_digest=gallery_digest,
+        )
+
+    return _score
+
+
 def _load_profile(profile_path: Path) -> ResearchProfile:
     try:
         payload = json.loads(profile_path.read_text())
@@ -279,6 +351,7 @@ def cmd_live(
     embedder_factory: Callable[[Path], Any] | None = None,
     experiment_id: str = "exp-cli-e3",
     attempt_id: str | None = None,
+    presence_mode: str = "collection",
 ) -> int:
     """Run one bounded research session (fake pump or real camera)."""
     try:
@@ -464,8 +537,41 @@ def cmd_live(
             event_sink=_event_sink,
         )
 
-        def scorer(packet: FramePacket) -> FrameObservation:
-            return score_frame(packet, context, diagnostic_sink=_diagnostic_sink)
+        if presence_mode == "checkpoint":
+            # No-participant checkpoint: hybrid scorer (true detector
+            # presence + synthetic identity). The detector is the true
+            # YuNet from the context; identity never goes true. The
+            # corpus stays caller-provided synthetic (G3 NOT opened).
+            from facecore.pipeline.yunet import (  # noqa: PLC0415
+                YuNetDetector,
+            )
+
+            if not isinstance(context.detector, YuNetDetector):
+                print(
+                    "research live: checkpoint presence mode requires "
+                    "the true YuNet detector",
+                    file=sys.stderr,
+                )
+                _finish_attempt_error("setup_error:presence_detector")
+                return 2
+            model_generation = "checkpoint-presence-gen-1"
+            gallery_digest = "checkpoint-presence-gallery"
+            engine = SessionEngine(profile, gallery_digest, model_generation)
+            _hybrid = presence_scorer(
+                context.detector,
+                model_generation,
+                gallery_digest,
+                presence_mode="checkpoint",
+            )
+
+            def scorer(packet: FramePacket) -> FrameObservation:
+                return _hybrid(packet)
+        else:
+
+            def scorer(packet: FramePacket) -> FrameObservation:
+                return score_frame(
+                    packet, context, diagnostic_sink=_diagnostic_sink
+                )
 
         window_label = "early-stop"
         is_true_path = True
@@ -650,6 +756,23 @@ def cmd_live(
                 pass
             return 4
     if capture_failure is not None:
+        if isinstance(capture_failure, PresenceDetectedError):
+            print(
+                f"research live: presence stop: {capture_failure}",
+                file=sys.stderr,
+            )
+            desktop.close()
+            recorder.abort(session_id, reason="presence_stop")
+            try:
+                recorder.finish_attempt(
+                    resolved_attempt_id,
+                    result=None,
+                    operational_status="error",
+                    error_code="presence_stop",
+                )
+            except Exception:
+                pass
+            return 4
         print(f"research live: capture failed: {capture_failure}", file=sys.stderr)
         desktop.close()
         recorder.abort(session_id, reason="capture_failed")
