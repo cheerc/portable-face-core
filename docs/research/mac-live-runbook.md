@@ -227,7 +227,7 @@ known timing flake: passes isolated/rerun, untouched by T4–T8 paths).
 
 ## 9b. Wired frame staging (t-3; true path only)
 
-- True-path live stages each sampled frame encrypted (AEAD, 25-frame
+- True-path live stages each sampled frame encrypted (AEAD, 26-frame
   cap, dims-capped) as it is scored; fake path stays envelope-only.
 - Per-frame best-match ledger (sequence/top_id/top_score/margin) rides
   the encrypted envelope; terminal matched_identity is still written
