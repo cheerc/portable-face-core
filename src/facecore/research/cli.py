@@ -62,6 +62,11 @@ from facecore.research.split import ContaminationRecord
 
 # Frozen pair-1 model selection (matches production bakeoff wiring):
 # YuNet 2023mar fixed-640 detector + SFace 2021dec fp32 embedder.
+# License/provenance are NOT decided here: YuNet is MIT (2020 Shiqi Yu)
+# and SFace is Apache-2.0 — recorded in
+# docs/research/2026-09-10-model-candidate-gate.md (§1 items 2-4) and
+# docs/plans/2026-09-10-phase-1a-implementation-plan.md (§Evidence).
+# Both keep PROVENANCE_UNRESOLVED (SFace: upstream issue #313).
 TRUE_PIPELINE_GENERATION = "gen-1"
 TRUE_DETECTOR_FILENAME = "face_detection_yunet_2023mar.onnx"
 TRUE_DETECTOR_SHA256 = (
