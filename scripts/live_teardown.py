@@ -25,12 +25,35 @@ from pathlib import Path
 def check_camera(device: str | None) -> dict[str, object]:
     if device is None:
         return {"skipped": "no --device given"}
+    if device == "local":
+        # Issue #89: --device local is unauthorized; refuse explicitly
+        # instead of feeding a non-numeric string to int() (ValueError
+        # traceback). Pass an explicit --device index.
+        return {
+            "index": device,
+            "reopen": False,
+            "error": (
+                "--device local is not authorized while issue #89 is open; "
+                "pass an explicit --device index"
+            ),
+        }
     try:
         import cv2  # type: ignore[import-not-found]
     except ImportError:
         return {"skipped": "opencv not installed"}
     backend = getattr(cv2, "CAP_AVFOUNDATION", 0)
-    cap = cv2.VideoCapture(int(device), backend)
+    try:
+        index = int(device)
+    except ValueError:
+        return {
+            "index": device,
+            "reopen": False,
+            "error": (
+                f"device {device!r} is not a numeric index; pass an "
+                "explicit --device index"
+            ),
+        }
+    cap = cv2.VideoCapture(index, backend)
     opened = cap.isOpened()
     entry: dict[str, object] = {"index": device, "reopen": opened}
     if opened:

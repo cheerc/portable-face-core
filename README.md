@@ -119,6 +119,7 @@ src/
     │   └── utility.py
     ├── live/
     │   ├── __init__.py
+    │   ├── camera_identity.py
     │   ├── capture.py
     │   ├── contracts.py
     │   ├── controller.py

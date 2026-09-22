@@ -179,11 +179,10 @@ def _run_true(tmp_path: Path, tag: str, **kw):
         return run_checkpoint(**base)
 
 
-def _sp_run(uids: list[str]):
-    """Patch target for subprocess.run returning system_profiler JSON."""
-    return patch(
-        "subprocess.run", return_value=_FakeRunner(_sp_json(uids))
-    )
+def _probe(uids: list[str], openable: int | None = None):
+    """Injected camera-identity probe: (sorted uniqueIDs, openable count)."""
+    ids = sorted(uids)
+    return lambda: (ids, openable if openable is not None else len(ids))
 
 
 def test_a1_missing_pin_refuses(tmp_path: Path) -> None:
@@ -199,23 +198,25 @@ def test_a1_missing_pin_refuses(tmp_path: Path) -> None:
 
 def test_a2_pin_absent_from_enumeration_refuses(tmp_path: Path) -> None:
     """Pinned ID not in current enumeration -> refuse."""
-    with _sp_run([IPHONE_UID]):
-        code, _ = _run_true(
-            tmp_path, "a2", expected_builtin_unique_id=BUILTIN_UID
-        )
+    code, _ = _run_true(
+        tmp_path,
+        "a2",
+        expected_builtin_unique_id=BUILTIN_UID,
+        camera_identity_probe=_probe([IPHONE_UID]),
+    )
     assert code != 0, "A2: pinned ID absent must refuse"
 
 
 def test_a3_count_mismatch_refuses(tmp_path: Path) -> None:
     """Predicted count != openable count -> refuse."""
-    # Enumeration sees 2 devices; only index 1 openable via factory.
-    with _sp_run([IPHONE_UID, BUILTIN_UID]):
-        code, _ = _run_true(
-            tmp_path,
-            "a3",
-            expected_builtin_unique_id=BUILTIN_UID,
-            capture_factory=lambda _d: FakeCapture(frames=_frames()),
-        )
+    # Enumeration sees 2 devices but OpenCV opens only 1.
+    code, _ = _run_true(
+        tmp_path,
+        "a3",
+        expected_builtin_unique_id=BUILTIN_UID,
+        capture_factory=lambda _d: FakeCapture(frames=_frames()),
+        camera_identity_probe=_probe([IPHONE_UID, BUILTIN_UID], openable=1),
+    )
     # The factory hides openability from the assert layer; the assert
     # must still verify count via its own OpenCV probe. Pre-fix there is
     # no such check, so this documents the missing gate.
@@ -224,26 +225,26 @@ def test_a3_count_mismatch_refuses(tmp_path: Path) -> None:
 
 def test_a4_shape_mismatch_refuses(tmp_path: Path) -> None:
     """Probe shape != expected built-in shape -> refuse."""
-    with _sp_run([IPHONE_UID, BUILTIN_UID]):
-        code, _ = _run_true(
-            tmp_path,
-            "a4",
+    code, _ = _run_true(
+        tmp_path,
+        "a4",
             expected_builtin_unique_id=BUILTIN_UID,
             expected_builtin_shape="720x1280",
             capture_factory=lambda _d: FakeCapture(frames=_frames(16, 16)),
+            camera_identity_probe=_probe([IPHONE_UID, BUILTIN_UID]),
         )
     assert code != 0, "A4: shape mismatch must refuse"
 
 
 def test_a5_all_agree_proceeds(tmp_path: Path) -> None:
     """Full agreement -> no refusal from the assert layer."""
-    with _sp_run([IPHONE_UID, BUILTIN_UID]):
-        code, summary = _run_true(
-            tmp_path,
-            "a5",
+    code, summary = _run_true(
+        tmp_path,
+        "a5",
             expected_builtin_unique_id=BUILTIN_UID,
             expected_builtin_shape="16x16",
             capture_factory=lambda _d: FakeCapture(frames=_frames(16, 16)),
+            camera_identity_probe=_probe([IPHONE_UID, BUILTIN_UID]),
         )
     live = summary["phases"]["live"]
     assert "builtin" not in json.dumps(live.get("stderr_msg", "")).lower(), (
