@@ -23,6 +23,7 @@
    - Direct artifact URL: `https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx` (documented `curl -L -o` pattern); media URL `https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx`.
    - Git blob identity (locator only, **not** a weight checksum): git-SHA-1 `2d8804a5986e229f1fde3a1994feacc66c91b58b`, size 232,589 bytes, via `api.github.com/repos/opencv/opencv_zoo/contents/models/face_detection_yunet/face_detection_yunet_2023mar.onnx` on 2026-09-11.
    - Weight SHA-256: `UNVERIFIED` — no download per scope; Task 6 must hash the artifact at session construction and compare to the manifest (plan Task 6 acceptance already requires this fail-closed check).
+   - As of 2026-09-22: downloaded to the resident `~/` model dir and verified by `shasum -a 256` == `cli.py` pin `8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4` (232,589 bytes; PR #92 gate evidence).
    - Retrieval date: 2026-09-11.
 2. **Code license vs weight license, separately with locators** — `CLEAR`
    - Model directory license file: `https://raw.githubusercontent.com/opencv/opencv_zoo/main/models/face_detection_yunet/LICENSE` — **MIT License**, copyright `© 2020 Shiqi Yu <shiqi.yu@gmail.com>`, grant text: *"to use, copy, modify, merge, publish, distribute, sublicense, and/or sell"* (first 8 lines fetched verbatim 2026-09-11).

@@ -160,7 +160,10 @@ def presence_scorer(
 
     presence_mode splits the stop semantics (never a global rule):
     - "checkpoint": any detected face (>= 1) raises PresenceDetectedError
-      (fail-closed abort; surfaces as exit 4 + stderr, never a silent pass).
+      (fail-closed abort; the pump layer turns it into exit 4 + stderr +
+      an uncommitted bundle — the exception alone is NOT the surfacing
+      mechanism, because the controller can only re-raise it when a
+      frame_transform is present).
     - "collection" (default): no presence stop; faced frames score
       normally so future collection callers never inherit checkpoint
       semantics by omission. The default is deliberately the non-stopping
@@ -787,6 +790,38 @@ def cmd_live(
                 result=None,
                 operational_status="error",
                 error_code="capture_failed",
+            )
+        except Exception:
+            pass
+        return 4
+    # Presence-guard canonical-path fix (issue #82): the controller can
+    # only re-raise scorer exceptions when a frame_transform is present
+    # (ui == "qt"); on the runner/runbook canonical path (no transform)
+    # it surfaces them as an error terminal with a scorer_failure reason
+    # code instead. Detect the presence stop HERE by terminal reason code
+    # — never by exception propagation (Qt event-loop re-raise is
+    # unverified) and never by a hand-copied stderr literal. The marker
+    # is built from the exception class name so emitter and detector
+    # cannot drift apart. The faced bundle is NOT committed: a stopped
+    # run is not a research product (R4 fail-closed spirit).
+    _presence_marker = f"scorer_failure: {PresenceDetectedError.__name__}"
+    if terminal is not None and any(
+        _presence_marker in code for code in terminal.reason_codes
+    ):
+        print(
+            "research live: presence stop: "
+            f"{_presence_marker} in no-participant checkpoint session "
+            f"{session_id}",
+            file=sys.stderr,
+        )
+        desktop.close()
+        recorder.abort(session_id, reason="presence_stop")
+        try:
+            recorder.finish_attempt(
+                resolved_attempt_id,
+                result=None,
+                operational_status="error",
+                error_code="presence_stop",
             )
         except Exception:
             pass
