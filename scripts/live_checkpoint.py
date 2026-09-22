@@ -357,6 +357,13 @@ def run_checkpoint(
             if device == "fake" and active_capture_factory is None:
                 active_capture_factory = _default_fake_capture_factory
 
+            # Presence wiring: the runner IS the no-participant checkpoint
+            # tool, so the true-device path defaults to checkpoint mode
+            # (fail-closed presence guard active). Fake stays collection:
+            # it loads no true YuNet, and checkpoint mode would exit 2
+            # before any frame is scored.
+            presence_mode = "checkpoint" if device != "fake" else "collection"
+
             live_stdout = io.StringIO()
             live_stderr = io.StringIO()
             try:
@@ -379,6 +386,7 @@ def run_checkpoint(
                         embedder_factory=embedder_factory,
                         experiment_id=experiment_id,
                         attempt_id=resolved_attempt_id,
+                        presence_mode=presence_mode,
                     )
             except Exception as exc:
                 live_rc = 4
@@ -390,12 +398,20 @@ def run_checkpoint(
             # Parse output from cmd_live
             live_info: dict[str, Any] = {"exit_code": live_rc}
             staged_errors: list[str] = []
+            presence_stop = False
             for line in stderr_output.splitlines():
                 if "staging failed:" in line:
                     err_part = line.split("staging failed:", 1)[1].strip()
                     staged_errors.extend(err_part.split(";"))
                 elif "research live:" in line:
                     live_info["stderr_msg"] = line.strip()
+                    # Presence stop is the sole unattended discriminator:
+                    # exit 4 alone cannot tell it apart from camera, staging,
+                    # or store failures. Match the exact cmd_live message
+                    # ("research live: presence stop: ...", see cli.py).
+                    if "presence stop" in line:
+                        presence_stop = True
+            live_info["presence_stop"] = presence_stop
 
             if staged_errors:
                 live_info["staged_errors"] = sorted(set(staged_errors))
