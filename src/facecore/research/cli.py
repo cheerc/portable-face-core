@@ -1303,6 +1303,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     live.add_argument("--corpus", required=False, type=Path, default=None)
     live.add_argument("--models", required=False, type=Path, default=None)
+    live.add_argument(
+        "--presence-mode",
+        choices=["collection", "checkpoint"],
+        default="collection",
+        help=(
+            "Presence guard mode: 'checkpoint' aborts (exit 4) when any "
+            "face is detected in a no-participant run and requires the "
+            "true YuNet detector; default 'collection' never stops "
+            "(all existing callers unchanged)"
+        ),
+    )
 
     replay = sub.add_parser("replay")
     replay.add_argument("--store", required=True, type=Path)
@@ -1362,6 +1373,7 @@ def main(argv: list[str] | None = None) -> int:
             qt_offscreen=args.qt_offscreen,
             models=args.models,
             corpus=args.corpus,
+            presence_mode=args.presence_mode,
         )
     if args.command == "replay":
         return cmd_replay(
