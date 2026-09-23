@@ -124,6 +124,10 @@ uv run --extra dev python -m facecore.research.cli live \
   列舉方法見 `scripts/verify_camera_identity.py`。已知限制：
   跨重開機 uniqueID 穩定性未驗（mismatch 即大聲拒絕，非 blocker）；
   虛擬相機未覆蓋；iPhone 不在場列舉待補。
+  gap (b) 補驗（iPhone 移開後重跑 verifier：列舉集合應等價於全集減
+  iPhone，且剩餘集合須仍唯一確定內建鏡頭）時省略
+  `--known-non-builtin-uid`；若帶該旗標，verifier 會因該 uid 不在當次
+  列舉中而拒絕（unknown-exclusion refuse），operator 配合的那一次白跑。
 
 ## 3c. 前置與收尾檢查腳本（issue #63；preflight 會開相機）
 
