@@ -21,8 +21,6 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-import pytest
-
 from facecore.research.diagnostics import FrameDiagnostics, FrameTraceEntry
 from facecore.research.experiment import AttemptRecord, ExperimentManifest
 from facecore.research.records import ConsentRecord

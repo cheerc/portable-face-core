@@ -1600,11 +1600,18 @@ class ResearchRecorder:
             raise KeyError(f"key not found for attempt {attempt_id!r}") from exc
 
         entries: list[FrameTraceEntry] = []
-        for path in sorted(trace_dir.glob("frame_*.enc")):
+        # Order by the PARSED integer sequence, not the filename string:
+        # frame_{seq:04d} grows to 5+ digits past seq 9999, where
+        # lexicographic order misplaces e.g. frame_34458 before
+        # frame_3765 and replay's strict monotonicity raises
+        # duplicate_sequence. Non-numeric names keep the existing skip.
+        indexed: list[tuple[int, Path]] = []
+        for path in trace_dir.glob("frame_*.enc"):
             seq_str = path.stem.split("_")[1]
             if not seq_str.isdigit():
                 continue
-            seq_num = int(seq_str)
+            indexed.append((int(seq_str), path))
+        for seq_num, path in sorted(indexed, key=lambda item: item[0]):
             try:
                 wire = path.read_bytes()
                 blob = _blob_from_wire(wire)
