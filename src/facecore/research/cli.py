@@ -309,6 +309,36 @@ def _build_true_context(
     )
 
 
+def _build_true_detector_only(
+    models: Path,
+    *,
+    detector_factory: Callable[[Path], Any] | None = None,
+) -> Any:
+    """Build ONLY the true detector (checkpoint path; no gallery).
+
+    Checkpoint presence scoring uses the detector alone (face_count /
+    face_box / quality from true pixels; identity stays synthetic), so
+    building an embedder + gallery — which demands faceless-rejecting
+    enrollment faces — would force a human-face corpus for a gallery
+    the branch never reads (G3 boundary conflict). The YuNet default
+    (with SHA pin) and any factory product flow through the same
+    isinstance guard at the call site; nothing here relaxes it.
+    """
+    if detector_factory is None:
+        from facecore.pipeline.yunet import (  # noqa: PLC0415 (device-gated)
+            YuNetDetector,
+        )
+
+        def _default_detector(models_dir: Path) -> Any:
+            return YuNetDetector(
+                models_dir / TRUE_DETECTOR_FILENAME,
+                TRUE_DETECTOR_SHA256,
+            )
+
+        detector_factory = _default_detector
+    return detector_factory(models)
+
+
 def profile_to_policy(profile: ResearchProfile) -> Any:
     """Map a research profile onto a frozen-v1 policy with its thresholds."""
     from facecore.contracts.policy import (  # noqa: PLC0415 (device-gated)
@@ -509,19 +539,42 @@ def cmd_live(
             _finish_attempt_error("open_error:no_frames")
             return 2
         try:
-            context = _build_true_context(
-                models,
-                corpus,
-                profile,
-                detector_factory=detector_factory,
-                embedder_factory=embedder_factory,
-            )
+            if presence_mode == "checkpoint":
+                # Checkpoint builds the detector ONLY (no embedder, no
+                # gallery): presence scoring never reads them, and demanding
+                # faceless-rejecting enrollment faces for an unread gallery
+                # would force a human-face corpus (G3 boundary). Collection
+                # below is byte-unchanged (full gallery path).
+                checkpoint_detector = _build_true_detector_only(
+                    models,
+                    detector_factory=detector_factory,
+                )
+                context = None
+            else:
+                checkpoint_detector = None
+                context = _build_true_context(
+                    models,
+                    corpus,
+                    profile,
+                    detector_factory=detector_factory,
+                    embedder_factory=embedder_factory,
+                )
         except Exception as exc:
             print(f"research live: true pipeline setup failed: {exc}", file=sys.stderr)
             _finish_attempt_error("setup_error:model_setup_failed")
             return 2
-        model_generation = context.gallery.generation
-        gallery_digest = context.gallery.digest
+        if presence_mode == "checkpoint":
+            # Detector-only path has no gallery; the checkpoint branch
+            # below sets synthetic generation/digest. Keep the names bound
+            # so the shared tail below type-checks; they are overwritten
+            # before any use.
+            assert checkpoint_detector is not None
+            model_generation = ""
+            gallery_digest = ""
+        else:
+            assert context is not None
+            model_generation = context.gallery.generation
+            gallery_digest = context.gallery.digest
         engine = SessionEngine(profile, gallery_digest, model_generation)
 
         from facecore.live.frame_pipeline import (  # noqa: PLC0415 (device-gated)
@@ -548,13 +601,15 @@ def cmd_live(
         if presence_mode == "checkpoint":
             # No-participant checkpoint: hybrid scorer (true detector
             # presence + synthetic identity). The detector is the true
-            # YuNet from the context; identity never goes true. The
-            # corpus stays caller-provided synthetic (G3 NOT opened).
+            # YuNet built detector-only above (no embedder, no gallery —
+            # no enrollment faces demanded, G3 NOT opened); identity never
+            # goes true. The corpus manifest is accepted but never read
+            # for faces on this path.
             from facecore.pipeline.yunet import (  # noqa: PLC0415
                 YuNetDetector,
             )
 
-            if not isinstance(context.detector, YuNetDetector):
+            if not isinstance(checkpoint_detector, YuNetDetector):
                 print(
                     "research live: checkpoint presence mode requires "
                     "the true YuNet detector",
@@ -566,7 +621,7 @@ def cmd_live(
             gallery_digest = "checkpoint-presence-gallery"
             engine = SessionEngine(profile, gallery_digest, model_generation)
             _hybrid = presence_scorer(
-                context.detector,
+                checkpoint_detector,
                 model_generation,
                 gallery_digest,
                 presence_mode="checkpoint",
@@ -575,6 +630,7 @@ def cmd_live(
             def scorer(packet: FramePacket) -> FrameObservation:
                 return _hybrid(packet)
         else:
+            assert context is not None  # set in the collection fork above
 
             def scorer(packet: FramePacket) -> FrameObservation:
                 return score_frame(
