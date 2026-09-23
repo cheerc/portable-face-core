@@ -498,9 +498,16 @@ def run_checkpoint(
                             ) from exc
                     # Enumeration-independent cross-check: one probe frame
                     # from the requested index via the injected (or real)
-                    # capture path. The factory path keeps tests hermetic;
-                    # without a factory a single OpenCV open+read+release
-                    # runs here (device I/O, no capture session).
+                    # capture path. The factory path keeps tests hermetic.
+                    # Without a factory, probe through OpenCVCapture — the
+                    # SAME adapter cmd_live's true path uses when no factory
+                    # is injected — so the probed shape is same-source with
+                    # the live session's frames (both bottom out at
+                    # cv2.VideoCapture.read on the same index). open ->
+                    # read -> release completes here, BEFORE cmd_live opens
+                    # the camera (AVFoundation close-during-read safety).
+                    # A2's 10/10 720x1280 used bare cv2.VideoCapture.read,
+                    # the same bottom call OpenCVCapture.read makes.
                     if capture_factory is not None:
                         probe_src = capture_factory(device)
                         try:
@@ -508,6 +515,24 @@ def run_checkpoint(
                             probe_frame = probe_src.read()
                         finally:
                             probe_src.close()
+                        if probe_frame is not None:
+                            probe_shape = (
+                                probe_frame.rgb.shape[0],
+                                probe_frame.rgb.shape[1],
+                            )
+                    else:
+                        from facecore.live.capture import (  # noqa: PLC0415
+                            OpenCVCapture,
+                        )
+
+                        probe_adapter = OpenCVCapture()
+                        try:
+                            probe_adapter.open(device)
+                            probe_frame = probe_adapter.read()
+                        except Exception:
+                            probe_frame = None
+                        finally:
+                            probe_adapter.close()
                         if probe_frame is not None:
                             probe_shape = (
                                 probe_frame.rgb.shape[0],
