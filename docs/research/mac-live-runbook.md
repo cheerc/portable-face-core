@@ -165,8 +165,18 @@ python scripts/live_checkpoint.py \
   --image-consent \
   --preflight \
   --models /path/to/models \
-  --corpus /path/to/corpus/manifest.json
+  --corpus /path/to/corpus/manifest.json \
+  --expected-builtin-unique-id <pin> \
+  --expected-builtin-shape <HxW>
 ```
+
+- `--expected-builtin-unique-id` 必帶（issue #89；缺即 exit 2）：
+  pin 以佔位符表示（沿 §3b 截斷形式如 `EAB7A68F-…`），**不得寫入
+  實際 uniqueID**；系統以 `system_profiler` 列舉＋OpenCV 同規則排序
+  推算 index，不符即拒絕。
+- `--expected-builtin-shape` 必帶（如 `'720x1280'` HxW）：程式面雖
+  optional，但它是 commander 條件 2 要求的獨立於列舉的交叉訊號，
+  在 sanctioned path 上恆為必帶；形狀不符即拒絕。
 
 ### 權限與安全不變量
 
