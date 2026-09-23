@@ -46,8 +46,8 @@ from facecore.live.capture import FakeCapture, FramePacket  # noqa: E402
 from facecore.pipeline.yunet import YuNetDetector  # noqa: E402
 
 
-BUILTIN_UID = "EAB7A68F-EC2B-4487-AADF-D8A91C1CB782"
-IPHONE_UID = "D9B9EBF1-CD2F-4316-A481-7AD800000001"
+BUILTIN_UID = "FFFF0000-0000-4000-8000-000000000002"
+IPHONE_UID = "AAAA0000-0000-4000-8000-000000000001"
 
 
 def _write_profile(tmp_path: Path) -> Path:
