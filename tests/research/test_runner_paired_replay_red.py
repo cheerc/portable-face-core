@@ -224,6 +224,7 @@ def _run_true(tmp_path: Path, tag: str, mock_fn: object, **kw):
         image_consent=True,
         capture_factory=lambda _d: FakeCapture(frames=_frames16()),
         expected_builtin_unique_id=BUILTIN_UID,
+        expected_builtin_shape="16x16",
         camera_identity_probe=_probe([IPHONE_UID, BUILTIN_UID]),
         # Test env has no cv2: stub the reopen probe (production path
         # untouched). RED6 overrides this with its own failing stub.

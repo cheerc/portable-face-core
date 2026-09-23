@@ -42,13 +42,27 @@ Status: path (c) CONVERGED per commander ruling `d-20260922083250331816-8`
    returns 0 (Unspecified) for both cameras. `spcamera_model-id` equals
    the localized name on this machine — no independent stable key.
 
+## A2 shape constancy (measured 2026-09-23, operator live-released)
+
+- iPhone present: predicted built-in index 1; 5 independent opens all
+  `720x1280`.
+- iPhone powered off (operator-confirmed index 0 is built-in): 5
+  independent opens all `720x1280`.
+- Merged: **10/10 constant cross-state**. No frames saved, no pixels
+  viewed; zero failures. Shape check is therefore mandatory on
+  true-device runs (same level as the uid pin) — see contract item 4.
+
 ## Known limitations (accurate, not silent)
 
 - Cross-reboot uniqueID stability: UNVERIFIED (no reboot performed).
   Guard: mismatch refuses LOUD.
 - Virtual cameras (OBS etc.): UNCOVERED (none on this machine).
   Guard: set-count comparison refuses on surprise devices.
-- iPhone-absent enumeration: PENDING operator action (commander asks
-  operator directly; do not chase).
+- iPhone powered off: `system_profiler` STALE — still lists 2 devices
+  (built-in + powered-off iPhone) while AVFoundation Video ∪ Muxed
+  drops to 1. The count check fail-closes (2 != 1, exit 2), so a
+  legitimate built-in run is refused until the profiler refreshes.
+  Availability limitation, recorded not fixed; never describe the
+  refusal as an identity-assertion success.
 - `Muxed` set membership: any future enumeration source must cover
   Video UNION Muxed, or the predicted index silently miscomputes.

@@ -163,6 +163,7 @@ def _run_canonical(tmp_path: Path, tag: str):
         # same injection seam the gate itself uses for hermetic tests.
         camera_identity_probe=lambda: (["pinned-builtin-uid"], 1),
         expected_builtin_unique_id="pinned-builtin-uid",
+        expected_builtin_shape="16x16",
     )
 
 
@@ -216,6 +217,7 @@ def _run_canonical_faceless(tmp_path: Path, tag: str):
         session_id=f"canon-{tag}-{uuid4().hex[:8]}",
         camera_identity_probe=lambda: (["pinned-builtin-uid"], 1),
         expected_builtin_unique_id="pinned-builtin-uid",
+        expected_builtin_shape="16x16",
     )
 
 
