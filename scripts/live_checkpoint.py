@@ -453,6 +453,22 @@ def run_checkpoint(
                     ),
                 }
                 exit_code = 2
+            elif expected_builtin_shape is None:
+                # A2 landing (10/10 cross-state constant): shape is now
+                # mandatory on true-device runs, same level as the uid
+                # pin. It is the enumeration-independent cross-check
+                # (commander condition 2); a sanctioned path never runs
+                # without it.
+                summary["phases"]["camera_identity"] = {
+                    "pass": False,
+                    "error": (
+                        "true-device run requires "
+                        "--expected-builtin-shape (HxW probe-frame shape "
+                        "of the built-in camera, e.g. '720x1280'); "
+                        "refusing without the cross-check"
+                    ),
+                }
+                exit_code = 2
             else:
                 from facecore.live.camera_identity import (  # noqa: PLC0415
                     CameraIdentityError,
@@ -894,9 +910,11 @@ def main(argv: list[str] | None = None) -> int:
         "--expected-builtin-shape",
         default=None,
         help=(
-            "Enumeration-independent cross-check, e.g. '720x1280' "
-            "(HxW probe-frame shape of the built-in camera); mismatch "
-            "refuses. Optional but recommended."
+            "REQUIRED on true-device runs (issue #89): HxW probe-frame "
+            "shape of the built-in camera, e.g. '720x1280'. The "
+            "enumeration-independent cross-check against composition "
+            "divergence (measured 10/10 constant cross-state); missing "
+            "or mismatch refuses."
         ),
     )
 

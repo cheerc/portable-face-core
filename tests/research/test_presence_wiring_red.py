@@ -110,6 +110,7 @@ def _true_device_kwargs(tmp_path: Path) -> dict:
             # same injection seam the gate itself uses for hermetic tests.
             camera_identity_probe=lambda: (["pinned-builtin-uid"], 1),
             expected_builtin_unique_id="pinned-builtin-uid",
+            expected_builtin_shape="16x16",
         )
     return seen
 
@@ -148,6 +149,7 @@ def test_red2_faced_run_is_observable_presence_stop(tmp_path: Path) -> None:
             capture_factory=lambda _d: _ScriptedCapture(),
             camera_identity_probe=lambda: (["pinned-builtin-uid"], 1),
             expected_builtin_unique_id="pinned-builtin-uid",
+            expected_builtin_shape="16x16",
         )
     assert code == 4, f"RED2: expected exit 4, got {code}"
     live = summary["phases"]["live"]

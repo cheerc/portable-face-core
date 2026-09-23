@@ -115,15 +115,18 @@ uv run --extra dev python -m facecore.research.cli live \
   Git。
 - 內建相機斷言（issue #89；assertion-only，不做自動選擇）：真機
   runner 須帶 `--expected-builtin-unique-id <pin>`（pin 由 operator
-  以參數傳入，產品代碼內無硬編碼）；系統以 `system_profiler` 列舉
-  uniqueID、依 OpenCV 同規則排序推算 index，不符即 exit 2 拒絕
-  （pin 缺席、列舉數≠可開數、index 不符、形狀交叉檢查不符皆拒）。
-  `--expected-builtin-shape 'HxW'` 為列舉外獨立交叉檢查，建議帶。
+  以參數傳入，產品代碼內無硬編碼）**與 `--expected-builtin-shape
+  'HxW'`（A2 後與 uid 同級強制，缺即 exit 2）**；系統以
+  `system_profiler` 列舉 uniqueID、依 OpenCV 同規則排序推算 index，
+  不符即 exit 2 拒絕（pin 缺席、shape 缺席、列舉數≠可開數、index
+  不符、形狀不符、有 shape 無 probe 皆拒）。A2 實測：在場 5/5＋
+  缺席 5/5 皆 `720x1280`，跨狀態 10/10 恆定。
   本機範例值（僅範例，不得寫進代碼）：內建 `EAB7A68F-…`、
   iPhone `D9B9EBF1-…`。`--device local` 在 #89 結案前維持未授權。
   列舉方法見 `scripts/verify_camera_identity.py`。已知限制：
   跨重開機 uniqueID 穩定性未驗（mismatch 即大聲拒絕，非 blocker）；
-  虛擬相機未覆蓋；iPhone 不在場列舉待補。
+  虛擬相機未覆蓋；iPhone 關機時 `system_profiler` 殘留致集合不等價
+  （fail-closed 擋合法執行，可用缺口，記錄不修）。
   gap (b) 補驗（iPhone 移開後重跑 verifier：列舉集合應等價於全集減
   iPhone，且剩餘集合須仍唯一確定內建鏡頭）時省略
   `--known-non-builtin-uid`；若帶該旗標，verifier 會因該 uid 不在當次
@@ -178,9 +181,10 @@ python scripts/live_checkpoint.py \
   pin 以佔位符表示（沿 §3b 截斷形式如 `EAB7A68F-…`），**不得寫入
   實際 uniqueID**；系統以 `system_profiler` 列舉＋OpenCV 同規則排序
   推算 index，不符即拒絕。
-- `--expected-builtin-shape` 必帶（如 `'720x1280'` HxW）：程式面雖
-  optional，但它是 commander 條件 2 要求的獨立於列舉的交叉訊號，
-  在 sanctioned path 上恆為必帶；形狀不符即拒絕。
+- `--expected-builtin-shape` 必帶（如 `'720x1280'` HxW）：與列舉
+  獨立的交叉訊號（commander 條件 2），防 composition divergence；
+  A2 實測跨在場狀態 10/10 恆定後已與 uid 同級為真機強制（缺即
+  exit 2）。形狀不符／有 shape 無 probe 皆拒絕。
 
 ### 權限與安全不變量
 

@@ -24,7 +24,6 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -37,7 +36,6 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 from facecore.live.capture import FakeCapture, FramePacket  # noqa: E402
-from facecore.pipeline.yunet import YuNetDetector  # noqa: E402
 
 BUILTIN_UID = "FFFF0000-0000-4000-8000-000000000002"
 IPHONE_UID = "AAAA0000-0000-4000-8000-000000000001"
