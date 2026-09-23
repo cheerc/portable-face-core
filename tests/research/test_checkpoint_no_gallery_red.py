@@ -10,9 +10,13 @@ MagicMock(spec=YuNetDetector) returns a face for EVERY image, so the
 gallery always built in tests.
 
 RED: detector double returns 0 faces on CORPUS images (true-YuNet-like)
-but the camera frames are faceless too — assert the run completes
-checkpoint with presence_stop=False instead of dying at gallery build.
-Pre-fix: exit 2 (input_no_face). If GREEN pre-fix, STOP (report).
+but the camera frames are faceless too — assert the cmd_live layer
+completes checkpoint (exit 0 + presence_stop=False) instead of dying at
+gallery build. The runner total is NOT asserted (synthetic zero-origin
+frame clocks read as time-backwards in the fixed-window predicate — a
+pre-existing hermetic-test clock artifact shared with the canonical RED
+suite, out of scope here).
+Pre-fix: cmd_live exit 2 (input_no_face). If GREEN pre-fix, STOP (report).
 
 Synthetic UIDs only (F1 governance).
 """
@@ -156,11 +160,21 @@ def _run_checkpoint_faceless_corpus(tmp_path: Path, tag: str, **kw):
 
 
 def test_nogallery_faceless_checkpoint_completes(tmp_path: Path) -> None:
-    """Faceless checkpoint must NOT die at gallery construction."""
+    """Faceless checkpoint must NOT die at gallery construction.
+
+    Asserts the cmd_live layer (exit 0 + presence_stop False), not the
+    runner total: synthetic zero-origin frame clocks read as
+    time-backwards in the runner's fixed-window predicate (pre-existing
+    hermetic-test clock artifact, same as the canonical RED suite) —
+    that runner-level incompleteness is out of scope for this RED.
+    The defect under test is gallery construction (exit 2,
+    input_no_face); reaching cmd_live exit 0 proves it is gone.
+    """
     code, summary = _run_checkpoint_faceless_corpus(tmp_path, "faceless")
     live = summary["phases"].get("live", {})
-    assert code == 0, (
-        f"NOGALLERY-RED: faceless checkpoint exited {code} (expected 0); "
+    assert live.get("exit_code") == 0, (
+        f"NOGALLERY-RED: cmd_live layer exited {live.get('exit_code')} "
+        f"(expected 0 — gallery construction must not refuse); "
         f"live={json.dumps(live, sort_keys=True)[:400]}"
     )
     assert live.get("presence_stop") is False, (

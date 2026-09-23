@@ -185,6 +185,11 @@ python scripts/live_checkpoint.py \
   獨立的交叉訊號（commander 條件 2），防 composition divergence；
   A2 實測跨在場狀態 10/10 恆定後已與 uid 同級為真機強制（缺即
   exit 2）。形狀不符／有 shape 無 probe 皆拒絕。
+- `--corpus` 在 checkpoint 模式下僅為佔位參數：presence 斷言只建
+  detector，不建 embedder／gallery、不讀 corpus 做人臉偵測
+  （不引入任何 enrollment 來源；G3 邊界）。參數保留是為了不改真機
+  路徑的既有 gate 與 CLI 面；collection 模式仍需真實 corpus 建完整
+  gallery。
 
 ### 權限與安全不變量
 
