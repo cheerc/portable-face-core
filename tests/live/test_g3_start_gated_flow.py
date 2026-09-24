@@ -330,3 +330,189 @@ class TestG3StartGatedFlow:
         )
         assert desktop.state == "running"
         desktop.close()
+
+
+class _GatedCountingSource(FakeCapture):
+    """FakeCapture counting open/read calls (camera-open evidence)."""
+
+    def __init__(self, frames: list[FramePacket]) -> None:
+        super().__init__(frames=frames)
+        self.open_calls = 0
+        self.read_calls = 0
+        self.close_calls = 0
+
+    def open(self, device_id: str) -> None:
+        self.open_calls += 1
+        super().open(device_id)
+
+    def read(self) -> FramePacket | None:
+        self.read_calls += 1
+        return super().read()
+
+    def close(self) -> None:
+        self.close_calls += 1
+        super().close()
+
+
+def _gated_factory(tmp_path: Any, source: FakeCapture) -> Any:
+    """Round factory mirroring the production continuous factory."""
+    recorder = _recorder(tmp_path)
+    manifest = _manifest()
+    counter = 0
+
+    def make() -> tuple[DesktopSession, Any, str]:
+        nonlocal counter
+        counter += 1
+        session_id = f"g3b-round-{counter}"
+        attempt = _attempt(f"attempt-g3b-{counter}")
+        consent = _consent(session_id)
+        recorder.begin_attempt(manifest, attempt, consent)
+        recorder.begin(session_id, consent)
+        desktop = DesktopSession(
+            engine=SessionEngine(_profile(), "gallery-g3a-test", "gen-g3a-test"),
+            source=source,
+            scorer=_matching_scorer,
+            session_id=session_id,
+            release_source_on_terminal=False,
+            label_recorder=recorder,
+            label_attempt_id=attempt.attempt_id,
+        )
+        return desktop, consent, attempt.attempt_id
+
+    make.recorder = recorder  # type: ignore[attr-defined]
+    return make
+
+
+def _gated_window(
+    qt_app: Any, tmp_path: Any, source: FakeCapture, **kwargs: Any
+) -> tuple[QtResearchWindow, Any]:
+    factory = _gated_factory(tmp_path, source)
+    first_desktop, first_consent, first_attempt = factory()
+    clock = _AdvancingClock()
+    window = QtResearchWindow(
+        first_desktop,
+        consent=first_consent,
+        recorder=factory.recorder,
+        attempt_id=first_attempt,
+        offscreen=True,
+        clock_ns=clock,
+        clock_advance=clock.advance,
+        next_session=factory,
+        camera_options=[(0, "Inner Cam"), (1, "相機 1")],
+        **kwargs,
+    )
+    window.show()
+    return window, factory
+
+
+class TestStartGatedLifecycle:
+    """PR-B RED: Start-gated Ready→Running→Result→Ready (R1 spec §2).
+
+    Each case asserts the R1 contract against the pre-PR-B standby
+    behavior (pick opens, face auto-starts, result keeps the camera
+    and the photo, keys return to auto-preview standby).
+    """
+
+    def test_pick_opens_nothing(self, qt_app: Any, tmp_path: Any) -> None:
+        """R1 §2-1/2: selecting a camera opens no stream, reads no frame."""
+        source = _GatedCountingSource(_face_frames())
+        window, _factory = _gated_window(qt_app, tmp_path, source)
+        window.enter_ready()
+        assert window.mode == "ready"
+        window.camera_combo.setCurrentIndex(1)
+        assert window.selected_camera_index() == 0
+        assert source.open_calls == 0, "pick must not open the camera"
+        assert source.read_calls == 0, "pick must not read any frame"
+        assert source.is_closed is True
+        window.close()
+
+    def test_start_opens_selected_only_and_previews(
+        self, qt_app: Any, tmp_path: Any
+    ) -> None:
+        """R1 §2-3: Start opens the picked camera; preview advances."""
+        source = _GatedCountingSource(_face_frames(120))
+        window, _factory = _gated_window(qt_app, tmp_path, source)
+        window.enter_ready()
+        window.camera_combo.setCurrentIndex(2)
+        assert window.selected_camera_index() == 1
+        opens_before = source.open_calls
+        window.start_clicked()
+        assert window.mode == "running"
+        assert source.open_calls == opens_before + 1
+        first = window.preview_image
+        window.process_until_terminal(max_steps=200)
+        assert window.mode == "result"
+        assert source.read_calls > 0
+        window.close()
+
+    def test_result_releases_and_clears_photo(
+        self, qt_app: Any, tmp_path: Any
+    ) -> None:
+        """R1 §2-4: terminal releases first, then clears the photo."""
+        source = _GatedCountingSource(_face_frames(120))
+        window, _factory = _gated_window(qt_app, tmp_path, source)
+        window.enter_ready()
+        window.camera_combo.setCurrentIndex(1)
+        window.start_clicked()
+        window.process_until_terminal(max_steps=200)
+        assert window.mode == "result"
+        assert source.is_closed is True, "result must release the camera"
+        assert window.preview_image is None, "result must clear the photo"
+        assert window.result_text.startswith("person-synth-01")
+        window.close()
+
+    def test_labeled_round_returns_to_ready_with_pick_kept(
+        self, qt_app: Any, tmp_path: Any
+    ) -> None:
+        """R1 §2-5: after a key the pick stays but the lens stays shut."""
+        source = _GatedCountingSource(_face_frames(240))
+        window, factory = _gated_window(qt_app, tmp_path, source)
+        window.enter_ready()
+        window.camera_combo.setCurrentIndex(1)
+        window.start_clicked()
+        window.process_until_terminal(max_steps=200)
+        assert window.mode == "result"
+        factory.recorder.abort(window.desktop.session_id, reason="test_released")
+        window.press_correct()
+        assert window.mode == "ready"
+        assert window.selected_camera_index() == 0, "pick must be retained"
+        assert source.is_closed is True, "lens must stay shut after labeling"
+        # The next round needs another Start: no auto preview, no auto run.
+        reads_after_label = source.read_calls
+        window.process_until_terminal(max_steps=20)
+        assert window.mode == "ready"
+        assert source.read_calls == reads_after_label
+        window.start_clicked()
+        assert window.mode == "running"
+        window.close()
+
+    def test_three_failure_kinds_are_diagnosable(
+        self, qt_app: Any, tmp_path: Any
+    ) -> None:
+        """R1 §2-4: no-frame / no-face / quality-reject text differs."""
+        source = _GatedCountingSource(_face_frames())
+        window, _factory = _gated_window(qt_app, tmp_path, source)
+        no_frame = window.format_result_for_test("no_frame")
+        no_face = window.format_result_for_test("no_face")
+        rejected = window.format_result_for_test("quality_rejected")
+        assert no_frame != no_face != rejected
+        for text in (no_frame, no_face, rejected):
+            assert "zero_usable_frames_collected" not in text
+        assert "不在" not in no_frame and "不在" not in no_face
+        window.close()
+
+    def test_cancel_closes_lens_and_returns_to_ready(
+        self, qt_app: Any, tmp_path: Any
+    ) -> None:
+        """R1 §2-6: Cancel stops the round, closes the lens, clears."""
+        source = _GatedCountingSource(_face_frames(120))
+        window, _factory = _gated_window(qt_app, tmp_path, source)
+        window.enter_ready()
+        window.camera_combo.setCurrentIndex(1)
+        window.start_clicked()
+        assert window.mode == "running"
+        window.cancel_clicked()
+        assert window.mode == "ready"
+        assert source.is_closed is True
+        assert window.preview_image is None
+        window.close()
