@@ -396,9 +396,10 @@ def cmd_live(
 
     continuous (G3 W2): when True with --ui qt, the Qt window runs the
     spec §2 standby → round → result → key → standby loop over one
-    shared camera handle instead of a single round. Round 2+ uses
-    placeholder keys without label/attempt persistence (W3/W4 own that);
-    only the first round is committed by the tail below.
+    shared camera handle instead of a single round. G3 W3: every round
+    gets its own attempt and the operator verdict key persists into
+    that round's label sidecar; only the first round is committed by
+    the tail below (per-round record commit is W4).
     """
     try:
         profile = _load_profile(profile_path)
@@ -758,13 +759,54 @@ def cmd_live(
         if continuous:
             from datetime import timedelta as _td
 
+            from facecore.research.experiment import AttemptRecord as _Attempt
+
             round_counter = 0
 
-            def next_session_factory() -> tuple[DesktopSession, ConsentRecord]:
+            def next_session_factory() -> (
+                tuple[DesktopSession, ConsentRecord, str | None]
+            ):
                 nonlocal round_counter
                 round_counter += 1
                 round_session_id = f"{session_id}-r{round_counter}"
+                round_attempt_id = f"{resolved_attempt_id}-r{round_counter}"
                 round_now = _now_utc()
+                round_consent = ConsentRecord(
+                    session_id=round_session_id,
+                    participant_id="cli-operator",
+                    record_consent=True,
+                    image_consent=True,
+                    consented_at_utc=round_now.isoformat(),
+                    record_expires_at_utc=(
+                        round_now + _td(days=30)
+                    ).isoformat(),
+                    image_expires_at_utc=(round_now + _td(days=7)).isoformat(),
+                )
+                # G3 W3: each round gets its own attempt so the operator
+                # verdict key persists into that round's label sidecar.
+                # A begin_attempt failure fails closed: the round never
+                # starts and standby shows the error.
+                recorder.begin_attempt(
+                    attempt_manifest,
+                    _Attempt(
+                        experiment_id=experiment_id,
+                        attempt_id=round_attempt_id,
+                        participant_id="cli-operator",
+                        visit_id="visit-cli-001",
+                        condition_id="cond-cli-live",
+                        attempt_index=round_counter + 1,
+                        retry_of=None,
+                        consent_ref=round_session_id,
+                        requested_at_utc=round_now.isoformat(),
+                        accepted_at_utc=round_now.isoformat(),
+                        started_at_utc=None,
+                        ended_at_utc=None,
+                        operational_status="accepted",
+                        error_code=None,
+                        bundle_ref=None,
+                    ),
+                    round_consent,
+                )
                 return (
                     DesktopSession(
                         engine=SessionEngine(
@@ -774,18 +816,11 @@ def cmd_live(
                         scorer=scorer,
                         session_id=round_session_id,
                         release_source_on_terminal=False,
+                        label_recorder=recorder,
+                        label_attempt_id=round_attempt_id,
                     ),
-                    ConsentRecord(
-                        session_id=round_session_id,
-                        participant_id="cli-operator",
-                        record_consent=True,
-                        image_consent=True,
-                        consented_at_utc=round_now.isoformat(),
-                        record_expires_at_utc=(
-                            round_now + _td(days=30)
-                        ).isoformat(),
-                        image_expires_at_utc=(round_now + _td(days=7)).isoformat(),
-                    ),
+                    round_consent,
+                    round_attempt_id,
                 )
 
         qt_window = QtResearchWindow(

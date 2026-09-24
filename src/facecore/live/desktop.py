@@ -366,6 +366,14 @@ class DesktopSession:
         return self._terminal
 
     @property
+    def has_label_persistence(self) -> bool:
+        """True when a verdict key press can persist (G3 W3 fail-closed)."""
+        return (
+            self._label_recorder is not None
+            and self._label_attempt_id is not None
+        )
+
+    @property
     def source(self) -> CaptureSource:
         """Shared capture source (read-only; G3 W2 standby preview)."""
         return self._controller.source

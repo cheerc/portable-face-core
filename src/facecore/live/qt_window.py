@@ -212,7 +212,7 @@ else:
             clock_ns: Callable[[], int] = time.monotonic_ns,
             clock_advance: Callable[[], None] | None = None,
             next_session: Callable[
-                [], tuple[DesktopSession, ConsentRecord]
+                [], tuple[DesktopSession, ConsentRecord, str | None]
             ]
             | None = None,
         ) -> None:
@@ -294,22 +294,16 @@ else:
             self.start_button = QPushButton("Start")
             self.cancel_button = QPushButton("Cancel")
             self.delete_button = QPushButton("Delete")
-            self.enrolled_label_button = QPushButton("Label enrolled")
-            self.unknown_label_button = QPushButton("Label unknown")
-            # G3 W2 spec §2 step 6: operator 正確／錯誤 keys. Placeholder
-            # behavior in W2 (no label persistence; W3 owns that): a press
-            # returns to standby for the next round.
+            # G3 W3 spec §2 step 6: the only labeling keys are the
+            # operator 正確／錯誤 buttons. The legacy research label
+            # buttons are gone (their enrolled default took the system
+            # prediction as the answer); programmatic labeling stays via
+            # label_enrolled (explicit identity required) / label_unknown.
             self.correct_button = QPushButton("正確")
             self.incorrect_button = QPushButton("錯誤")
             self.start_button.clicked.connect(self.start_clicked)
             self.cancel_button.clicked.connect(self.cancel_clicked)
             self.delete_button.clicked.connect(self.delete_clicked)
-            self.enrolled_label_button.clicked.connect(
-                lambda _checked=False: self.label_enrolled()
-            )
-            self.unknown_label_button.clicked.connect(
-                lambda _checked=False: self.label_unknown()
-            )
             self.correct_button.clicked.connect(
                 lambda _checked=False: self.press_correct()
             )
@@ -319,8 +313,6 @@ else:
             controls.addWidget(self.start_button)
             controls.addWidget(self.cancel_button)
             controls.addWidget(self.delete_button)
-            controls.addWidget(self.enrolled_label_button)
-            controls.addWidget(self.unknown_label_button)
             controls.addWidget(self.correct_button)
             controls.addWidget(self.incorrect_button)
 
@@ -338,8 +330,6 @@ else:
             self.setCentralWidget(root)
             self.cancel_button.setEnabled(False)
             self.delete_button.setEnabled(True)
-            self.enrolled_label_button.setEnabled(False)
-            self.unknown_label_button.setEnabled(False)
             self.correct_button.setEnabled(False)
             self.incorrect_button.setEnabled(False)
 
@@ -493,9 +483,18 @@ else:
                 return
             if self.desktop.state in ("terminal", "labeled"):
                 self.desktop.detach()
-            desktop, consent = self._next_session()
+            try:
+                desktop, consent, attempt_id = self._next_session()
+            except Exception as exc:
+                # Fail-closed: a round that cannot be built (e.g. attempt
+                # persistence refused) must not silently advance.
+                self._set_status(f"standby failed: {type(exc).__name__}")
+                return
             self.desktop = desktop
             self.consent = consent
+            # The round owns its crop-mapping sidecar: without a fresh
+            # attempt the preview must not write to the previous round's.
+            self.attempt_id = attempt_id
             self._result_text = ""
             try:
                 # Standby owns the preview: open the shared source now so
@@ -526,7 +525,10 @@ else:
             if packet is None:
                 return
             try:
-                self.render_full_frame(packet.rgb)
+                # set_frame persists the shared crop mapping before
+                # rendering, so a freshly built round (no mapping stored
+                # yet) previews instead of failing on the read-back.
+                self.set_frame(packet.rgb)
             except Exception as exc:
                 self._set_status(f"standby failed: {type(exc).__name__}")
                 self._standby_timer.stop()
@@ -578,21 +580,52 @@ else:
             return f"{status.value}：{reason}"
 
         def press_correct(self) -> None:
-            """W2 placeholder 正確 key: no label written, back to standby."""
-            self._press_key()
+            """G3 W3 正確 key: persist the operator verdict, back to standby.
+
+            Correct endorses what is shown: a matched round records the
+            shown identity (operator-confirmed, kind enrolled); a
+            not-found round records unenrolled (operator confirms absent).
+            """
+            self._press_key(correct=True)
 
         def press_incorrect(self) -> None:
-            """W2 placeholder 錯誤 key: no label written, back to standby."""
-            self._press_key()
+            """G3 W3 錯誤 key: persist the operator verdict, back to standby.
 
-        def _press_key(self) -> None:
+            Incorrect never records the system prediction: the label is
+            uncertain with no identity, so a misrecognition is never
+            auto-recorded as correct.
+            """
+            self._press_key(correct=False)
+
+        def _press_key(self, *, correct: bool) -> None:
             if self._next_session is None:
                 raise RuntimeError(
-                    "placeholder keys require the continuous loop "
+                    "label keys require the continuous loop "
                     "(next_session factory)"
                 )
             if self._mode != self._MODE_RESULT:
                 return
+            if not self.desktop.has_label_persistence:
+                # Fail-closed: a verdict that cannot be persisted must not
+                # be silently dropped by advancing to the next round.
+                self._set_status("標註未綁定，無法落盤")
+                return
+            try:
+                if correct:
+                    identity = self.desktop.display_identity()
+                    if identity is None:
+                        self.desktop.label_terminal(None, kind="unenrolled")
+                    else:
+                        self.desktop.label_terminal(identity, kind="enrolled")
+                else:
+                    self.desktop.label_terminal(None, kind="uncertain")
+            except Exception as exc:
+                self._set_status(f"標註失敗：{type(exc).__name__}")
+                return
+            self.correct_button.setEnabled(False)
+            self.incorrect_button.setEnabled(False)
+            self._set_status("已標註 · labeled")
+            self._refresh_saved_state()
             self.enter_standby()
 
         def _update_terminal(self, result: Any) -> None:
@@ -608,8 +641,6 @@ else:
             self._set_status(result.status.value)
             identity = self.desktop.display_identity()
             self.identity_label.setText(identity or "")
-            self.enrolled_label_button.setEnabled(identity is not None)
-            self.unknown_label_button.setEnabled(True)
 
         def delete_clicked(self) -> None:
             """Delete the session bundle plus linked attempts (operator action).
@@ -643,22 +674,22 @@ else:
             self._refresh_saved_state()
 
         def label_enrolled(self, identity: str | None = None) -> None:
-            """Persist an enrolled evaluator label without feeding inference."""
+            """Persist an enrolled evaluator label without feeding inference.
+
+            G3 W3: the identity must come from the caller (operator key
+            press or explicit research input). A missing identity refuses
+            instead of taking the system prediction as the answer.
+            """
             if identity is None:
-                identity = self.desktop.display_identity()
-            if identity is None:
+                self._set_status("標註需要指定身份，不採用系統預測")
                 return
             self.desktop.label_terminal(identity, kind="enrolled")
-            self.enrolled_label_button.setEnabled(False)
-            self.unknown_label_button.setEnabled(False)
             self._set_status("已標註 · labeled")
             self._refresh_saved_state()
 
         def label_unknown(self) -> None:
             """Persist an unenrolled label without displaying a guessed name."""
             self.desktop.label_terminal(None, kind="unenrolled")
-            self.enrolled_label_button.setEnabled(False)
-            self.unknown_label_button.setEnabled(False)
             self._set_status("已標註 unknown · labeled")
             self._refresh_saved_state()
 
