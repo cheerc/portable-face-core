@@ -28,6 +28,9 @@ dev = [
 ]
 research-ui = [
     "pyside6==6.11.2",
+    # G3 W7: true-camera capture (AVFoundation backend). Headless flavor:
+    # no GUI library dependencies; arm64 + x86_64 wheels on PyPI.
+    "opencv-python-headless==5.0.0.93",
 ]
 
 [tool.setuptools.packages.find]

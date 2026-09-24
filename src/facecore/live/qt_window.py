@@ -475,7 +475,9 @@ else:
                     device_id=self.device_id,
                 )
             except Exception as exc:
-                self._set_status(f"start refused: {type(exc).__name__}")
+                # G3 W7: a wrong camera pick fails here in Chinese (worst
+                # case the operator closes the app and picks again).
+                self._set_status(f"相機開啟失敗：{type(exc).__name__}")
                 return
             self.start_button.setEnabled(False)
             self.cancel_button.setEnabled(True)

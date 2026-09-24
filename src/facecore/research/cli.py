@@ -79,6 +79,10 @@ class StorePathError(ValueError):
     """Research store path escapes the approved root (fail-closed)."""
 
 
+class ModelSetupError(ValueError):
+    """True model artifacts failed to load (G3 W7: told apart from gallery)."""
+
+
 def resolve_store(
     store: Path,
     *,
@@ -478,8 +482,16 @@ def _build_true_context(
             return Embedder(manifest, models_dir / TRUE_EMBEDDER_FILENAME)
 
         embedder_factory = _default_embedder
-    detector = detector_factory(models)
-    embedder = embedder_factory(models)
+    detector: Any
+    embedder: Any
+    try:
+        detector = detector_factory(models)
+        embedder = embedder_factory(models)
+    except Exception as exc:
+        # G3 W7 (W6 minor finding): model failures are told apart from
+        # gallery failures so the Chinese startup reason names the
+        # right cause.
+        raise ModelSetupError(f"模型檔載入失敗：{exc}") from exc
     if gallery_dir is not None:
         gallery = build_gallery_from_folder(
             gallery_dir,
@@ -749,29 +761,44 @@ def cmd_live(
             source = capture_factory(device)
         else:
             source = OpenCVCapture()
-        # Fix (a+c): open the requested device now (not fallback 0) and
-        # probe the first frame BEFORE heavy model loading; a
-        # dry/disconnected device fails clear here instead of committing
-        # a silent 0-frame bundle.
-        try:
-            source.open(device)
-        except Exception as exc:
-            print(
-                f"research live: cannot open device {device!r}: {exc}",
-                file=sys.stderr,
-            )
-            _finish_attempt_error("open_error:camera_open_failed")
-            return 2
-        probe = source.read()
-        source.close()
-        if probe is None:
-            print(
-                f"research live: device {device!r} opened but delivered "
-                "no frames; refusing to start",
-                file=sys.stderr,
-            )
-            _finish_attempt_error("open_error:no_frames")
-            return 2
+        # G3 W7 picker mode (Qt window owns a camera dropdown): the
+        # operator has not picked yet, so the startup check is
+        # enumeration-only (at least one camera, never a refusal when
+        # one exists). The picked index opens on selection; a wrong
+        # pick fails in the window (worst case the app closes).
+        picker_mode = ui == "qt" and capture_factory is None
+        if picker_mode:
+            from facecore.live.camera_picker import list_cameras
+
+            try:
+                if not list_cameras():
+                    print("research live: 找不到相機", file=sys.stderr)
+            except Exception as exc:
+                print(f"research live: 相機列舉失敗：{exc}", file=sys.stderr)
+        else:
+            # Fix (a+c): open the requested device now (not fallback 0) and
+            # probe the first frame BEFORE heavy model loading; a
+            # dry/disconnected device fails clear here instead of committing
+            # a silent 0-frame bundle.
+            try:
+                source.open(device)
+            except Exception as exc:
+                print(
+                    f"research live: cannot open device {device!r}: {exc}",
+                    file=sys.stderr,
+                )
+                _finish_attempt_error("open_error:camera_open_failed")
+                return 2
+            probe = source.read()
+            source.close()
+            if probe is None:
+                print(
+                    f"research live: device {device!r} opened but delivered "
+                    "no frames; refusing to start",
+                    file=sys.stderr,
+                )
+                _finish_attempt_error("open_error:no_frames")
+                return 2
         try:
             if presence_mode == "checkpoint":
                 # Checkpoint builds the detector ONLY (no embedder, no
@@ -795,6 +822,13 @@ def cmd_live(
                         embedder_factory=embedder_factory,
                         gallery_dir=gallery_dir,
                     )
+                except ModelSetupError as exc:
+                    # G3 W7: model failures name the model cause in
+                    # Chinese (split from gallery failures per the W6
+                    # minor finding).
+                    print(f"research live: {exc}", file=sys.stderr)
+                    _finish_attempt_error("setup_error:model_setup_failed")
+                    return 2
                 except (ValueError, FileNotFoundError) as exc:
                     # G3 W6 spec §7-2: gallery startup failures name the
                     # cause in Chinese (e.g. which enrollment photo).
