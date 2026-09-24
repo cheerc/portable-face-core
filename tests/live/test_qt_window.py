@@ -574,7 +574,9 @@ class TestQtResearchWindow:
         QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
         window.process_until_terminal()
         assert desktop.display_identity() == "person-synth-01"
-        QTest.mouseClick(window.enrolled_label_button, Qt.MouseButton.LeftButton)
+        # G3 W3: enrolled labeling requires an explicit identity (never
+        # the system prediction by default).
+        window.label_enrolled("person-synth-01")
         stored = recorder.read_label(attempt.attempt_id)
         assert stored == EvaluationLabel(
             attempt_id=attempt.attempt_id,

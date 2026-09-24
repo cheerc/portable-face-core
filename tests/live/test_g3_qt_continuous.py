@@ -27,7 +27,10 @@ from facecore.live.session import SessionEngine
 from facecore.live.qt_window import QtResearchWindow
 from tests.live.test_qt_window import (
     _AdvancingClock,
+    _attempt,
     _consent,
+    _manifest,
+    _recorder,
 )
 
 
@@ -143,8 +146,16 @@ class _OpenCloseCounter(FakeCapture):
 
 
 def _make_desktop(
-    source: FakeCapture, session_id: str, scorer: Any = _g3_matching_scorer
-) -> tuple[DesktopSession, Any]:
+    source: FakeCapture,
+    session_id: str,
+    scorer: Any = _g3_matching_scorer,
+    binder: Any = None,
+) -> tuple[DesktopSession, Any, Any]:
+    """Build a round desktop; binder(recorder, manifest, session_id) binds labels."""
+    label_recorder = None
+    attempt_id = None
+    if binder is not None:
+        label_recorder, attempt_id = binder(session_id)
     return (
         DesktopSession(
             engine=SessionEngine(
@@ -154,27 +165,49 @@ def _make_desktop(
             scorer=scorer,
             session_id=session_id,
             release_source_on_terminal=False,
+            label_recorder=label_recorder,
+            label_attempt_id=attempt_id,
         ),
         _consent(session_id),
+        attempt_id,
     )
+
+
+def _binder(tmp_path: Any) -> Any:
+    """Per-round attempt binder over one tmp recorder (W3 label path)."""
+    recorder = _recorder(tmp_path)
+    manifest = _manifest()
+    counter = 0
+
+    def bind(session_id: str) -> tuple[Any, str]:
+        nonlocal counter
+        counter += 1
+        attempt = _attempt(f"attempt-g3w2-{counter}")
+        recorder.begin_attempt(manifest, attempt, _consent(session_id))
+        return recorder, attempt.attempt_id
+
+    return bind
 
 
 class TestQtContinuousMode:
     def test_two_rounds_return_to_standby_without_source_close(
-        self, qt_app: Any
+        self, qt_app: Any, tmp_path: Any
     ) -> None:
         """Two full rounds via key presses; source never closed mid-loop."""
         frames = [_face_packet(seq) for seq in range(1, 60)]
         source = _OpenCloseCounter(frames=frames)
+        bind = _binder(tmp_path)
         counter = 0
 
-        def next_session() -> tuple[DesktopSession, Any]:
+        def next_session() -> tuple[DesktopSession, Any, Any]:
             nonlocal counter
             counter += 1
-            return _make_desktop(source, f"g3-round-{counter}")
+            return _make_desktop(source, f"g3-round-{counter}", binder=bind)
 
         clock = _AdvancingClock()
-        first_desktop, first_consent = _make_desktop(source, "g3-round-0")
+        first_desktop, first_consent, _ = _make_desktop(
+            source, "g3-round-0", binder=bind
+        )
         window = QtResearchWindow(
             first_desktop,
             consent=first_consent,
@@ -205,7 +238,9 @@ class TestQtContinuousMode:
         assert source.is_closed is False
         window.close()
 
-    def test_timeout_round_shows_not_found_text(self, qt_app: Any) -> None:
+    def test_timeout_round_shows_not_found_text(
+        self, qt_app: Any, tmp_path: Any
+    ) -> None:
         """A round with no usable frames shows the not-found message.
 
         The face trigger itself is covered by the two-round test; here the
@@ -216,13 +251,16 @@ class TestQtContinuousMode:
         """
         frames = [_face_packet(seq) for seq in range(1, 60)]
         source = _OpenCloseCounter(frames=frames)
+        bind = _binder(tmp_path)
 
-        def next_session() -> tuple[DesktopSession, Any]:
-            return _make_desktop(source, "g3-timeout-1", scorer=_low_score_scorer)
+        def next_session() -> tuple[DesktopSession, Any, Any]:
+            return _make_desktop(
+                source, "g3-timeout-1", scorer=_low_score_scorer, binder=bind
+            )
 
         clock = _AdvancingClock()
-        first_desktop, first_consent = _make_desktop(
-            source, "g3-timeout-0", scorer=_low_score_scorer
+        first_desktop, first_consent, _ = _make_desktop(
+            source, "g3-timeout-0", scorer=_low_score_scorer, binder=bind
         )
         window = QtResearchWindow(
             first_desktop,
@@ -244,16 +282,16 @@ class TestQtContinuousMode:
         assert window.mode == "standby"
         window.close()
 
-    def test_placeholder_keys_do_not_write_labels(self, qt_app: Any) -> None:
-        """W2 placeholder keys return to standby without label sidecars."""
+    def test_unbound_keys_refuse_without_writing_labels(self, qt_app: Any) -> None:
+        """W3: keys without label binding refuse fail-closed (no silent drop)."""
         frames = [_face_packet(seq) for seq in range(1, 60)]
         source = _OpenCloseCounter(frames=frames)
 
-        def next_session() -> tuple[DesktopSession, Any]:
+        def next_session() -> tuple[DesktopSession, Any, Any]:
             return _make_desktop(source, "g3-nolabel-1")
 
         clock = _AdvancingClock()
-        first_desktop, first_consent = _make_desktop(source, "g3-nolabel-0")
+        first_desktop, first_consent, _ = _make_desktop(source, "g3-nolabel-0")
         window = QtResearchWindow(
             first_desktop,
             consent=first_consent,
@@ -266,11 +304,9 @@ class TestQtContinuousMode:
         window.enter_standby()
         window.process_until_terminal(max_steps=200)
         assert window.mode == "result"
-        # Placeholder keys must not touch the label sidecar: the desktop
-        # stays terminal-state adjacent (never labeled) and no recorder
-        # is involved (recorder=None in this continuous path).
+        # No label persistence bound: the key refuses fail-closed, stays
+        # on result, and never writes.
         window.press_correct()
-        assert window.mode == "standby"
+        assert window.mode == "result"
         assert window.desktop.label is None
-        assert window.desktop.state == "idle"
         window.close()
