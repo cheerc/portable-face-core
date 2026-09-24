@@ -886,6 +886,42 @@ def test_cli_qt_flags_route_without_opening_camera(
     assert called["qt_offscreen"] is True
 
 
+def test_cli_continuous_flag_routes_to_cmd_live(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """G3 W2: parser exposes --continuous for the Qt continuous loop."""
+    import facecore.research.cli as research_cli
+
+    called: dict[str, object] = {}
+
+    def fake_cmd_live(**kwargs: object) -> int:
+        called.update(kwargs)
+        return 17
+
+    monkeypatch.setattr(research_cli, "cmd_live", fake_cmd_live)
+    rc = research_cli.main(
+        [
+            "live",
+            "--profile",
+            "synthetic-profile.json",
+            "--store",
+            "/tmp/synthetic-research-store",
+            "--device",
+            "fake",
+            "--session",
+            "synthetic-session",
+            "--record-consent",
+            "--image-consent",
+            "--ui",
+            "qt",
+            "--qt-offscreen",
+            "--continuous",
+        ]
+    )
+    assert rc == 17
+    assert called["continuous"] is True
+
+
 def test_default_mypy_allows_optional_qt_module() -> None:
     """Default verify stays independent from the research-ui extra."""
     pyproject = Path(__file__).parents[2] / "pyproject.toml"

@@ -23,7 +23,7 @@ from typing import Any
 
 import numpy as np
 
-from facecore.live.contracts import FramePacket
+from facecore.live.contracts import FramePacket, SessionStatus
 from facecore.live.desktop import DesktopSession
 from facecore.research.records import ConsentRecord
 
@@ -190,6 +190,14 @@ else:
     class _QtResearchWindow(QMainWindow):  # type: ignore[misc]
         """Small offscreen-testable Qt view over a real DesktopSession."""
 
+        # G3 W2 continuous modes. "single" preserves the one-round legacy
+        # behavior (no next_session factory); the continuous modes run the
+        # spec §2 loop: standby → round → result → key → standby.
+        _MODE_SINGLE = "single"
+        _MODE_STANDBY = "standby"
+        _MODE_RUNNING = "running"
+        _MODE_RESULT = "result"
+
         def __init__(
             self,
             desktop: DesktopSession,
@@ -203,6 +211,10 @@ else:
             offscreen: bool = False,
             clock_ns: Callable[[], int] = time.monotonic_ns,
             clock_advance: Callable[[], None] | None = None,
+            next_session: Callable[
+                [], tuple[DesktopSession, ConsentRecord]
+            ]
+            | None = None,
         ) -> None:
             super().__init__()
             self.desktop = desktop
@@ -219,6 +231,16 @@ else:
             self._timer = QTimer(self)
             self._timer.setInterval(20)
             self._timer.timeout.connect(self.process_once)
+            # G3 W2: standby driver (preview + face-trigger) for the
+            # continuous loop. Idle unless enter_standby() starts it.
+            self._standby_timer = QTimer(self)
+            self._standby_timer.setInterval(100)
+            self._standby_timer.timeout.connect(self._standby_tick)
+            self._next_session = next_session
+            self._mode = (
+                self._MODE_SINGLE if next_session is None else self._MODE_STANDBY
+            )
+            self._result_text = ""
 
             if (recorder is None) != (attempt_id is None):
                 raise ValueError("recorder and attempt_id must be given together")
@@ -274,6 +296,11 @@ else:
             self.delete_button = QPushButton("Delete")
             self.enrolled_label_button = QPushButton("Label enrolled")
             self.unknown_label_button = QPushButton("Label unknown")
+            # G3 W2 spec §2 step 6: operator 正確／錯誤 keys. Placeholder
+            # behavior in W2 (no label persistence; W3 owns that): a press
+            # returns to standby for the next round.
+            self.correct_button = QPushButton("正確")
+            self.incorrect_button = QPushButton("錯誤")
             self.start_button.clicked.connect(self.start_clicked)
             self.cancel_button.clicked.connect(self.cancel_clicked)
             self.delete_button.clicked.connect(self.delete_clicked)
@@ -283,11 +310,19 @@ else:
             self.unknown_label_button.clicked.connect(
                 lambda _checked=False: self.label_unknown()
             )
+            self.correct_button.clicked.connect(
+                lambda _checked=False: self.press_correct()
+            )
+            self.incorrect_button.clicked.connect(
+                lambda _checked=False: self.press_incorrect()
+            )
             controls.addWidget(self.start_button)
             controls.addWidget(self.cancel_button)
             controls.addWidget(self.delete_button)
             controls.addWidget(self.enrolled_label_button)
             controls.addWidget(self.unknown_label_button)
+            controls.addWidget(self.correct_button)
+            controls.addWidget(self.incorrect_button)
 
             layout.addWidget(self.watermark_label)
             layout.addWidget(self.device_label)
@@ -305,6 +340,18 @@ else:
             self.delete_button.setEnabled(True)
             self.enrolled_label_button.setEnabled(False)
             self.unknown_label_button.setEnabled(False)
+            self.correct_button.setEnabled(False)
+            self.incorrect_button.setEnabled(False)
+
+        @property
+        def mode(self) -> str:
+            """G3 W2 continuous-loop mode (single/standby/running/result)."""
+            return self._mode
+
+        @property
+        def result_text(self) -> str:
+            """G3 W2 last result display text (empty outside result mode)."""
+            return self._result_text
 
         @property
         def crop_mapping(self) -> CropMapping | None:
@@ -346,6 +393,10 @@ else:
 
         def start_clicked(self) -> None:
             """Start the existing DesktopSession after both consent checks."""
+            if self._next_session is not None and self._mode != self._MODE_STANDBY:
+                # Continuous loop: manual Start only fires from standby;
+                # standby auto-trigger and key flow own the transitions.
+                return
             if not (
                 self.record_consent_checkbox.isChecked()
                 and self.image_consent_checkbox.isChecked()
@@ -365,6 +416,9 @@ else:
             self.cancel_button.setEnabled(True)
             self._set_status("採集中 · collecting")
             self._set_countdown()
+            if self._next_session is not None:
+                self._mode = self._MODE_RUNNING
+                self._standby_timer.stop()
             self._timer.start()
 
         def cancel_clicked(self) -> None:
@@ -403,13 +457,143 @@ else:
                 self._update_terminal(result)
             if self.desktop.state != "running":
                 self._timer.stop()
+                if (
+                    self._next_session is not None
+                    and self.desktop.state == "terminal"
+                ):
+                    self._enter_result(result)
 
         def process_until_terminal(self, max_steps: int = 200) -> None:
             """Drive synthetic events without opening a camera."""
+            if self._next_session is not None:
+                # Continuous loop: pump standby until a round starts, then
+                # run the round to terminal.
+                for _ in range(max_steps):
+                    if self._mode != self._MODE_STANDBY:
+                        break
+                    self._standby_tick()
             for _ in range(max_steps):
                 if self.desktop.state != "running":
                     break
                 self.process_once()
+
+        def enter_standby(self) -> None:
+            """Enter standby: preview + square guide, waiting for a face.
+
+            G3 W2 spec §2 steps 3-4. Discards the finished round (without
+            releasing the shared camera handle) and builds the next round
+            via the factory. Requires the continuous loop (next_session).
+            """
+            if self._next_session is None:
+                raise RuntimeError(
+                    "enter_standby requires the continuous loop "
+                    "(next_session factory)"
+                )
+            if self._mode == self._MODE_RUNNING:
+                return
+            if self.desktop.state in ("terminal", "labeled"):
+                self.desktop.detach()
+            desktop, consent = self._next_session()
+            self.desktop = desktop
+            self.consent = consent
+            self._result_text = ""
+            try:
+                # Standby owns the preview: open the shared source now so
+                # ticks can render frames; the round's start_session
+                # re-opens idempotently (same camera, never rebuilt).
+                self.desktop.source.open(self.device_id)
+            except Exception as exc:
+                self._set_status(f"standby failed: {type(exc).__name__}")
+                return
+            self._mode = self._MODE_STANDBY
+            self.start_button.setEnabled(True)
+            self.cancel_button.setEnabled(False)
+            self.correct_button.setEnabled(False)
+            self.incorrect_button.setEnabled(False)
+            self._set_status("請站到鏡頭前")
+            self._standby_timer.start()
+
+        def _standby_tick(self) -> None:
+            """One standby step: render preview, start a round on a face."""
+            if self._mode != self._MODE_STANDBY:
+                return
+            try:
+                packet = self.desktop.source.read()
+            except Exception as exc:
+                self._set_status(f"standby failed: {type(exc).__name__}")
+                self._standby_timer.stop()
+                return
+            if packet is None:
+                return
+            try:
+                self.render_full_frame(packet.rgb)
+            except Exception as exc:
+                self._set_status(f"standby failed: {type(exc).__name__}")
+                self._standby_timer.stop()
+                return
+            try:
+                observation = self.desktop.scorer(packet)
+            except Exception as exc:
+                self._set_status(f"standby failed: {type(exc).__name__}")
+                self._standby_timer.stop()
+                return
+            if observation.face_count >= 1:
+                self.start_clicked()
+
+        def _enter_result(self, result: Any) -> None:
+            """Show the round result and arm the 正確／錯誤 keys."""
+            text = self._format_result(result)
+            self._result_text = text
+            self._set_status(text)
+            self._mode = self._MODE_RESULT
+            self.start_button.setEnabled(False)
+            self.cancel_button.setEnabled(False)
+            self.correct_button.setEnabled(True)
+            self.incorrect_button.setEnabled(True)
+
+        def _format_result(self, result: Any) -> str:
+            """Spec §2 step 5 display text for one terminal result."""
+            if result is None:
+                return "辨識未完成"
+            status = result.status
+            if (
+                status == SessionStatus.matched
+                and result.matched_identity is not None
+            ):
+                score: float | None = None
+                for obs in self.desktop.observations:
+                    if result.matched_identity in obs.identity_scores:
+                        score = obs.identity_scores[result.matched_identity]
+                        break
+                if score is None:
+                    return str(result.matched_identity)
+                return f"{result.matched_identity} {score:.2f}"
+            if status in (SessionStatus.timeout, SessionStatus.unknown):
+                return "找不到此註冊人員"
+            reason = (
+                result.reason_codes[0]
+                if result.reason_codes
+                else status.value
+            )
+            return f"{status.value}：{reason}"
+
+        def press_correct(self) -> None:
+            """W2 placeholder 正確 key: no label written, back to standby."""
+            self._press_key()
+
+        def press_incorrect(self) -> None:
+            """W2 placeholder 錯誤 key: no label written, back to standby."""
+            self._press_key()
+
+        def _press_key(self) -> None:
+            if self._next_session is None:
+                raise RuntimeError(
+                    "placeholder keys require the continuous loop "
+                    "(next_session factory)"
+                )
+            if self._mode != self._MODE_RESULT:
+                return
+            self.enter_standby()
 
         def _update_terminal(self, result: Any) -> None:
             if (
@@ -437,6 +621,7 @@ else:
             success status, and the CLI never reports rc0 for it.
             """
             self._timer.stop()
+            self._standby_timer.stop()
             try:
                 self.desktop.close()
             except Exception as exc:
@@ -556,6 +741,7 @@ else:
 
         def closeEvent(self, event: Any) -> None:
             self._timer.stop()
+            self._standby_timer.stop()
             self.desktop.close()
             event.accept()
 
