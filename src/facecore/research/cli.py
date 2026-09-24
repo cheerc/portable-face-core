@@ -786,9 +786,16 @@ def cmd_live(
         # E3 wiring (2): live trace + diagnostic/event sinks on the true path.
         trace_diags: list[Any] = []
         trace_events: list[Any] = []
+        # G3 W5: the live desktops (first round + continuous rounds) that
+        # currently own the trace writer. The scorer closures below are
+        # defined before the desktops exist; late binding routes each
+        # emitted diag to the live desktop's pending store.
+        diag_desktops: list[DesktopSession] = []
 
         def _diagnostic_sink(diag: Any) -> None:
             trace_diags.append(diag)
+            for live_desktop in diag_desktops:
+                live_desktop.note_diagnostics(diag)
 
         def _event_sink(event: Any) -> None:
             trace_events.append(event)
@@ -901,6 +908,10 @@ def cmd_live(
         # rounds; the terminal path must not release it mid-loop.
         release_source_on_terminal=False if continuous else True,
     )
+    if is_true_path:
+        # G3 W5: route scorer-emitted true diagnostics to the live
+        # desktop's pending store for the encrypted trace writer.
+        diag_desktops.append(desktop)
     import time as _time
 
     # Fix (b): the session clock anchors at the live monotonic clock on the
@@ -999,18 +1010,25 @@ def cmd_live(
                     round_consent,
                 )
                 recorder.begin(round_session_id, round_consent)
-                return (
-                    DesktopSession(
-                        engine=SessionEngine(
-                            profile, gallery_digest, model_generation
-                        ),
-                        source=source,
-                        scorer=scorer,
-                        session_id=round_session_id,
-                        release_source_on_terminal=False,
-                        label_recorder=recorder,
-                        label_attempt_id=round_attempt_id,
+                round_desktop = DesktopSession(
+                    engine=SessionEngine(
+                        profile, gallery_digest, model_generation
                     ),
+                    source=source,
+                    scorer=scorer,
+                    session_id=round_session_id,
+                    release_source_on_terminal=False,
+                    label_recorder=recorder,
+                    label_attempt_id=round_attempt_id,
+                    trace_recorder=recorder if is_true_path else None,
+                    trace_attempt_id=round_attempt_id if is_true_path else None,
+                )
+                if is_true_path:
+                    # G3 W5: the new round owns the trace writer now.
+                    diag_desktops.clear()
+                    diag_desktops.append(round_desktop)
+                return (
+                    round_desktop,
                     round_consent,
                     round_attempt_id,
                 )
