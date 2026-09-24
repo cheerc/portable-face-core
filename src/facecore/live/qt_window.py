@@ -191,6 +191,7 @@ try:
     from PySide6.QtGui import QImage, QPixmap
     from PySide6.QtWidgets import (
         QCheckBox,
+        QComboBox,
         QHBoxLayout,
         QLabel,
         QMainWindow,
@@ -242,6 +243,7 @@ else:
                 [], tuple[DesktopSession, ConsentRecord, str | None]
             ]
             | None = None,
+            camera_options: list[tuple[int, str]] | None = None,
         ) -> None:
             super().__init__()
             self.desktop = desktop
@@ -272,6 +274,10 @@ else:
             # the CLI tail after the window closes).
             self.completed_rounds: list[RoundComplete] = []
             self._round_started_utc: str | None = None
+            # G3 W6: camera picker options as (opencv index, label).
+            # None means no picker (legacy behavior); an empty list means
+            # no camera was found (startup refuses with 找不到相機).
+            self._camera_options = list(camera_options or [])
 
             if (recorder is None) != (attempt_id is None):
                 raise ValueError("recorder and attempt_id must be given together")
@@ -309,6 +315,16 @@ else:
             self.identity_label.setObjectName("identity")
             self.guide_label = QLabel("方形引導框 · square guide: 待採集")
             self.guide_label.setObjectName("guide")
+            # G3 W6: camera picker. First row is the unselected prompt so
+            # no camera is preselected; the operator must pick one.
+            self.camera_combo = QComboBox()
+            self.camera_combo.setObjectName("cameraPicker")
+            self.camera_combo.addItem("請選擇相機", None)
+            for cam_index, cam_label in self._camera_options:
+                self.camera_combo.addItem(cam_label, cam_index)
+            self.camera_combo.currentIndexChanged.connect(
+                self._camera_picked
+            )
             self.preview_label = QLabel("synthetic preview")
             self.preview_label.setMinimumSize(240, 240)
             self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -356,6 +372,7 @@ else:
             layout.addWidget(self.identity_label)
             layout.addWidget(self.guide_label)
             layout.addWidget(self.preview_label)
+            layout.addWidget(self.camera_combo)
             layout.addLayout(consent_row)
             layout.addLayout(controls)
             self.setCentralWidget(root)
@@ -363,6 +380,33 @@ else:
             self.delete_button.setEnabled(True)
             self.correct_button.setEnabled(False)
             self.incorrect_button.setEnabled(False)
+
+        def _camera_picked(self, row: int) -> None:
+            """G3 W6: operator picks a camera; nothing starts by itself."""
+            picked = self.camera_combo.itemData(row)
+            if picked is None:
+                return
+            self.device_id = str(picked)
+            self.device_label.setText(f"裝置 · device: {self.device_id}")
+
+        def selected_camera_index(self) -> int | None:
+            """Picked OpenCV index, or None when the prompt row is current."""
+            picked = self.camera_combo.currentData()
+            return int(picked) if picked is not None else None
+
+        def show_startup_error(self, message: str) -> None:
+            """G3 W6: show a Chinese startup failure and stay put.
+
+            No crash, no silent continue: timers stay stopped and Start
+            stays disabled until the operator closes the window.
+            """
+            self._timer.stop()
+            self._standby_timer.stop()
+            self.start_button.setEnabled(False)
+            self.cancel_button.setEnabled(False)
+            self.correct_button.setEnabled(False)
+            self.incorrect_button.setEnabled(False)
+            self._set_status(message)
 
         @property
         def mode(self) -> str:
@@ -512,6 +556,11 @@ else:
                     "(next_session factory)"
                 )
             if self._mode == self._MODE_RUNNING:
+                return
+            if self._camera_options and self.selected_camera_index() is None:
+                # G3 W6: no preselected camera; the operator must pick one
+                # from the dropdown before standby starts.
+                self._set_status("請選擇相機")
                 return
             if self.desktop.state in ("terminal", "labeled"):
                 self.desktop.detach()

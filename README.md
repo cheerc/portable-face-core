@@ -120,6 +120,7 @@ src/
     ├── live/
     │   ├── __init__.py
     │   ├── camera_identity.py
+    │   ├── camera_picker.py
     │   ├── capture.py
     │   ├── contracts.py
     │   ├── controller.py
@@ -150,6 +151,7 @@ src/
     │   ├── cli.py
     │   ├── diagnostics.py
     │   ├── experiment.py
+    │   ├── g3_config.py
     │   ├── keys.py
     │   ├── recorder.py
     │   ├── records.py

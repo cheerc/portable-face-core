@@ -435,15 +435,21 @@ def commit_g3_rounds(
 
 def _build_true_context(
     models: Path,
-    corpus: Path,
+    corpus: Path | None,
     profile: ResearchProfile,
     *,
     detector_factory: Callable[[Path], Any] | None = None,
     embedder_factory: Callable[[Path], Any] | None = None,
+    gallery_dir: Path | None = None,
 ) -> Any:
-    """Build the frozen true scoring context from external artifacts."""
+    """Build the frozen true scoring context from external artifacts.
+
+    G3 W6: ``gallery_dir`` (enrollment folder, identity = filename stem)
+    takes precedence over the ``corpus`` manifest when given.
+    """
     from facecore.live.frame_pipeline import (  # noqa: PLC0415 (device-gated)
         ScoringContext,
+        build_gallery_from_folder,
         build_research_gallery,
     )
 
@@ -474,13 +480,22 @@ def _build_true_context(
         embedder_factory = _default_embedder
     detector = detector_factory(models)
     embedder = embedder_factory(models)
-    gallery = build_research_gallery(
-        corpus,
-        repo_root=models,
-        detector=detector,
-        embedder=embedder,
-        generation=TRUE_PIPELINE_GENERATION,
-    )
+    if gallery_dir is not None:
+        gallery = build_gallery_from_folder(
+            gallery_dir,
+            detector=detector,
+            embedder=embedder,
+            generation=TRUE_PIPELINE_GENERATION,
+        )
+    else:
+        assert corpus is not None
+        gallery = build_research_gallery(
+            corpus,
+            repo_root=models,
+            detector=detector,
+            embedder=embedder,
+            generation=TRUE_PIPELINE_GENERATION,
+        )
     policy = profile_to_policy(profile)
     return ScoringContext(
         gallery=gallery,
@@ -573,6 +588,8 @@ def cmd_live(
     attempt_id: str | None = None,
     presence_mode: str = "collection",
     continuous: bool = False,
+    config: Path | None = None,
+    gallery_dir: Path | None = None,
 ) -> int:
     """Run one bounded research session (fake pump or real camera).
 
@@ -614,6 +631,21 @@ def cmd_live(
             file=sys.stderr,
         )
         return 2
+    # G3 W6: local config supplies defaults; explicit flags win.
+    if config is not None:
+        from facecore.research.g3_config import ensure_config_dir, load_g3_config
+
+        try:
+            local_config = load_g3_config(config)
+        except ValueError as exc:
+            print(f"research live: {exc}", file=sys.stderr)
+            return 2
+        # The package owns the local dir (spec §3); idempotent mkdir.
+        ensure_config_dir(config)
+        if models is None:
+            models = local_config.models_dir
+        if gallery_dir is None and corpus is None:
+            gallery_dir = local_config.enrollment_dir
 
     from datetime import timedelta
 
@@ -702,13 +734,13 @@ def cmd_live(
         scorer = _fake_scorer(model_generation, gallery_digest)
         is_true_path = False
     else:
-        # True camera path (Task A): external models/corpus required,
+        # True camera path (Task A): external models/gallery required,
         # fail-clear otherwise. Fake path above is untouched.
-        if models is None or corpus is None:
+        if models is None or (corpus is None and gallery_dir is None):
             print(
                 "research live: --device <id> requires --models <dir> and "
-                "--corpus <manifest> (external paths); use --device fake "
-                "for camera-free operation",
+                "--corpus <manifest> (or --gallery-dir <folder>); use "
+                "--device fake for camera-free operation",
                 file=sys.stderr,
             )
             _finish_attempt_error("setup_error:missing_models_corpus")
@@ -754,13 +786,28 @@ def cmd_live(
                 context = None
             else:
                 checkpoint_detector = None
-                context = _build_true_context(
-                    models,
-                    corpus,
-                    profile,
-                    detector_factory=detector_factory,
-                    embedder_factory=embedder_factory,
-                )
+                try:
+                    context = _build_true_context(
+                        models,
+                        corpus,
+                        profile,
+                        detector_factory=detector_factory,
+                        embedder_factory=embedder_factory,
+                        gallery_dir=gallery_dir,
+                    )
+                except (ValueError, FileNotFoundError) as exc:
+                    # G3 W6 spec §7-2: gallery startup failures name the
+                    # cause in Chinese (e.g. which enrollment photo).
+                    print(f"research live: 註冊組建立失敗：{exc}", file=sys.stderr)
+                    _finish_attempt_error("setup_error:gallery_build_failed")
+                    return 2
+                except Exception as exc:
+                    print(
+                        f"research live: true pipeline setup failed: {exc}",
+                        file=sys.stderr,
+                    )
+                    _finish_attempt_error("setup_error:model_setup_failed")
+                    return 2
         except Exception as exc:
             print(f"research live: true pipeline setup failed: {exc}", file=sys.stderr)
             _finish_attempt_error("setup_error:model_setup_failed")
@@ -953,6 +1000,24 @@ def cmd_live(
             # The Qt smoke path is synthetic and never touches a camera device.
             os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         qt_app = QApplication.instance() or QApplication([])
+        # G3 W6: picker options for the Qt dropdown. Listing only: no
+        # auto-select, no uid/shape assertion (that path is untouched).
+        # An empty list means no camera (the window shows 找不到相機).
+        camera_options: list[tuple[int, str]] = []
+        if device != "fake":
+            try:
+                from facecore.live.camera_picker import list_cameras
+
+                camera_options = [
+                    (option.index, option.label)
+                    for option in list_cameras()
+                ]
+            except Exception as exc:
+                print(
+                    f"research live: 相機列舉失敗：{exc}",
+                    file=sys.stderr,
+                )
+                camera_options = []
         next_session_factory = None
         if continuous:
             from datetime import timedelta as _td
@@ -1043,12 +1108,20 @@ def cmd_live(
             clock_ns=qt_clock_ns,
             clock_advance=_qt_advance_ns,
             next_session=next_session_factory,
+            camera_options=camera_options if device != "fake" else None,
         )
+        if device != "fake" and not camera_options:
+            # G3 W6 spec §7-2: no camera at all → Chinese reason, stay
+            # put (no crash, no silent continue).
+            qt_window.show_startup_error("找不到相機")
     try:
         if qt_window is None:
             desktop.on_start(consent, now_ns=start_ns, device_id=device)
         elif continuous:
-            qt_window.enter_standby()
+            if device != "fake" and not camera_options:
+                pass
+            else:
+                qt_window.enter_standby()
         else:
             qt_window.start_clicked()
     except (PermissionError, ValueError, RuntimeError) as exc:
@@ -1781,6 +1854,26 @@ def main(argv: list[str] | None = None) -> int:
     live.add_argument("--corpus", required=False, type=Path, default=None)
     live.add_argument("--models", required=False, type=Path, default=None)
     live.add_argument(
+        "--gallery-dir",
+        required=False,
+        type=Path,
+        default=None,
+        help=(
+            "G3 W6: enrollment folder (identity = filename stem); "
+            "takes precedence over --corpus manifest when both are given"
+        ),
+    )
+    live.add_argument(
+        "--config",
+        required=False,
+        type=Path,
+        default=None,
+        help=(
+            "G3 W6: local JSON config (enrollment_dir/models_dir/"
+            "store_dir/key_dir); explicit flags override it"
+        ),
+    )
+    live.add_argument(
         "--continuous",
         action="store_true",
         help=(
@@ -1858,6 +1951,8 @@ def main(argv: list[str] | None = None) -> int:
             qt_offscreen=args.qt_offscreen,
             models=args.models,
             corpus=args.corpus,
+            gallery_dir=args.gallery_dir,
+            config=args.config,
             presence_mode=args.presence_mode,
             continuous=args.continuous,
         )
