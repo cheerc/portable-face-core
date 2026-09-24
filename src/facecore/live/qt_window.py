@@ -18,14 +18,41 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import time
 from typing import Any
 
 import numpy as np
 
-from facecore.live.contracts import FramePacket, SessionStatus
+from facecore.live.contracts import (
+    FrameObservation,
+    FramePacket,
+    SessionResult,
+    SessionStatus,
+)
 from facecore.live.desktop import DesktopSession
 from facecore.research.records import ConsentRecord
+
+
+@dataclass(frozen=True)
+class RoundComplete:
+    """One labeled G3 round awaiting record commit (G3 W4).
+
+    Produced by the window when the operator presses 正確／錯誤 (label
+    already persisted to the round sidecar); consumed by the CLI tail,
+    which commits the encrypted bundle, closes the round attempt, and
+    appends the results.csv row. Observations carry the scored frames
+    for top1/top2/margin reduction.
+    """
+
+    session_id: str
+    attempt_id: str | None
+    terminal: SessionResult
+    observations: tuple[FrameObservation, ...]
+    label_kind: str
+    label_identity: str | None
+    profile_version: str
+    started_utc: str
 
 
 def _require_int(value: object, name: str) -> int:
@@ -241,6 +268,10 @@ else:
                 self._MODE_SINGLE if next_session is None else self._MODE_STANDBY
             )
             self._result_text = ""
+            # G3 W4: labeled rounds awaiting record commit (consumed by
+            # the CLI tail after the window closes).
+            self.completed_rounds: list[RoundComplete] = []
+            self._round_started_utc: str | None = None
 
             if (recorder is None) != (attempt_id is None):
                 raise ValueError("recorder and attempt_id must be given together")
@@ -408,6 +439,7 @@ else:
             self._set_countdown()
             if self._next_session is not None:
                 self._mode = self._MODE_RUNNING
+                self._round_started_utc = datetime.now(timezone.utc).isoformat()
                 self._standby_timer.stop()
             self._timer.start()
 
@@ -496,6 +528,7 @@ else:
             # attempt the preview must not write to the previous round's.
             self.attempt_id = attempt_id
             self._result_text = ""
+            self._round_started_utc = None
             try:
                 # Standby owns the preview: open the shared source now so
                 # ticks can render frames; the round's start_session
@@ -615,13 +648,32 @@ else:
                     identity = self.desktop.display_identity()
                     if identity is None:
                         self.desktop.label_terminal(None, kind="unenrolled")
+                        label_kind, label_identity = "unenrolled", None
                     else:
                         self.desktop.label_terminal(identity, kind="enrolled")
+                        label_kind, label_identity = "enrolled", identity
                 else:
                     self.desktop.label_terminal(None, kind="uncertain")
+                    label_kind, label_identity = "uncertain", None
             except Exception as exc:
                 self._set_status(f"標註失敗：{type(exc).__name__}")
                 return
+            terminal = self.desktop.terminal
+            if terminal is not None:
+                # G3 W4: queue the labeled round for record commit; the
+                # CLI tail commits after the window closes.
+                self.completed_rounds.append(
+                    RoundComplete(
+                        session_id=self.desktop.session_id,
+                        attempt_id=self.attempt_id,
+                        terminal=terminal,
+                        observations=tuple(self.desktop.observations),
+                        label_kind=label_kind,
+                        label_identity=label_identity,
+                        profile_version=self.desktop.profile_version,
+                        started_utc=self._round_started_utc or "",
+                    )
+                )
             self.correct_button.setEnabled(False)
             self.incorrect_button.setEnabled(False)
             self._set_status("已標註 · labeled")

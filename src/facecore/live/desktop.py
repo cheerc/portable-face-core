@@ -374,6 +374,11 @@ class DesktopSession:
         )
 
     @property
+    def profile_version(self) -> str:
+        """Profile version of this round (read-only; G3 W4 round record)."""
+        return self._engine.profile.profile_version
+
+    @property
     def source(self) -> CaptureSource:
         """Shared capture source (read-only; G3 W2 standby preview)."""
         return self._controller.source

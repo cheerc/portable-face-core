@@ -251,6 +251,188 @@ def frame_score_of(observation: FrameObservation) -> FrameScore:
     )
 
 
+# G3 W4: image + record retention for the local test app (spec §3:
+# G3 images and records are kept 30 days so the operator can analyze
+# after testing). Replaces the hardcoded 30d/7d TTLs below.
+G3_RETENTION_DAYS = 30
+
+G3_RESULTS_CSV_COLUMNS = (
+    "round_id",
+    "session_id",
+    "started_utc",
+    "result",
+    "shown_identity",
+    "top1_identity",
+    "top1_score",
+    "top2_identity",
+    "top2_score",
+    "margin",
+    "elapsed_ms",
+    "frames_sampled",
+    "label_kind",
+    "label_identity",
+    "profile_version",
+    "model_generation",
+    "gallery_digest",
+)
+
+
+def g3_round_best_scores(
+    observations: tuple[FrameObservation, ...],
+) -> tuple[
+    tuple[str | None, float | None], tuple[str | None, float | None], float | None
+]:
+    """Best-frame top1/top2/margin for one G3 round (csv display only)."""
+    ranked_frames = sorted(
+        (o for o in observations if o.identity_scores),
+        key=lambda o: (o.quality_rank, -o.sequence),
+        reverse=True,
+    )
+    if not ranked_frames:
+        return (None, None), (None, None), None
+    ordered = sorted(
+        ranked_frames[0].identity_scores.items(),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    top1 = (ordered[0][0], float(ordered[0][1]))
+    top2: tuple[str | None, float | None] = (None, None)
+    if len(ordered) > 1:
+        top2 = (ordered[1][0], float(ordered[1][1]))
+    margin = (
+        float(top1[1] - top2[1])
+        if top1[1] is not None and top2[1] is not None
+        else None
+    )
+    return top1, top2, margin
+
+
+def g3_round_row(round_: Any) -> dict[str, object]:
+    """Reduce one labeled round to its results.csv row (spec §3 fields)."""
+    from facecore.live.qt_window import RoundComplete as _RC
+
+    assert isinstance(round_, _RC), f"expected RoundComplete, got {type(round_)}"
+    terminal = round_.terminal
+    (top1_ident, top1_score), (top2_ident, top2_score), margin = (
+        g3_round_best_scores(round_.observations)
+    )
+    shown = terminal.matched_identity
+    return {
+        "round_id": round_.attempt_id or round_.session_id,
+        "session_id": round_.session_id,
+        "started_utc": round_.started_utc,
+        "result": terminal.status.value,
+        "shown_identity": shown or "",
+        "top1_identity": top1_ident or "",
+        "top1_score": "" if top1_score is None else f"{top1_score:.4f}",
+        "top2_identity": top2_ident or "",
+        "top2_score": "" if top2_score is None else f"{top2_score:.4f}",
+        "margin": "" if margin is None else f"{margin:.4f}",
+        "elapsed_ms": f"{terminal.elapsed_ms:.1f}",
+        "frames_sampled": str(terminal.frames_sampled),
+        "label_kind": round_.label_kind,
+        "label_identity": round_.label_identity or "",
+        "profile_version": round_.profile_version,
+        "model_generation": terminal.model_generation,
+        "gallery_digest": terminal.gallery_digest,
+    }
+
+
+def append_g3_results_csv(results_csv: Path, round_: Any) -> None:
+    """Append one G3 round row (images/embeddings never enter the csv)."""
+    import csv as _csv
+
+    row = g3_round_row(round_)
+    write_header = not results_csv.is_file()
+    results_csv.parent.mkdir(parents=True, exist_ok=True)
+    with open(results_csv, "a", newline="", encoding="utf-8") as handle:
+        writer = _csv.DictWriter(handle, fieldnames=G3_RESULTS_CSV_COLUMNS)
+        if write_header:
+            writer.writeheader()
+        writer.writerow({key: row[key] for key in G3_RESULTS_CSV_COLUMNS})
+
+
+def _g3_round_op_status(status_value: str) -> str:
+    """Map a round terminal status onto the attempt ledger vocabulary."""
+    if status_value == "matched":
+        return "completed"
+    if status_value in (
+        "accepted",
+        "open_error",
+        "setup_error",
+        "cancelled",
+        "timeout",
+        "completed",
+        "error",
+    ):
+        return status_value
+    return "completed"
+
+
+def commit_g3_rounds(
+    recorder: ResearchRecorder,
+    results_csv: Path,
+    rounds: list[Any],
+) -> tuple[int, int]:
+    """Commit each labeled G3 round: bundle + attempt + csv row.
+
+    Returns (committed, failed). A failed round is aborted and its
+    attempt closed as error; other rounds still commit. Raises nothing.
+    """
+    committed = 0
+    failed = 0
+    for round_ in rounds:
+        terminal = round_.terminal
+        try:
+            recorder.commit(
+                terminal,
+                frame_scores=tuple(frame_score_of(o) for o in round_.observations),
+            )
+        except (KeyError, ValueError) as exc:
+            print(
+                f"research live: round commit failed: {exc}", file=sys.stderr
+            )
+            try:
+                recorder.abort(terminal.session_id, reason="round_commit_failed")
+            except Exception:
+                pass
+            if round_.attempt_id is not None:
+                try:
+                    recorder.finish_attempt(
+                        round_.attempt_id,
+                        result=None,
+                        operational_status="error",
+                        error_code="round_commit_failed",
+                    )
+                except Exception:
+                    pass
+            failed += 1
+            continue
+        if round_.attempt_id is not None:
+            try:
+                recorder.finish_attempt(
+                    round_.attempt_id,
+                    result=terminal,
+                    operational_status=_g3_round_op_status(terminal.status.value),
+                    error_code=None,
+                )
+            except Exception as exc:
+                print(
+                    f"research live: round finish_attempt failed: {exc}",
+                    file=sys.stderr,
+                )
+                failed += 1
+                continue
+        try:
+            append_g3_results_csv(results_csv, round_)
+        except OSError as exc:
+            print(f"research live: results.csv append failed: {exc}", file=sys.stderr)
+            failed += 1
+            continue
+        committed += 1
+    return committed, failed
+
+
 def _build_true_context(
     models: Path,
     corpus: Path,
@@ -438,15 +620,20 @@ def cmd_live(
     from facecore.research.experiment import AttemptRecord
 
     now = _now_utc()
-    # Standard TTLs: 30d record / 7d image from consent time.
+    # G3 W4: record + image retention follows G3_RETENTION_DAYS (spec §3,
+    # 30 days), replacing the former hardcoded 30d/7d TTLs.
     consent = ConsentRecord(
         session_id=session_id,
         participant_id="cli-operator",
         record_consent=True,
         image_consent=True,
         consented_at_utc=now.isoformat(),
-        record_expires_at_utc=(now + timedelta(days=30)).isoformat(),
-        image_expires_at_utc=(now + timedelta(days=7)).isoformat(),
+        record_expires_at_utc=(
+            now + timedelta(days=G3_RETENTION_DAYS)
+        ).isoformat(),
+        image_expires_at_utc=(
+            now + timedelta(days=G3_RETENTION_DAYS)
+        ).isoformat(),
     )
 
     # E3 wiring (1): attempt pre-placement BEFORE camera open / model setup.
@@ -778,14 +965,18 @@ def cmd_live(
                     image_consent=True,
                     consented_at_utc=round_now.isoformat(),
                     record_expires_at_utc=(
-                        round_now + _td(days=30)
+                        round_now + _td(days=G3_RETENTION_DAYS)
                     ).isoformat(),
-                    image_expires_at_utc=(round_now + _td(days=7)).isoformat(),
+                    image_expires_at_utc=(
+                        round_now + _td(days=G3_RETENTION_DAYS)
+                    ).isoformat(),
                 )
                 # G3 W3: each round gets its own attempt so the operator
                 # verdict key persists into that round's label sidecar.
-                # A begin_attempt failure fails closed: the round never
-                # starts and standby shows the error.
+                # G3 W4: each round also opens its own session staging so
+                # the CLI tail can commit the encrypted bundle per round.
+                # A begin failure fails closed: the round never starts and
+                # standby shows the error.
                 recorder.begin_attempt(
                     attempt_manifest,
                     _Attempt(
@@ -807,6 +998,7 @@ def cmd_live(
                     ),
                     round_consent,
                 )
+                recorder.begin(round_session_id, round_consent)
                 return (
                     DesktopSession(
                         engine=SessionEngine(
@@ -970,6 +1162,93 @@ def cmd_live(
             )
         except Exception:
             pass
+        return 4
+    # G3 W4 continuous close-out (answers the W2 reviewer Note): the
+    # initial desktop never started (enter_standby replaced it while
+    # idle), so `terminal` above is always None here. Exit code is
+    # defined by labeled rounds: >= 1 committed round → rc0, otherwise
+    # rc4. Unlabeled rounds (result shown but no key press) are aborted,
+    # never committed: a record without an operator verdict is not G3
+    # test data (spec §3 requires the label column).
+    if continuous and qt_window is not None:
+        rounds = list(qt_window.completed_rounds)
+        results_csv = store_root / "results.csv"
+        committed_ids = {round_.session_id for round_ in rounds}
+        if staged_errors:
+            print(
+                "research live: staging failed: "
+                + ";".join(sorted(set(staged_errors))),
+                file=sys.stderr,
+            )
+            for round_ in rounds:
+                try:
+                    recorder.abort(round_.terminal.session_id, reason="staging_failed")
+                except Exception:
+                    pass
+                if round_.attempt_id is not None:
+                    try:
+                        recorder.finish_attempt(
+                            round_.attempt_id,
+                            result=None,
+                            operational_status="error",
+                            error_code="staging_failed",
+                        )
+                    except Exception:
+                        pass
+            try:
+                recorder.abort(session_id, reason="staging_failed")
+            except Exception:
+                pass
+            desktop.close()
+            qt_window.close()
+            return 4
+        committed, failed = commit_g3_rounds(recorder, results_csv, rounds)
+        # Abort sessions that were staged but never labeled: the current
+        # window round (terminal or idle standby) and the never-started
+        # initial session.
+        try:
+            current_session_id = qt_window.desktop.session_id
+        except Exception:
+            current_session_id = None
+        for pending_id, pending_attempt in (
+            (session_id, resolved_attempt_id),
+            (current_session_id, qt_window.attempt_id),
+        ):
+            if pending_id is None or pending_id in committed_ids:
+                continue
+            try:
+                recorder.abort(pending_id, reason="unlabeled_close")
+            except Exception:
+                pass
+            if pending_attempt is not None:
+                try:
+                    recorder.finish_attempt(
+                        pending_attempt,
+                        result=None,
+                        operational_status="cancelled",
+                        error_code=None,
+                    )
+                except Exception:
+                    pass
+        desktop.close()
+        qt_window.close()
+        if committed > 0 and failed == 0:
+            _emit(
+                {
+                    "session_id": session_id,
+                    "status": "continuous_complete",
+                    "window": window_label,
+                    "rounds_committed": committed,
+                    "results_csv": str(results_csv),
+                    "generation": model_generation,
+                    "gallery_digest": gallery_digest,
+                }
+            )
+            return 0
+        print(
+            "research live: continuous close-out without a labeled round",
+            file=sys.stderr,
+        )
         return 4
     if terminal is None:
         print("research live: no terminal reached", file=sys.stderr)
