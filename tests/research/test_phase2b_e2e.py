@@ -769,8 +769,10 @@ class TestPhase2BChainRemainder:
         assert holdout_report.attempted == 1
 
     def test_record_and_image_expiry(self, tmp_path: Path) -> None:
-        """``record/image expiry``: image blobs purge at 7d, the record at
-        30d — both through the real ``purge_expired`` path."""
+        """``record/image expiry``: G3 keeps images AND the record 30d
+        (spec §3; research/cli G3_RETENTION_DAYS replaced the former
+        hardcoded 7d image TTL) — both purge together after 30d through
+        the real ``purge_expired`` path."""
         chain = _Chain(tmp_path)
         rc = chain.run_live("sess-e2e-exp", live_vec=_STRONG_P2)
         assert rc == 0
@@ -782,18 +784,14 @@ class TestPhase2BChainRemainder:
 
         mid = _clock() + timedelta(days=8)
         purged_images = recorder.purge_expired(mid)
-        assert "sess-e2e-exp" in purged_images
+        # G3 W4: 8d purges nothing (images now share the 30d retention).
+        assert purged_images == []
         manifest_mid = json.loads(
             (chain.store / "sess-e2e-exp" / "manifest.json").read_text()
         )
-        # Image blobs are destroyed and flagged; the count ledger is kept
-        # as evidence of what was collected (the blobs, not the count,
-        # are the privacy surface).
-        assert manifest_mid["images_purged"] is True
-        assert not list((chain.store / "sess-e2e-exp").glob("frame_*.enc"))
-        with pytest.raises(KeyError):
-            recorder.read_frame("sess-e2e-exp", 0)
-        # The record itself survives image expiry.
+        assert manifest_mid["images_purged"] is False
+        assert list((chain.store / "sess-e2e-exp").glob("frame_*.enc"))
+        # The record itself survives.
         recorder.read_record("sess-e2e-exp")
 
         late = _clock() + timedelta(days=31)
