@@ -604,7 +604,7 @@ def cmd_live(
     """Run one bounded research session (fake pump or real camera).
 
     continuous (G3 W2): when True with --ui qt, the Qt window runs the
-    spec §2 standby → round → result → key → standby loop over one
+    spec §2 ready → running → result → ready loop over one
     shared camera handle instead of a single round. G3 W3: every round
     gets its own attempt and the operator verdict key persists into
     that round's label sidecar. G3 W8: the key press commits the round
@@ -933,7 +933,7 @@ def cmd_live(
         is_true_path = True
 
     # G3 R1 PR-A change 5 (lead ruling m-20260924090052055374-357):
-    # the continuous Qt loop never starts the initial desktop (standby
+    # the continuous Qt loop never starts the initial desktop (Ready;
     # replaces it while idle), so its session must not occupy the
     # recorder's single-active slot — the first round's begin would
     # otherwise coexist and every append_frame refuses with KeyError.
@@ -1110,7 +1110,7 @@ def cmd_live(
                 # G3 W4: each round also opens its own session staging so
                 # the CLI tail can commit the encrypted bundle per round.
                 # A begin failure fails closed: the round never starts and
-                # standby shows the error.
+                # Ready shows the error.
                 recorder.begin_attempt(
                     attempt_manifest,
                     _Attempt(
@@ -1222,7 +1222,9 @@ def cmd_live(
             if device != "fake" and not camera_options:
                 pass
             else:
-                qt_window.enter_standby()
+                # G3 R1: the loop opens in Ready (lens shut); rounds
+                # start only on operator Start.
+                qt_window.enter_ready()
         else:
             qt_window.start_clicked()
     except (PermissionError, ValueError, RuntimeError) as exc:
@@ -1356,7 +1358,7 @@ def cmd_live(
             pass
         return 4
     # G3 W4 continuous close-out (answers the W2 reviewer Note): the
-    # initial desktop never started (enter_standby replaced it while
+    # initial desktop never started (enter_ready leaves it idle while
     # idle), so `terminal` above is always None here. Exit code is
     # defined by labeled rounds: >= 1 committed round → rc0, otherwise
     # rc4. Unlabeled rounds (result shown but no key press) are aborted,
@@ -1978,7 +1980,7 @@ def main(argv: list[str] | None = None) -> int:
         "--continuous",
         action="store_true",
         help=(
-            "G3 W2: Qt standby → round → result → key → standby loop over "
+            "G3 R1: Qt ready → running → result → ready loop over "
             "one camera handle (requires --ui qt)"
         ),
     )

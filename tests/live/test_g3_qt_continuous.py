@@ -1,4 +1,4 @@
-"""G3 W2 RED: Qt continuous mode — standby → round → result → key → standby.
+"""G3 R1: Qt Start-gated mode — ready → running → result → ready.
 
 Source of truth: docs/specs/2026-09-24-g3-local-test-app.md §2 (behavior
 contract steps 3-6) and §7 item 3 (continuous rounds, key advances to the
@@ -158,9 +158,7 @@ def _make_desktop(
         label_recorder, attempt_id = binder(session_id)
     return (
         DesktopSession(
-            engine=SessionEngine(
-                _w2_profile(), "gallery-g3w2-test", "gen-g3w2-test"
-            ),
+            engine=SessionEngine(_w2_profile(), "gallery-g3w2-test", "gen-g3w2-test"),
             source=source,
             scorer=scorer,
             session_id=session_id,
@@ -190,10 +188,10 @@ def _binder(tmp_path: Any) -> Any:
 
 
 class TestQtContinuousMode:
-    def test_two_rounds_return_to_standby_without_source_close(
+    def test_two_start_gated_rounds_release_between_rounds(
         self, qt_app: Any, tmp_path: Any
     ) -> None:
-        """Two full rounds via key presses; source never closed mid-loop."""
+        """R1: two rounds each need Start; the lens shuts at result."""
         frames = [_face_packet(seq) for seq in range(1, 60)]
         source = _OpenCloseCounter(frames=frames)
         bind = _binder(tmp_path)
@@ -217,25 +215,29 @@ class TestQtContinuousMode:
             next_session=next_session,
         )
         window.show()
-        # Round 1: standby detects face → round starts → terminal matched.
-        window.enter_standby()
-        assert window.mode == "standby"
+        # Round 1: Ready → Start → terminal matched → result releases.
+        window.enter_ready()
+        assert window.mode == "ready"
+        window.start_clicked()
+        assert window.mode == "running"
         window.process_until_terminal(max_steps=200)
         assert window.mode == "result"
         assert window.result_text.startswith("person-synth-01")
-        # Key press returns to standby without closing the source.
+        assert source.is_closed is True
+        # Key press returns to Ready with the lens shut.
         window.press_correct()
-        assert window.mode == "standby"
-        assert source.close_calls == 0
-        assert source.is_closed is False
-        # Round 2 runs on a fresh session over the same open source.
+        assert window.mode == "ready"
+        assert source.is_closed is True
+        # Round 2 needs another Start on the same picked source.
+        window.start_clicked()
+        assert window.mode == "running"
         window.process_until_terminal(max_steps=200)
         assert window.mode == "result"
         assert window.result_text.startswith("person-synth-01")
         window.press_incorrect()
-        assert window.mode == "standby"
-        assert source.close_calls == 0
-        assert source.is_closed is False
+        assert window.mode == "ready"
+        assert source.is_closed is True
+        assert source.open_calls == 2
         window.close()
 
     def test_timeout_round_shows_not_found_text(
@@ -271,16 +273,15 @@ class TestQtContinuousMode:
             next_session=next_session,
         )
         window.show()
-        window.enter_standby()
-        # G3 W8: manual Start no longer fires in the continuous loop;
-        # the low-score faces trigger the round via standby instead.
+        window.enter_ready()
+        # R1: each round starts only via an explicit Start.
         window.start_clicked()
-        assert window.mode == "standby"
+        assert window.mode == "running"
         window.process_until_terminal(max_steps=200)
         assert window.mode == "result"
         assert window.result_text == "找不到此註冊人員"
         window.press_correct()
-        assert window.mode == "standby"
+        assert window.mode == "ready"
         window.close()
 
     def test_unbound_keys_refuse_without_writing_labels(self, qt_app: Any) -> None:
@@ -302,7 +303,8 @@ class TestQtContinuousMode:
             next_session=next_session,
         )
         window.show()
-        window.enter_standby()
+        window.enter_ready()
+        window.start_clicked()
         window.process_until_terminal(max_steps=200)
         assert window.mode == "result"
         # No label persistence bound: the key refuses fail-closed, stays

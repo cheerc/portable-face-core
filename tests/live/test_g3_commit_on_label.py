@@ -99,7 +99,8 @@ def _open_window(qt_app: Any, factory: _RoundFactory) -> QtResearchWindow:
         results_csv=factory.results_csv,
     )
     window.show()
-    window.enter_standby()
+    window.enter_ready()
+    window.start_clicked()
     return window
 
 
@@ -108,16 +109,15 @@ class TestCommitOnLabel:
         self, qt_app: Any, tmp_path: Path
     ) -> None:
         """N labeled rounds, window still open: store + csv hold N rows."""
-        factory = _RoundFactory(
-            tmp_path, FakeCapture(_face_frames()), _matching_scorer
-        )
+        factory = _RoundFactory(tmp_path, FakeCapture(_face_frames()), _matching_scorer)
         window = _open_window(qt_app, factory)
         window.process_until_terminal(max_steps=200)
         window.press_correct()
-        assert window.mode == "standby"
+        assert window.mode == "ready"
+        window.start_clicked()
         window.process_until_terminal(max_steps=200)
         window.press_incorrect()
-        assert window.mode == "standby"
+        assert window.mode == "ready"
         # Window NEVER closed here: crash now must not lose the rounds.
         with open(factory.results_csv, newline="") as handle:
             rows = list(csv.DictReader(handle))
@@ -129,9 +129,7 @@ class TestCommitOnLabel:
 
     def test_failed_commit_stays_on_result(self, qt_app: Any, tmp_path: Path) -> None:
         """A commit failure refuses to advance (no silent loss)."""
-        factory = _RoundFactory(
-            tmp_path, FakeCapture(_face_frames()), _matching_scorer
-        )
+        factory = _RoundFactory(tmp_path, FakeCapture(_face_frames()), _matching_scorer)
         window = _open_window(qt_app, factory)
         window.process_until_terminal(max_steps=200)
         assert window.mode == "result"
@@ -197,13 +195,11 @@ class TestConfigStoreEffective:
 
 
 class TestPickStartsLoop:
-    def test_pick_camera_starts_standby_and_rounds(
+    def test_pick_then_start_runs_two_gated_rounds(
         self, qt_app: Any, tmp_path: Path
     ) -> None:
-        """CLI order: options → enter_standby (unpicked) → pick → loop."""
-        factory = _RoundFactory(
-            tmp_path, FakeCapture(_face_frames()), _matching_scorer
-        )
+        """R1 order: options, ready, pick, Start, loop."""
+        factory = _RoundFactory(tmp_path, FakeCapture(_face_frames()), _matching_scorer)
         first_desktop, first_consent, first_attempt = factory()
         clock = _AdvancingClock()
         window = QtResearchWindow(
@@ -219,24 +215,31 @@ class TestPickStartsLoop:
             camera_options=[(0, "Inner Cam"), (1, "相機 1")],
         )
         window.show()
-        # Unpicked: standby refuses with a prompt, timer stays stopped.
-        window.enter_standby()
+        # Unpicked: Ready refuses with a prompt; Start stays disabled.
+        window.enter_ready()
         assert window.status_label.text() == "請選擇相機"
-        assert window._standby_timer.isActive() is False
-        # Pick: standby starts at once (the BLOCKING fix).
+        assert window.start_button.isEnabled() is False
+        # Pick: routes the device only — nothing opens, nothing runs.
         window.camera_combo.setCurrentIndex(1)
-        assert window.mode == "standby"
-        assert window._standby_timer.isActive() is True
-        assert window.desktop.source.is_closed is False
-        # A face opens round 1; the key commits it and round 2 follows.
+        assert window.mode == "ready"
+        assert window.start_button.isEnabled() is True
+        assert window.desktop.source.is_closed is True
+        # Round 1 needs Start; the key commits it and returns to Ready.
+        window.start_clicked()
+        assert window.mode == "running"
         window.process_until_terminal(max_steps=200)
         assert window.mode == "result"
         window.press_correct()
-        assert window.mode == "standby"
+        assert window.mode == "ready"
+        assert window.desktop.source.is_closed is True
+        # Round 2 needs another Start on the kept pick.
+        assert window.selected_camera_index() == 0
+        window.start_clicked()
+        assert window.mode == "running"
         window.process_until_terminal(max_steps=200)
         assert window.mode == "result"
         window.press_correct()
-        assert window.mode == "standby"
+        assert window.mode == "ready"
         import csv as _csv
 
         with open(factory.results_csv, newline="") as handle:

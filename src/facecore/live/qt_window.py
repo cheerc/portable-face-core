@@ -59,6 +59,15 @@ class RoundComplete:
     started_utc: str
 
 
+@dataclass(frozen=True)
+class _SyntheticObservation:
+    """Minimal observation shape for failure classification tests."""
+
+    face_count: int = 0
+    quality_pass: bool = False
+    quality_reasons: tuple[str, ...] = ()
+
+
 def _require_int(value: object, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"crop_mapping {name} must be an integer")
@@ -222,11 +231,13 @@ else:
     class _QtResearchWindow(QMainWindow):  # type: ignore[misc]
         """Small offscreen-testable Qt view over a real DesktopSession."""
 
-        # G3 W2 continuous modes. "single" preserves the one-round legacy
+        # G3 R1 Start-gated modes. "single" preserves the one-round legacy
         # behavior (no next_session factory); the continuous modes run the
-        # spec §2 loop: standby → round → result → key → standby.
+        # R1 spec §2 loop: ready → running → result → ready. The camera
+        # opens only on Start and releases at every terminal; nothing
+        # previews or auto-starts from a pick or a key press.
         _MODE_SINGLE = "single"
-        _MODE_STANDBY = "standby"
+        _MODE_READY = "ready"
         _MODE_RUNNING = "running"
         _MODE_RESULT = "result"
 
@@ -263,15 +274,8 @@ else:
             self._timer = QTimer(self)
             self._timer.setInterval(20)
             self._timer.timeout.connect(self.process_once)
-            # G3 W2: standby driver (preview + face-trigger) for the
-            # continuous loop. Idle unless enter_standby() starts it.
-            self._standby_timer = QTimer(self)
-            self._standby_timer.setInterval(100)
-            self._standby_timer.timeout.connect(self._standby_tick)
             self._next_session = next_session
-            self._mode = (
-                self._MODE_SINGLE if next_session is None else self._MODE_STANDBY
-            )
+            self._mode = self._MODE_SINGLE if next_session is None else self._MODE_READY
             self._result_text = ""
             # G3 W4: labeled rounds awaiting record commit (consumed by
             # the CLI tail after the window closes).
@@ -389,21 +393,20 @@ else:
             self.incorrect_button.setEnabled(False)
 
         def _camera_picked(self, row: int) -> None:
-            """G3 W8: a pick routes the device and starts standby.
+            """G3 R1: a pick only routes the device; nothing opens.
 
-            The W6 docstring promise (nothing starts by itself) is
-            superseded: commander BLOCKING showed the loop never starts
-            otherwise (enter_standby refuses unpicked, nobody retries).
-            In the continuous loop a pick enters standby at once; the
-            single-round path still starts only via Start.
+            R1 spec §2-1: enumeration and selection must not open a
+            video stream, fetch frames, or build a preview. The round
+            starts only when the operator presses Start.
             """
             picked = self.camera_combo.itemData(row)
             if picked is None:
                 return
             self.device_id = str(picked)
             self.device_label.setText(f"裝置 · device: {self.device_id}")
-            if self._next_session is not None and self._mode != self._MODE_RUNNING:
-                self.enter_standby()
+            if self._next_session is not None and self._mode == self._MODE_READY:
+                self._set_status("已選相機，按 Start 開始")
+                self._refresh_start_enabled()
 
         def selected_camera_index(self) -> int | None:
             """Picked OpenCV index, or None when the prompt row is current."""
@@ -417,7 +420,6 @@ else:
             stays disabled until the operator closes the window.
             """
             self._timer.stop()
-            self._standby_timer.stop()
             self.start_button.setEnabled(False)
             self.cancel_button.setEnabled(False)
             self.correct_button.setEnabled(False)
@@ -426,7 +428,7 @@ else:
 
         @property
         def mode(self) -> str:
-            """G3 W2 continuous-loop mode (single/standby/running/result)."""
+            """G3 R1 continuous-loop mode (single/ready/running/result)."""
             return self._mode
 
         @property
@@ -478,13 +480,56 @@ else:
             )
 
         def start_clicked(self) -> None:
-            """Start the existing DesktopSession after both consent checks."""
+            """Start one round: continuous loop builds it, single reuses."""
             if self._next_session is not None:
-                # G3 W8: the continuous loop owns starting (standby
-                # trigger + key flow). Manual Start would run the
-                # never-started initial desktop, contradicting the
-                # close-out invariant — refuse, never start it.
+                # G3 R1: every round starts from Ready via an explicit
+                # operator Start. A pick alone never opens the camera.
+                self._start_gated_round()
                 return
+            self._start_round()
+
+        def _refresh_start_enabled(self) -> None:
+            """Enable Start only when a camera is picked (continuous loop)."""
+            if self._next_session is None or self._mode != self._MODE_READY:
+                return
+            picked = (
+                self.selected_camera_index() is not None
+                if self._camera_options
+                else True
+            )
+            self.start_button.setEnabled(picked)
+
+        def _start_gated_round(self) -> None:
+            """Build a fresh round for the picked camera and start it."""
+            if self._next_session is None:
+                raise RuntimeError(
+                    "gated rounds require the continuous loop (next_session factory)"
+                )
+            if self._mode != self._MODE_READY:
+                return
+            if not (
+                self.record_consent_checkbox.isChecked()
+                and self.image_consent_checkbox.isChecked()
+            ):
+                self._set_status("需要 record consent 與 image consent")
+                return
+            if self._camera_options and self.selected_camera_index() is None:
+                self._set_status("請選擇相機")
+                return
+            if self.desktop.state in ("terminal", "labeled", "closed"):
+                self.desktop.detach()
+            try:
+                desktop, consent, attempt_id = self._next_session()
+            except Exception as exc:
+                self._set_status(f"建輪失敗：{type(exc).__name__}")
+                return
+            self.desktop = desktop
+            self.consent = consent
+            self.attempt_id = attempt_id
+            self._result_text = ""
+            self._round_started_utc = None
+            # R1 §2-3: the open happens inside on_start (see
+            # _start_round); the 5 s window anchors right after it.
             self._start_round()
 
         def _start_round(self) -> None:
@@ -498,8 +543,8 @@ else:
             try:
                 # G3 R1 PR-A change 2: the 5 s window anchors at this
                 # round's own open — the current clock value is read
-                # here (after the source open in enter_standby / the
-                # on_start open below) and recorded as round_start_ns,
+                # here (after the source open in _start_gated_round /
+                # the on_start open below) and recorded as round_start_ns,
                 # never carried over from a pre-anchored value.
                 round_start_ns = self._clock_ns()
                 self.desktop.on_start(
@@ -520,11 +565,10 @@ else:
             if self._next_session is not None:
                 self._mode = self._MODE_RUNNING
                 self._round_started_utc = datetime.now(timezone.utc).isoformat()
-                self._standby_timer.stop()
             self._timer.start()
 
         def cancel_clicked(self) -> None:
-            """Cancel normal inference or the post-terminal fixed collector."""
+            """R1 §2-6: Cancel stops the round, closes the lens, clears."""
             if self.desktop.state != "running":
                 return
             try:
@@ -535,7 +579,12 @@ else:
             except Exception as exc:
                 self._set_status(f"cancel failed: {type(exc).__name__}")
                 return
-            self._update_terminal(result)
+            self.desktop.release_source()
+            self._clear_preview()
+            if self._next_session is not None:
+                self.enter_ready(status="已取消 · cancelled")
+            else:
+                self._update_terminal(result)
 
         def process_once(self) -> None:
             """Drive one bounded synchronous controller step for Qt tests."""
@@ -569,103 +618,68 @@ else:
 
         def process_until_terminal(self, max_steps: int = 200) -> None:
             """Drive synthetic events without opening a camera."""
-            if self._next_session is not None:
-                # Continuous loop: pump standby until a round starts, then
-                # run the round to terminal.
-                for _ in range(max_steps):
-                    if self._mode != self._MODE_STANDBY:
-                        break
-                    self._standby_tick()
             for _ in range(max_steps):
                 if self.desktop.state != "running":
                     break
                 self.process_once()
 
-        def enter_standby(self) -> None:
-            """Enter standby: preview + square guide, waiting for a face.
+        def enter_ready(self, status: str | None = None) -> None:
+            """Enter Ready: lens shut, no preview, Start armed (R1 §2-2).
 
-            G3 W2 spec §2 steps 3-4. Discards the finished round (without
-            releasing the shared camera handle) and builds the next round
-            via the factory. Requires the continuous loop (next_session).
+            Keeps the picked camera but never opens it; the preview
+            area shows no prior face. Requires the continuous loop
+            (next_session factory).
             """
             if self._next_session is None:
                 raise RuntimeError(
-                    "enter_standby requires the continuous loop (next_session factory)"
+                    "enter_ready requires the continuous loop (next_session factory)"
                 )
-            if self._mode == self._MODE_RUNNING:
-                return
-            if self._camera_options and self.selected_camera_index() is None:
-                # G3 W6: no preselected camera; the operator must pick one
-                # from the dropdown before standby starts.
-                self._set_status("請選擇相機")
-                return
-            if self.desktop.state in ("terminal", "labeled"):
+            if self.desktop.state in ("terminal", "labeled", "closed"):
                 self.desktop.detach()
-            try:
-                desktop, consent, attempt_id = self._next_session()
-            except Exception as exc:
-                # Fail-closed: a round that cannot be built (e.g. attempt
-                # persistence refused) must not silently advance.
-                self._set_status(f"standby failed: {type(exc).__name__}")
-                return
-            self.desktop = desktop
-            self.consent = consent
-            # The round owns its crop-mapping sidecar: without a fresh
-            # attempt the preview must not write to the previous round's.
-            self.attempt_id = attempt_id
-            self._result_text = ""
-            self._round_started_utc = None
-            try:
-                # Standby owns the preview: open the shared source now so
-                # ticks can render frames; the round's start_session
-                # re-opens idempotently (same camera, never rebuilt).
-                self.desktop.source.open(self.device_id)
-            except Exception as exc:
-                self._set_status(f"standby failed: {type(exc).__name__}")
-                return
-            self._mode = self._MODE_STANDBY
-            # G3 W8: Start stays disabled in the continuous loop (the
-            # loop owns starting; manual Start would run the initial
-            # desktop against the close-out invariant).
-            self.start_button.setEnabled(False)
+            self._clear_preview()
+            self._mode = self._MODE_READY
+            self._refresh_start_enabled()
             self.cancel_button.setEnabled(False)
             self.correct_button.setEnabled(False)
             self.incorrect_button.setEnabled(False)
-            self._set_status("請站到鏡頭前")
-            self._standby_timer.start()
+            if status is None:
+                if self._camera_options and self.selected_camera_index() is None:
+                    status = "請選擇相機"
+                else:
+                    status = "已選相機，按 Start 開始"
+            self._set_status(status)
 
-        def _standby_tick(self) -> None:
-            """One standby step: render preview, start a round on a face."""
-            if self._mode != self._MODE_STANDBY:
-                return
+        # G3 W2-W8 standby entry removed by R1 PR-B: selecting a camera
+        # must not open a stream or auto-start a round. Kept as a
+        # fail-loud alias so old callers break visibly, not silently.
+        def enter_standby(self) -> None:
+            """Removed: use enter_ready + Start (R1 Start-gated)."""
+            raise RuntimeError(
+                "enter_standby was removed by R1 Start-gating; "
+                "use enter_ready then start_clicked"
+            )
+
+        def _clear_preview(self) -> None:
+            """Drop the photo pixmap and its cache (R1 §2-4/6)."""
+            self._preview_image = None
+            self._crop_mapping = None
             try:
-                packet = self.desktop.source.read()
-            except Exception as exc:
-                self._set_status(f"standby failed: {type(exc).__name__}")
-                self._standby_timer.stop()
-                return
-            if packet is None:
-                return
-            try:
-                # set_frame persists the shared crop mapping before
-                # rendering, so a freshly built round (no mapping stored
-                # yet) previews instead of failing on the read-back.
-                self.set_frame(packet.rgb)
-            except Exception as exc:
-                self._set_status(f"standby failed: {type(exc).__name__}")
-                self._standby_timer.stop()
-                return
-            try:
-                observation = self.desktop.scorer(packet)
-            except Exception as exc:
-                self._set_status(f"standby failed: {type(exc).__name__}")
-                self._standby_timer.stop()
-                return
-            if observation.face_count >= 1:
-                self._start_round()
+                self.preview_label.clear()
+            except Exception:
+                pass
+            self.identity_label.setText("")
+            self._set_guide()
 
         def _enter_result(self, result: Any) -> None:
-            """Show the round result and arm the 正確／錯誤 keys."""
+            """Release first, then show text-only result (R1 §2-4)."""
+            # The lens and the reader must be gone before any result
+            # text shows; the photo pixmap is cleared with them. The
+            # desktop stays terminal (not closed) so the keys can label.
+            try:
+                self.desktop.release_source()
+            except Exception:
+                pass
+            self._clear_preview()
             text = self._format_result(result)
             self._result_text = text
             self._set_status(text)
@@ -676,7 +690,14 @@ else:
             self.incorrect_button.setEnabled(True)
 
         def _format_result(self, result: Any) -> str:
-            """Spec §2 step 5 display text for one terminal result."""
+            """R1 §2-4 display text: matched / not-found / diagnosable.
+
+            A round with usable frames but no recognition in 5 s shows
+            找不到此註冊人員. Rounds with no frames, no faces, or all
+            quality rejections show their own cause — never a verified
+            absence from the gallery, never zero_usable_frames as a
+            misrecognition.
+            """
             if result is None:
                 return "辨識未完成"
             status = result.status
@@ -691,11 +712,50 @@ else:
                 return f"{result.matched_identity} {score:.2f}"
             if status in (SessionStatus.timeout, SessionStatus.unknown):
                 return "找不到此註冊人員"
-            reason = result.reason_codes[0] if result.reason_codes else status.value
-            return f"{status.value}：{reason}"
+            return self.classify_failure(
+                observations=tuple(self.desktop.observations),
+                reason_codes=tuple(result.reason_codes),
+            )
+
+        @staticmethod
+        def classify_failure(
+            *,
+            observations: tuple[Any, ...] = (),
+            reason_codes: tuple[str, ...] = (),
+        ) -> str:
+            """Chinese cause text for a non-match terminal (R1 §2-4)."""
+            if not observations:
+                return "未取得可辨識影格：相機無影格"
+            faced = [o for o in observations if o.face_count >= 1]
+            if not faced:
+                return "未取得可辨識影格：未偵測到人臉"
+            reasons: set[str] = set()
+            for obs in faced:
+                reasons.update(obs.quality_reasons or ())
+            if reasons and all(not getattr(o, "quality_pass", False) for o in faced):
+                joined = "、".join(sorted(reasons))
+                return f"未取得可辨識影格：品質拒絕（{joined}）"
+            first = reason_codes[0] if reason_codes else "unknown"
+            return f"未完成辨識：{first}"
+
+        def format_result_for_test(self, kind: str) -> str:
+            """Test hook routing one failure kind through _format_result."""
+            if kind == "no_frame":
+                return self.classify_failure(observations=())
+            if kind == "no_face":
+                obs = _SyntheticObservation(
+                    face_count=0, quality_reasons=("no_face_detected",)
+                )
+                return self.classify_failure(observations=(obs,))
+            if kind == "quality_rejected":
+                obs = _SyntheticObservation(
+                    face_count=1, quality_reasons=("blur_too_high",), quality_pass=False
+                )
+                return self.classify_failure(observations=(obs,))
+            raise ValueError(f"unknown failure kind {kind!r}")
 
         def press_correct(self) -> None:
-            """G3 W3 正確 key: persist the operator verdict, back to standby.
+            """G3 W3 正確 key: persist the operator verdict, back to Ready.
 
             Correct endorses what is shown: a matched round records the
             shown identity (operator-confirmed, kind enrolled); a
@@ -704,7 +764,7 @@ else:
             self._press_key(correct=True)
 
         def press_incorrect(self) -> None:
-            """G3 W3 錯誤 key: persist the operator verdict, back to standby.
+            """G3 W3 錯誤 key: persist the operator verdict, back to Ready.
 
             Incorrect never records the system prediction: the label is
             uncertain with no identity, so a misrecognition is never
@@ -769,7 +829,9 @@ else:
             self.incorrect_button.setEnabled(False)
             self._set_status("已標註 · labeled")
             self._refresh_saved_state()
-            self.enter_standby()
+            # R1 §2-5: back to Ready with the pick kept and the lens
+            # shut; the next round needs another Start.
+            self.enter_ready(status="已標註 · labeled")
 
         def _update_terminal(self, result: Any) -> None:
             if (
@@ -795,7 +857,6 @@ else:
             success status, and the CLI never reports rc0 for it.
             """
             self._timer.stop()
-            self._standby_timer.stop()
             try:
                 self.desktop.close()
             except Exception as exc:
@@ -912,8 +973,8 @@ else:
             return overlay
 
         def closeEvent(self, event: Any) -> None:
+            # R1 §2-6: closing the window always releases the lens.
             self._timer.stop()
-            self._standby_timer.stop()
             self.desktop.close()
             event.accept()
 

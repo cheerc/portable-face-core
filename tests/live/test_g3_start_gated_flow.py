@@ -187,6 +187,20 @@ class TestG3StartGatedFlow:
             orig_init(self, *args, **kwargs)
 
         monkeypatch.setattr(RealDesktop, "__init__", _spy_init)
+        # R1: rounds start only on Start. Hook the window init to press
+        # Start once Ready (synthetic operator), then let the offscreen
+        # pump run the round to terminal.
+        from facecore.live.qt_window import QtResearchWindow as QtWindow
+
+        orig_window_init = QtWindow.__init__
+
+        def _hooked_init(self: Any, *args: Any, **kwargs: Any) -> None:
+            orig_window_init(self, *args, **kwargs)
+            self.enter_ready()
+            self.start_clicked()
+            self.process_until_terminal(max_steps=200)
+
+        monkeypatch.setattr(QtWindow, "__init__", _hooked_init)
         rc = cli_module.cmd_live(
             profile_path=profile_path,
             store=tmp_path / "store",
@@ -223,9 +237,9 @@ class TestG3StartGatedFlow:
 
         Uses a factory mirroring the production round wiring (own sink
         bound to the round session, own square-crop bound to the round
-        attempt): after one standby-triggered round reaches terminal,
-        the round's session must hold staged frames and the mapping
-        must persist under the round's attempt id.
+        attempt): after one Start-gated round reaches terminal, the
+        round's session must hold staged frames and the mapping must
+        persist under the round's attempt id.
         """
         source = FakeCapture(_face_frames())
         factory = _RoundFactory(tmp_path, source)
@@ -242,8 +256,9 @@ class TestG3StartGatedFlow:
             next_session=factory,
         )
         window.show()
-        window.enter_standby()
+        window.enter_ready()
         factory.retire_initial(first_desktop.session_id)
+        window.start_clicked()
         window.process_until_terminal(max_steps=200)
         assert window.mode == "result"
         round_session_id = window.desktop.session_id
@@ -282,19 +297,21 @@ class TestG3StartGatedFlow:
             next_session=factory,
         )
         window.show()
-        window.enter_standby()
+        window.enter_ready()
         factory.retire_initial(first_desktop.session_id)
+        window.start_clicked()
         window.process_until_terminal(max_steps=200)
         assert window.mode == "result"
         first_anchor = window.round_start_ns
         assert first_anchor is not None
         first_round_session = window.desktop.session_id
         window.press_correct()
-        assert window.mode == "standby"
+        assert window.mode == "ready"
         # Simulate the commit-on-label release (no csv target here, so
         # the queue path keeps the session active; the product commit
         # deletes it from _active via recorder.commit).
         factory.recorder.abort(first_round_session, reason="test_released")
+        window.start_clicked()
         window.process_until_terminal(max_steps=200)
         assert window.mode == "result"
         second_anchor = window.round_start_ns
@@ -439,15 +456,12 @@ class TestStartGatedLifecycle:
         window.start_clicked()
         assert window.mode == "running"
         assert source.open_calls == opens_before + 1
-        first = window.preview_image
         window.process_until_terminal(max_steps=200)
         assert window.mode == "result"
         assert source.read_calls > 0
         window.close()
 
-    def test_result_releases_and_clears_photo(
-        self, qt_app: Any, tmp_path: Any
-    ) -> None:
+    def test_result_releases_and_clears_photo(self, qt_app: Any, tmp_path: Any) -> None:
         """R1 §2-4: terminal releases first, then clears the photo."""
         source = _GatedCountingSource(_face_frames(120))
         window, _factory = _gated_window(qt_app, tmp_path, source)
