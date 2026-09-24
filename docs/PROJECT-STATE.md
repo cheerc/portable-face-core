@@ -13,6 +13,7 @@
 - 真人 session 全部依同意設計刪除（零殘留），目前**沒有任何封存 session 語料**。
 - 據此可宣稱：**Phase 2A 工具鏈就緒（含前處理正確性與真機端到端執行）**。不可宣稱：校準完成、辨識可用、誤認率為 0、準備部署。
 - **Phase 2A／2B 界線：** 2A＝工具正確性＋前處理不變性＋團隊可自足的 §9 項目，**不設準確率目標**；2B＝研究有效性（§5 對照臂、§8 分母、holdout 切分、未註冊參與者 session）。**2B 的文件（G0）與研究工具工程（G1）已授權；採集（G3）、改善／調參（G4）、holdout 解封（G5）仍未開。** 契約見 [Phase 2B 研究規格](specs/2026-09-16-phase2b-mac-recognition-research.md)。引導 UI 定案為 **pyside6** 真窗＋方形對齊框（Cocoa 關閉）；方形框為採集側措施，不替代 §6 不變量。
+- **G3 R1（2026-09-24）：** 修訂 [spec](specs/2026-09-24-g3-local-test-app.md)（Start-gated：選相機不開鏡頭、按 Start 才辨識、終局先關鏡頭清畫面）與[修復計畫](plans/2026-09-24-g3-start-gated-repair-plan.md)已落地；**實作待交付，尚未真機驗證**。
 
 ## 功能與 evidence 的界線
 
