@@ -30,6 +30,7 @@ from typing import Literal
 
 from facecore.live.capture import CaptureSource
 from facecore.live.contracts import (
+    FrameDiagnostics,
     FrameObservation,
     FramePacket,
     SessionResult,
@@ -377,6 +378,10 @@ class DesktopSession:
     def profile_version(self) -> str:
         """Profile version of this round (read-only; G3 W4 round record)."""
         return self._engine.profile.profile_version
+
+    def note_diagnostics(self, diag: FrameDiagnostics) -> None:
+        """Stage scorer-emitted true diagnostics (G3 W5 trace path)."""
+        self._controller.note_diagnostics(diag)
 
     @property
     def source(self) -> CaptureSource:

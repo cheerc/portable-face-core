@@ -27,6 +27,7 @@ import time
 
 from facecore.live.capture import CaptureSource, LatestSlot1Queue
 from facecore.live.contracts import (
+    FrameDiagnostics,
     FrameObservation,
     FramePacket,
     SessionResult,
@@ -111,6 +112,9 @@ class LiveController:
         self._trace_attempt_id = trace_attempt_id
         self._release_source_on_terminal = release_source_on_terminal
         self._scored_observations: list[FrameObservation] = []
+        # G3 W5: true per-frame diagnostics noted by the scorer sink,
+        # keyed by sequence and consumed once by _append_live_trace.
+        self._pending_diags: dict[int, FrameDiagnostics] = {}
 
         self._queue: LatestSlot1Queue[FramePacket] = LatestSlot1Queue()
         self._session_id: str | None = None
@@ -309,6 +313,14 @@ class LiveController:
             self._stop_and_release()
         return packet, self._terminal
 
+    def note_diagnostics(self, diag: FrameDiagnostics) -> None:
+        """Stage scorer-emitted true diagnostics for the trace writer.
+
+        G3 W5: the scorer's diagnostic_sink feeds noted diags here; the
+        next _append_live_trace for the same sequence consumes them once.
+        """
+        self._pending_diags[diag.sequence] = diag
+
     def _append_live_trace(self, observation: FrameObservation) -> None:
         """Persist one scored observation to the encrypted trace sidecar."""
         if self._trace_recorder is None or self._trace_attempt_id is None:
@@ -316,7 +328,9 @@ class LiveController:
         from facecore.research.diagnostics import FrameTraceEntry
 
         entry = FrameTraceEntry.from_observation(
-            observation, staged_index=self._frames_sampled - 1
+            observation,
+            staged_index=self._frames_sampled - 1,
+            diag=self._pending_diags.pop(observation.sequence, None),
         )
         append = getattr(self._trace_recorder, "append_trace", None)
         if append is None:

@@ -59,44 +59,57 @@ class FrameTraceEntry:
 
     @classmethod
     def from_observation(
-        cls, obs: FrameObservation, staged_index: int | None = None
+        cls,
+        obs: FrameObservation,
+        staged_index: int | None = None,
+        diag: FrameDiagnostics | None = None,
     ) -> FrameTraceEntry:
         """Build a trace entry from one scored observation (E3 live wiring).
 
-        Preserves the observation's identity-score iteration order exactly;
-        diagnostics carry a structural summary (no pixels/embeddings).
+        Preserves the observation's identity-score iteration order exactly.
+        When the scorer emitted true FrameDiagnostics for this frame
+        (G3 W5), they attach verbatim; a sequence mismatch fails closed
+        instead of misattaching. Without a supplied diag, diagnostics
+        carry a structural summary (no pixels/embeddings).
         """
-        diag = FrameDiagnostics(
-            sequence=obs.sequence,
-            original_shape=(0, 0, 0),
-            normalized_shape=(0, 0, 0),
-            orientation=0,
-            mirrored=False,
-            face_count=obs.face_count,
-            detector_confidence=None,
-            face_box=obs.face_box,
-            landmarks=None,
-            landmark_confidence_is_constant=True,
-            shorter_side_px=None,
-            sharpness=None,
-            mean_luma=None,
-            clipped_fraction=None,
-            yaw_deg=None,
-            pitch_deg=None,
-            quality_status=(
-                "accepted" if obs.quality_pass else "rejected"
-            ),
-            quality_reason_codes=tuple(obs.quality_reasons),
-            detection_missing_reason=(
-                None if obs.face_count > 0 else "no_face_detected"
-            ),
-            quality_missing_reason=(
-                None if obs.quality_pass else "quality_rejected"
-            ),
-            scoring_missing_reason=(
-                None if obs.identity_scores else "no_scores"
-            ),
-        )
+        if diag is not None:
+            if diag.sequence != obs.sequence:
+                raise ValueError(
+                    f"diagnostics sequence {diag.sequence} does not match "
+                    f"observation sequence {obs.sequence}; refusing to attach"
+                )
+        else:
+            diag = FrameDiagnostics(
+                sequence=obs.sequence,
+                original_shape=(0, 0, 0),
+                normalized_shape=(0, 0, 0),
+                orientation=0,
+                mirrored=False,
+                face_count=obs.face_count,
+                detector_confidence=None,
+                face_box=obs.face_box,
+                landmarks=None,
+                landmark_confidence_is_constant=True,
+                shorter_side_px=None,
+                sharpness=None,
+                mean_luma=None,
+                clipped_fraction=None,
+                yaw_deg=None,
+                pitch_deg=None,
+                quality_status=(
+                    "accepted" if obs.quality_pass else "rejected"
+                ),
+                quality_reason_codes=tuple(obs.quality_reasons),
+                detection_missing_reason=(
+                    None if obs.face_count > 0 else "no_face_detected"
+                ),
+                quality_missing_reason=(
+                    None if obs.quality_pass else "quality_rejected"
+                ),
+                scoring_missing_reason=(
+                    None if obs.identity_scores else "no_scores"
+                ),
+            )
         return cls(
             sequence=obs.sequence,
             captured_ns=obs.captured_ns,
