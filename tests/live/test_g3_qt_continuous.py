@@ -272,9 +272,10 @@ class TestQtContinuousMode:
         )
         window.show()
         window.enter_standby()
-        # Manual start: the trigger (face appears) is covered elsewhere;
-        # this round then sees only faceless frames until it terminates.
+        # G3 W8: manual Start no longer fires in the continuous loop;
+        # the low-score faces trigger the round via standby instead.
         window.start_clicked()
+        assert window.mode == "standby"
         window.process_until_terminal(max_steps=200)
         assert window.mode == "result"
         assert window.result_text == "找不到此註冊人員"

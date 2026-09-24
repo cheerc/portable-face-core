@@ -390,8 +390,10 @@ class TestGalleryConfigCLI:
         assert rc == 2
         assert "註冊組建立失敗" in capsys.readouterr().err
 
-    def test_config_flags_route(self, monkeypatch: Any) -> None:
+    def test_config_flags_route(self, monkeypatch: Any, tmp_path: Path) -> None:
         """Parser exposes --config and --gallery-dir."""
+        import json as _json
+
         import facecore.research.cli as research_cli
 
         called: dict[str, object] = {}
@@ -400,6 +402,17 @@ class TestGalleryConfigCLI:
             called.update(kwargs)
             return 17
 
+        config_path = tmp_path / "synthetic-g3-local.json"
+        config_path.write_text(
+            _json.dumps(
+                {
+                    "enrollment_dir": str(tmp_path / "enroll-group"),
+                    "models_dir": str(tmp_path / "models"),
+                    "store_dir": str(tmp_path / "cfg-store"),
+                    "key_dir": str(tmp_path / "cfg-keys"),
+                }
+            )
+        )
         monkeypatch.setattr(research_cli, "cmd_live", fake_cmd_live)
         rc = research_cli.main(
             [
@@ -415,7 +428,7 @@ class TestGalleryConfigCLI:
                 "--record-consent",
                 "--image-consent",
                 "--config",
-                "/tmp/synthetic-g3-local.json",
+                str(config_path),
                 "--gallery-dir",
                 "/tmp/synthetic-enroll-group",
             ]
@@ -464,3 +477,99 @@ class TestGalleryConfigCLI:
             config=tmp_path / "no-such-config.json",
         )
         assert rc == 2
+
+
+class TestConfigStoreDefaults:
+    def test_config_supplies_store_and_key(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """No --store/--key-dir: config values flow into cmd_live."""
+        import json as _json
+
+        import facecore.research.cli as research_cli
+
+        called: dict[str, object] = {}
+
+        def fake_cmd_live(**kwargs: object) -> int:
+            called.update(kwargs)
+            return 17
+
+        config_path = tmp_path / "g3-local.json"
+        config_path.write_text(
+            _json.dumps(
+                {
+                    "enrollment_dir": str(tmp_path / "enroll-group"),
+                    "models_dir": str(tmp_path / "models"),
+                    "store_dir": str(tmp_path / "cfg-store"),
+                    "key_dir": str(tmp_path / "cfg-keys"),
+                }
+            )
+        )
+        monkeypatch.setattr(research_cli, "cmd_live", fake_cmd_live)
+        rc = research_cli.main(
+            [
+                "live",
+                "--profile",
+                "synthetic-profile.json",
+                "--device",
+                "fake",
+                "--session",
+                "synthetic-session",
+                "--record-consent",
+                "--image-consent",
+                "--config",
+                str(config_path),
+            ]
+        )
+        assert rc == 17
+        assert str(called["store"]).endswith("cfg-store")
+        assert str(called["key_dir"]).endswith("cfg-keys")
+
+    def test_explicit_store_wins_over_config(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Explicit --store/--key-dir override the config."""
+        import json as _json
+
+        import facecore.research.cli as research_cli
+
+        called: dict[str, object] = {}
+
+        def fake_cmd_live(**kwargs: object) -> int:
+            called.update(kwargs)
+            return 17
+
+        config_path = tmp_path / "g3-local.json"
+        config_path.write_text(
+            _json.dumps(
+                {
+                    "enrollment_dir": str(tmp_path / "enroll-group"),
+                    "models_dir": str(tmp_path / "models"),
+                    "store_dir": str(tmp_path / "cfg-store"),
+                    "key_dir": str(tmp_path / "cfg-keys"),
+                }
+            )
+        )
+        monkeypatch.setattr(research_cli, "cmd_live", fake_cmd_live)
+        rc = research_cli.main(
+            [
+                "live",
+                "--profile",
+                "synthetic-profile.json",
+                "--store",
+                "/tmp/explicit-store",
+                "--key-dir",
+                "/tmp/explicit-keys",
+                "--device",
+                "fake",
+                "--session",
+                "synthetic-session",
+                "--record-consent",
+                "--image-consent",
+                "--config",
+                str(config_path),
+            ]
+        )
+        assert rc == 17
+        assert str(called["store"]) == "/tmp/explicit-store"
+        assert str(called["key_dir"]) == "/tmp/explicit-keys"
