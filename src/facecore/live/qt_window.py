@@ -19,8 +19,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 import time
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import numpy as np
 
@@ -32,6 +33,9 @@ from facecore.live.contracts import (
 )
 from facecore.live.desktop import DesktopSession
 from facecore.research.records import ConsentRecord
+
+if TYPE_CHECKING:
+    from facecore.research.recorder import ResearchRecorder
 
 
 @dataclass(frozen=True)
@@ -231,7 +235,7 @@ else:
             desktop: DesktopSession,
             *,
             consent: ConsentRecord,
-            recorder: object | None = None,
+            recorder: ResearchRecorder | None = None,
             attempt_id: str | None = None,
             session_id: str | None = None,
             device_id: str = "default",
@@ -244,6 +248,7 @@ else:
             ]
             | None = None,
             camera_options: list[tuple[int, str]] | None = None,
+            results_csv: Path | None = None,
         ) -> None:
             super().__init__()
             self.desktop = desktop
@@ -278,6 +283,9 @@ else:
             # None means no picker (legacy behavior); an empty list means
             # no camera was found (startup refuses with 找不到相機).
             self._camera_options = list(camera_options or [])
+            # G3 W8: results.csv path for commit-on-label (None keeps the
+            # W4 memory-queue behavior for callers without a csv target).
+            self._results_csv = results_csv
 
             if (recorder is None) != (attempt_id is None):
                 raise ValueError("recorder and attempt_id must be given together")
@@ -382,12 +390,21 @@ else:
             self.incorrect_button.setEnabled(False)
 
         def _camera_picked(self, row: int) -> None:
-            """G3 W6: operator picks a camera; nothing starts by itself."""
+            """G3 W8: a pick routes the device and starts standby.
+
+            The W6 docstring promise (nothing starts by itself) is
+            superseded: commander BLOCKING showed the loop never starts
+            otherwise (enter_standby refuses unpicked, nobody retries).
+            In the continuous loop a pick enters standby at once; the
+            single-round path still starts only via Start.
+            """
             picked = self.camera_combo.itemData(row)
             if picked is None:
                 return
             self.device_id = str(picked)
             self.device_label.setText(f"裝置 · device: {self.device_id}")
+            if self._next_session is not None and self._mode != self._MODE_RUNNING:
+                self.enter_standby()
 
         def selected_camera_index(self) -> int | None:
             """Picked OpenCV index, or None when the prompt row is current."""
@@ -458,10 +475,16 @@ else:
 
         def start_clicked(self) -> None:
             """Start the existing DesktopSession after both consent checks."""
-            if self._next_session is not None and self._mode != self._MODE_STANDBY:
-                # Continuous loop: manual Start only fires from standby;
-                # standby auto-trigger and key flow own the transitions.
+            if self._next_session is not None:
+                # G3 W8: the continuous loop owns starting (standby
+                # trigger + key flow). Manual Start would run the
+                # never-started initial desktop, contradicting the
+                # close-out invariant — refuse, never start it.
                 return
+            self._start_round()
+
+        def _start_round(self) -> None:
+            """Start the current round desktop (single Start or trigger)."""
             if not (
                 self.record_consent_checkbox.isChecked()
                 and self.image_consent_checkbox.isChecked()
@@ -589,7 +612,10 @@ else:
                 self._set_status(f"standby failed: {type(exc).__name__}")
                 return
             self._mode = self._MODE_STANDBY
-            self.start_button.setEnabled(True)
+            # G3 W8: Start stays disabled in the continuous loop (the
+            # loop owns starting; manual Start would run the initial
+            # desktop against the close-out invariant).
+            self.start_button.setEnabled(False)
             self.cancel_button.setEnabled(False)
             self.correct_button.setEnabled(False)
             self.incorrect_button.setEnabled(False)
@@ -624,7 +650,7 @@ else:
                 self._standby_timer.stop()
                 return
             if observation.face_count >= 1:
-                self.start_clicked()
+                self._start_round()
 
         def _enter_result(self, result: Any) -> None:
             """Show the round result and arm the 正確／錯誤 keys."""
@@ -711,20 +737,30 @@ else:
                 return
             terminal = self.desktop.terminal
             if terminal is not None:
-                # G3 W4: queue the labeled round for record commit; the
-                # CLI tail commits after the window closes.
-                self.completed_rounds.append(
-                    RoundComplete(
-                        session_id=self.desktop.session_id,
-                        attempt_id=self.attempt_id,
-                        terminal=terminal,
-                        observations=tuple(self.desktop.observations),
-                        label_kind=label_kind,
-                        label_identity=label_identity,
-                        profile_version=self.desktop.profile_version,
-                        started_utc=self._round_started_utc or "",
-                    )
+                round_complete = RoundComplete(
+                    session_id=self.desktop.session_id,
+                    attempt_id=self.attempt_id,
+                    terminal=terminal,
+                    observations=tuple(self.desktop.observations),
+                    label_kind=label_kind,
+                    label_identity=label_identity,
+                    profile_version=self.desktop.profile_version,
+                    started_utc=self._round_started_utc or "",
                 )
+                if self._results_csv is not None and self.recorder is not None:
+                    # G3 W8: commit on label (bundle + attempt + csv row)
+                    # so a crash before close loses nothing labeled.
+                    from facecore.research.cli import commit_g3_rounds
+
+                    committed, failed = commit_g3_rounds(
+                        self.recorder, self._results_csv, [round_complete]
+                    )
+                    if failed > 0 or committed != 1:
+                        self._set_status("紀錄寫入失敗")
+                        return
+                # Queue the labeled round (committed above when a csv
+                # target exists; otherwise the CLI tail commits on close).
+                self.completed_rounds.append(round_complete)
             self.correct_button.setEnabled(False)
             self.incorrect_button.setEnabled(False)
             self._set_status("已標註 · labeled")

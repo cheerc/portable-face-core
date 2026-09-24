@@ -609,8 +609,9 @@ def cmd_live(
     spec §2 standby → round → result → key → standby loop over one
     shared camera handle instead of a single round. G3 W3: every round
     gets its own attempt and the operator verdict key persists into
-    that round's label sidecar; only the first round is committed by
-    the tail below (per-round record commit is W4).
+    that round's label sidecar. G3 W8: the key press commits the round
+    at once (bundle + attempt + csv row); the close-out tail only
+    aborts the never-labeled remainder.
     """
     try:
         profile = _load_profile(profile_path)
@@ -658,6 +659,15 @@ def cmd_live(
             models = local_config.models_dir
         if gallery_dir is None and corpus is None:
             gallery_dir = local_config.enrollment_dir
+        # G3 W8: config store_dir/key_dir take effect (explicit
+        # --store/--key-dir from main already override the config, so
+        # reaching this point with a config means its paths win).
+        try:
+            store_root = resolve_store(local_config.store_dir)
+        except (ValueError, StorePathError) as exc:
+            print(f"research live: {exc}", file=sys.stderr)
+            return 2
+        key_dir = local_config.key_dir
 
     from datetime import timedelta
 
@@ -1143,6 +1153,10 @@ def cmd_live(
             clock_advance=_qt_advance_ns,
             next_session=next_session_factory,
             camera_options=camera_options if device != "fake" else None,
+            # G3 W8: commit on label needs the csv target up front.
+            results_csv=store_root / "results.csv"
+            if next_session_factory is not None
+            else None,
         )
         if device != "fake" and not camera_options:
             # G3 W6 spec §7-2: no camera at all → Chinese reason, stay
@@ -1297,7 +1311,6 @@ def cmd_live(
     # test data (spec §3 requires the label column).
     if continuous and qt_window is not None:
         rounds = list(qt_window.completed_rounds)
-        results_csv = store_root / "results.csv"
         committed_ids = {round_.session_id for round_ in rounds}
         if staged_errors:
             print(
@@ -1306,10 +1319,6 @@ def cmd_live(
                 file=sys.stderr,
             )
             for round_ in rounds:
-                try:
-                    recorder.abort(round_.terminal.session_id, reason="staging_failed")
-                except Exception:
-                    pass
                 if round_.attempt_id is not None:
                     try:
                         recorder.finish_attempt(
@@ -1327,10 +1336,12 @@ def cmd_live(
             desktop.close()
             qt_window.close()
             return 4
-        committed, failed = commit_g3_rounds(recorder, results_csv, rounds)
-        # Abort sessions that were staged but never labeled: the current
-        # window round (terminal or idle standby) and the never-started
-        # initial session.
+        # G3 W8: rounds committed on label already; the tail only aborts
+        # the never-labeled remainder (current round + initial session).
+        try:
+            current_session_id = qt_window.desktop.session_id
+        except Exception:
+            current_session_id = None
         try:
             current_session_id = qt_window.desktop.session_id
         except Exception:
@@ -1357,14 +1368,15 @@ def cmd_live(
                     pass
         desktop.close()
         qt_window.close()
-        if committed > 0 and failed == 0:
+        committed = len(rounds)
+        if committed > 0:
             _emit(
                 {
                     "session_id": session_id,
                     "status": "continuous_complete",
                     "window": window_label,
                     "rounds_committed": committed,
-                    "results_csv": str(results_csv),
+                    "results_csv": str(store_root / "results.csv"),
                     "generation": model_generation,
                     "gallery_digest": gallery_digest,
                 }
@@ -1867,7 +1879,9 @@ def main(argv: list[str] | None = None) -> int:
 
     live = sub.add_parser("live")
     live.add_argument("--profile", required=True, type=Path)
-    live.add_argument("--store", required=True, type=Path)
+    # G3 W8: --store falls back to the config store_dir when --config
+    # is given (explicit --store still wins; neither → usage error).
+    live.add_argument("--store", required=False, type=Path, default=None)
     live.add_argument("--key-dir", required=False, type=Path, default=None)
     live.add_argument("--device", required=True)
     live.add_argument("--session", required=True)
@@ -1961,6 +1975,29 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
+    # G3 W8: config supplies store/key defaults; explicit flags win.
+    if getattr(args, "command", None) == "live" and getattr(
+        args, "config", None
+    ) is not None:
+        from facecore.research.g3_config import load_g3_config as _load_cfg_main
+
+        try:
+            _cfg_main = _load_cfg_main(args.config)
+        except ValueError as exc:
+            print(f"research live: {exc}", file=sys.stderr)
+            return 2
+        if getattr(args, "store", None) is None:
+            args.store = _cfg_main.store_dir
+        if getattr(args, "key_dir", None) is None:
+            args.key_dir = _cfg_main.key_dir
+    if getattr(args, "command", None) == "live" and getattr(
+        args, "store", None
+    ) is None:
+        print(
+            "research live: --store is required (or --config with store_dir)",
+            file=sys.stderr,
+        )
+        return 2
     default_key_dir = (
         Path(args.store) / ".." / "research_keys"
         if getattr(args, "store", None) is not None
