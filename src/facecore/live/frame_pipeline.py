@@ -128,6 +128,80 @@ class ScoringContext:
         )
 
 
+GALLERY_IMAGE_SUFFIXES = frozenset(
+    {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
+)
+
+
+def build_gallery_from_folder(
+    folder: Path,
+    *,
+    detector: Any,
+    embedder: Any,
+    generation: str = "gen-1",
+) -> ResearchGallery:
+    """Build a G3 gallery straight from an enrollment folder (spec §2-2).
+
+    Identity is the file stem (e.g. ``enroll-23.png`` → ``enroll-23``).
+    Every photo must hold exactly one face; otherwise the offending file
+    is named LOUD. Non-image files are ignored. Duplicate identities
+    (same stem, different suffix) refuse.
+    """
+    if not folder.is_dir():
+        raise ValueError(f"enrollment folder missing: {folder}")
+    photos = sorted(
+        path
+        for path in folder.iterdir()
+        if path.is_file() and path.suffix.lower() in GALLERY_IMAGE_SUFFIXES
+    )
+    if not photos:
+        raise ValueError(f"enrollment folder holds no photos: {folder}")
+    embeddings: dict[str, np.ndarray] = {}
+    for photo_path in photos:
+        ident = photo_path.stem
+        if not ident:
+            raise ValueError(f"enrollment photo has empty identity: {photo_path}")
+        if ident in embeddings:
+            raise ValueError(
+                f"duplicate identity in enrollment folder: {ident!r} "
+                f"({photo_path.name})"
+            )
+        with Image.open(photo_path) as img:
+            rgb_img = img.convert("RGB")
+            width, height = rgb_img.width, rgb_img.height
+            pixels = rgb_img.tobytes()
+        decoded = DecodedImage(
+            width=width,
+            height=height,
+            color_order="RGB",
+            pixels=pixels,
+        )
+        detected_faces = detector.detect(decoded)
+        status, reason, face = enforce_single_face(detected_faces)
+        if status != "ok" or face is None:
+            raise ValueError(
+                f"enrollment photo {photo_path.name} rejected: "
+                f"{reason or 'no single face'}"
+            )
+        crop = align_crop(decoded.pixels, decoded.width, decoded.height, face)
+        vector, _model_ver = embedder.embed(crop)
+        embeddings[ident] = vector
+
+    hasher = hashlib.sha256()
+    for ident in sorted(embeddings.keys()):
+        hasher.update(ident.encode("utf-8"))
+        hasher.update(embeddings[ident].tobytes())
+    gal_digest = hasher.hexdigest()
+
+    model_ver = getattr(embedder, "model_version", "sface_2021dec")
+    return ResearchGallery(
+        embeddings=embeddings,
+        model_version=model_ver,
+        generation=generation,
+        digest=gal_digest,
+    )
+
+
 def build_research_gallery(
     manifest_path: Path,
     *,

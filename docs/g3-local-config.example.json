@@ -1,0 +1,7 @@
+{
+  "enrollment_dir": "~/Downloads/face_sample/enroll-group",
+  "models_dir": "~/Downloads/face_sample/_facecore/models",
+  "store_dir": "~/Downloads/face_sample/_facecore/store",
+  "key_dir": "~/Downloads/face_sample/_facecore/keys",
+  "_note": "範本：複製為 ~/Downloads/face_sample/_facecore/g3-local.json 後依本機填寫。本檔只放路徑佔位，不放本機相機識別碼，完成後不進 Git。"
+}
