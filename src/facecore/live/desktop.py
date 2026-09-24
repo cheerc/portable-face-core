@@ -184,20 +184,35 @@ class DesktopSession:
         self._recording = False
         return cancelled
 
-    def run_until_terminal(self, max_steps: int = 100) -> SessionResult | None:
-        """Drive pump→score→engine synchronously (headless/test path)."""
+    def run_until_terminal(
+        self, max_steps: int = 100, finish_on_exhaust: bool = True
+    ) -> SessionResult | None:
+        """Drive pump→score→engine synchronously (headless/test path).
+
+        finish_on_exhaust (G3 R1 PR-A): when True (default, legacy
+        callers), step exhaustion concludes the session at the
+        controller clock. When False (Qt tick driving), exhaustion
+        leaves a still-progressable session running so later ticks can
+        continue until the engine locks, the deadline passes, or the
+        source dries. A fixed-window collector that already stopped
+        (source exhausted / cap reached) still finishes even when
+        False — no later tick can progress it.
+        """
         if self._state != "running":
             raise RuntimeError(f"cannot run from state {self._state!r}")
         terminal = self._controller.run_until_terminal(max_steps=max_steps)
         if terminal is None:
+            collector_stopped = self._controller._fixed_seconds and (
+                self._controller.collection_stop_reason != "in_progress"
+            )
             if (
                 self._controller._fixed_seconds
                 and self._controller.collection_stop_reason == "in_progress"
             ):
                 return None
-            terminal = self._controller.finish(
-                self._controller._controller_now_ns()
-            )
+            if not finish_on_exhaust and not collector_stopped:
+                return None
+            terminal = self._controller.finish(self._controller._controller_now_ns())
         self._terminal = terminal
         if (
             self._controller._fixed_seconds
@@ -225,9 +240,7 @@ class DesktopSession:
         self._controller.start_background_pump()
         terminal = self._controller.run_until_terminal(max_steps=200)
         if terminal is None:
-            terminal = self._controller.finish(
-                self._controller._controller_now_ns()
-            )
+            terminal = self._controller.finish(self._controller._controller_now_ns())
         self._terminal = terminal
         if (
             self._controller._fixed_seconds
@@ -369,10 +382,7 @@ class DesktopSession:
     @property
     def has_label_persistence(self) -> bool:
         """True when a verdict key press can persist (G3 W3 fail-closed)."""
-        return (
-            self._label_recorder is not None
-            and self._label_attempt_id is not None
-        )
+        return self._label_recorder is not None and self._label_attempt_id is not None
 
     @property
     def profile_version(self) -> str:

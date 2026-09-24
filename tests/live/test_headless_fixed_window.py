@@ -362,19 +362,22 @@ class TestHeadlessFixedWindowDeadline:
 
         Guards the F1-adjacent invariant the bounded test relies on: if
         either caller ever diverges from 50, this fails at review time
-        instead of silently changing tick granularity.
+        instead of silently changing tick granularity. Matches the call
+        prefix so Qt may pass keyword options (G3 R1 PR-A
+        finish_on_exhaust=False keeps the 50-step budget unchanged).
         """
         import inspect
+        import re
         from pathlib import Path
 
         from facecore.research import cli as cli_module
         import facecore.live.qt_window as qt_module
 
         cli_src = inspect.getsource(cli_module.cmd_live)
-        assert "run_until_terminal(max_steps=50)" in cli_src
+        assert re.search(r"run_until_terminal\(max_steps=50[,)]", cli_src)
         assert qt_module.__file__ is not None
         qt_src = Path(qt_module.__file__).read_text(encoding="utf-8")
-        assert "run_until_terminal(max_steps=50)" in qt_src
+        assert re.search(r"run_until_terminal\(\s*max_steps=50[,)]", qt_src)
 
     def test_cancel_pre_lock_stops_collection(self) -> None:
         """Deterministic pre-lock Cancel stops immediately with cancelled terminal."""
