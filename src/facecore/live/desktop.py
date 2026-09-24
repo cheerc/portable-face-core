@@ -68,6 +68,7 @@ class DesktopSession:
         label_recorder: object | None = None,
         label_attempt_id: str | None = None,
         label_actor_ref: str = "desktop-operator",
+        release_source_on_terminal: bool = True,
     ) -> None:
         if not session_id:
             raise ValueError("session_id must not be empty")
@@ -82,6 +83,7 @@ class DesktopSession:
             fixed_seconds=fixed_seconds,
             trace_recorder=trace_recorder,
             trace_attempt_id=trace_attempt_id,
+            release_source_on_terminal=release_source_on_terminal,
         )
         self._engine = engine
         self._session_id = session_id
@@ -339,6 +341,17 @@ class DesktopSession:
         if self._state != "labeled":
             self._state = "closed"
 
+    def detach(self) -> None:
+        """Discard a finished round without releasing the shared source.
+
+        G3 W2 round handoff: stops the pump and joins workers, but the
+        camera handle stays open for the next round built over the same
+        source. Only the live window's current round is closed with
+        close() (which releases the source).
+        """
+        self._controller.close_without_source()
+        self._recording = False
+
     # -- diagnostics (delegated, read-only) ------------------------------------
     @property
     def source_closed(self) -> bool:
@@ -351,6 +364,16 @@ class DesktopSession:
     @property
     def terminal(self) -> SessionResult | None:
         return self._terminal
+
+    @property
+    def source(self) -> CaptureSource:
+        """Shared capture source (read-only; G3 W2 standby preview)."""
+        return self._controller.source
+
+    @property
+    def scorer(self) -> Callable[[FramePacket], FrameObservation]:
+        """Scoring function (read-only; G3 W2 standby face trigger)."""
+        return self._controller.scorer
 
     @property
     def observations(self) -> list[FrameObservation]:

@@ -390,8 +390,16 @@ def cmd_live(
     experiment_id: str = "exp-cli-e3",
     attempt_id: str | None = None,
     presence_mode: str = "collection",
+    continuous: bool = False,
 ) -> int:
-    """Run one bounded research session (fake pump or real camera)."""
+    """Run one bounded research session (fake pump or real camera).
+
+    continuous (G3 W2): when True with --ui qt, the Qt window runs the
+    spec §2 standby → round → result → key → standby loop over one
+    shared camera handle instead of a single round. Round 2+ uses
+    placeholder keys without label/attempt persistence (W3/W4 own that);
+    only the first round is committed by the tail below.
+    """
     try:
         profile = _load_profile(profile_path)
         store_root = resolve_store(store)
@@ -414,6 +422,12 @@ def cmd_live(
     if qt_offscreen and device != "fake":
         print(
             "research live: --qt-offscreen only supports --device fake",
+            file=sys.stderr,
+        )
+        return 2
+    if continuous and ui != "qt":
+        print(
+            "research live: --continuous requires --ui qt",
             file=sys.stderr,
         )
         return 2
@@ -695,6 +709,9 @@ def cmd_live(
         fixed_seconds=fixed_seconds,
         trace_recorder=recorder if is_true_path else None,
         trace_attempt_id=resolved_attempt_id if is_true_path else None,
+        # G3 W2: the continuous loop keeps one camera handle across
+        # rounds; the terminal path must not release it mid-loop.
+        release_source_on_terminal=False if continuous else True,
     )
     import time as _time
 
@@ -737,6 +754,40 @@ def cmd_live(
             # The Qt smoke path is synthetic and never touches a camera device.
             os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         qt_app = QApplication.instance() or QApplication([])
+        next_session_factory = None
+        if continuous:
+            from datetime import timedelta as _td
+
+            round_counter = 0
+
+            def next_session_factory() -> tuple[DesktopSession, ConsentRecord]:
+                nonlocal round_counter
+                round_counter += 1
+                round_session_id = f"{session_id}-r{round_counter}"
+                round_now = _now_utc()
+                return (
+                    DesktopSession(
+                        engine=SessionEngine(
+                            profile, gallery_digest, model_generation
+                        ),
+                        source=source,
+                        scorer=scorer,
+                        session_id=round_session_id,
+                        release_source_on_terminal=False,
+                    ),
+                    ConsentRecord(
+                        session_id=round_session_id,
+                        participant_id="cli-operator",
+                        record_consent=True,
+                        image_consent=True,
+                        consented_at_utc=round_now.isoformat(),
+                        record_expires_at_utc=(
+                            round_now + _td(days=30)
+                        ).isoformat(),
+                        image_expires_at_utc=(round_now + _td(days=7)).isoformat(),
+                    ),
+                )
+
         qt_window = QtResearchWindow(
             desktop,
             consent=consent,
@@ -746,10 +797,13 @@ def cmd_live(
             offscreen=qt_offscreen,
             clock_ns=qt_clock_ns,
             clock_advance=_qt_advance_ns,
+            next_session=next_session_factory,
         )
     try:
         if qt_window is None:
             desktop.on_start(consent, now_ns=start_ns, device_id=device)
+        elif continuous:
+            qt_window.enter_standby()
         else:
             qt_window.start_clicked()
     except (PermissionError, ValueError, RuntimeError) as exc:
@@ -1395,6 +1449,14 @@ def main(argv: list[str] | None = None) -> int:
     live.add_argument("--corpus", required=False, type=Path, default=None)
     live.add_argument("--models", required=False, type=Path, default=None)
     live.add_argument(
+        "--continuous",
+        action="store_true",
+        help=(
+            "G3 W2: Qt standby → round → result → key → standby loop over "
+            "one camera handle (requires --ui qt)"
+        ),
+    )
+    live.add_argument(
         "--presence-mode",
         choices=["collection", "checkpoint"],
         default="collection",
@@ -1465,6 +1527,7 @@ def main(argv: list[str] | None = None) -> int:
             models=args.models,
             corpus=args.corpus,
             presence_mode=args.presence_mode,
+            continuous=args.continuous,
         )
     if args.command == "replay":
         return cmd_replay(

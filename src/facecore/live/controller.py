@@ -63,6 +63,7 @@ class LiveController:
         fixed_seconds: bool = False,
         trace_recorder: object | None = None,
         trace_attempt_id: str | None = None,
+        release_source_on_terminal: bool = True,
     ) -> None:
         """frame_sink (t-3): optional per-sampled-frame staging hook.
 
@@ -77,6 +78,10 @@ class LiveController:
         collector continues to the original deadline for arm A + trace.
         trace_recorder/trace_attempt_id (E3): when both set, each scored
         observation is persisted via ``append_trace`` on the live path.
+        release_source_on_terminal (G3 W2): when False, a terminal session
+        stops the pump and joins workers but keeps the source open so the
+        next round reuses the same camera handle (spec §2: camera stays
+        open across rounds). Default True preserves single-round behavior.
         """
         profile = engine.profile
         if sample_interval_ns <= 0:
@@ -104,6 +109,7 @@ class LiveController:
         self._fixed_seconds = fixed_seconds
         self._trace_recorder = trace_recorder
         self._trace_attempt_id = trace_attempt_id
+        self._release_source_on_terminal = release_source_on_terminal
         self._scored_observations: list[FrameObservation] = []
 
         self._queue: LatestSlot1Queue[FramePacket] = LatestSlot1Queue()
@@ -572,7 +578,7 @@ class LiveController:
         self._stop_pump_and_join()
         with self._lock:
             joined = all(not t.is_alive() for t in self._tracked_threads)
-        if joined:
+        if joined and self._release_source_on_terminal:
             self._release_source()
 
     def start_background_pump(self) -> None:
@@ -603,6 +609,23 @@ class LiveController:
             self._source.close()
         except Exception:
             pass
+
+    def close_without_source(self) -> None:
+        """Stop the pump and join workers, keeping the source open.
+
+        G3 W2 round handoff: the discarded round's controller must never
+        release the shared camera handle; the live window (or its current
+        round) owns the final release via close().
+        """
+        with self._lock:
+            if self._closed:
+                self._join_tracked_locked()
+                return
+            self._closed = True
+            self._pump_stop.set()
+            self._join_tracked_locked()
+        with self._lock:
+            self._pump_thread = None
 
     def close(self) -> None:
         """Stop the pump, join it, then release the source.
@@ -648,6 +671,16 @@ class LiveController:
     @property
     def source_closed(self) -> bool:
         return self._source.is_closed
+
+    @property
+    def source(self) -> CaptureSource:
+        """Capture source (read-only; G3 W2 standby preview/trigger)."""
+        return self._source
+
+    @property
+    def scorer(self) -> Scorer:
+        """Scoring function (read-only; G3 W2 standby face trigger)."""
+        return self._scorer
 
     @property
     def tracked_threads(self) -> list[threading.Thread]:

@@ -195,6 +195,7 @@ class OpenCVCapture(CaptureSource):
     def __init__(self, device_id: int = 0) -> None:
         self._device_id = device_id
         self._handle: object | None = None
+        self._open_index: int | None = None
         self._sequence = 0
         self._closed = True
         self._lock = threading.Lock()
@@ -223,6 +224,15 @@ class OpenCVCapture(CaptureSource):
                     index = int(device_id)
                 except ValueError:
                     index = self._device_id
+            if (
+                self._handle is not None
+                and not self._closed
+                and self._open_index == index
+            ):
+                # G3 W2: the same camera is already open (round handoff
+                # keeps the handle); reopening would tear down and
+                # rebuild the native capture. Idempotent no-op.
+                return
             backend = getattr(cv2, "CAP_AVFOUNDATION", 0)
             handle = cv2.VideoCapture(index, backend)
             if not handle.isOpened():
@@ -230,6 +240,7 @@ class OpenCVCapture(CaptureSource):
                     f"camera device {device_id!r} could not be opened"
                 )
             self._handle = handle
+            self._open_index = index
             self._sequence = 0
             self._closed = False
 
@@ -258,6 +269,7 @@ class OpenCVCapture(CaptureSource):
     def close(self) -> None:
         with self._lock:
             handle, self._handle = self._handle, None
+            self._open_index = None
             self._closed = True
         if handle is not None:
             handle.release()  # type: ignore[attr-defined]
