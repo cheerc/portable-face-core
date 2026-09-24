@@ -108,7 +108,8 @@ def _open_window(qt_app: Any, factory: _RoundFactory) -> QtResearchWindow:
         next_session=factory,
     )
     window.show()
-    window.enter_standby()
+    window.enter_ready()
+    window.start_clicked()
     return window
 
 
@@ -127,15 +128,13 @@ class TestG3RoundRecords:
         self, qt_app: Any, tmp_path: Path
     ) -> None:
         """A key press queues full round material for the CLI tail."""
-        factory = _RoundFactory(
-            tmp_path, FakeCapture(_face_frames()), _matching_scorer
-        )
+        factory = _RoundFactory(tmp_path, FakeCapture(_face_frames()), _matching_scorer)
         window = _open_window(qt_app, factory)
         window.process_until_terminal(max_steps=200)
         assert window.mode == "result"
         round_attempt = factory.attempt_ids[-1]
         window.press_correct()
-        assert window.mode == "standby"
+        assert window.mode == "ready"
         assert len(window.completed_rounds) == 1
         queued = window.completed_rounds[0]
         assert queued.session_id.startswith("g3w4-round-")
@@ -150,12 +149,11 @@ class TestG3RoundRecords:
 
     def test_two_rounds_csv_matches_store(self, qt_app: Any, tmp_path: Path) -> None:
         """Two labeled rounds → two commits + two csv rows, no images."""
-        factory = _RoundFactory(
-            tmp_path, FakeCapture(_face_frames()), _matching_scorer
-        )
+        factory = _RoundFactory(tmp_path, FakeCapture(_face_frames()), _matching_scorer)
         window = _open_window(qt_app, factory)
         window.process_until_terminal(max_steps=200)
         window.press_correct()
+        window.start_clicked()
         window.process_until_terminal(max_steps=200)
         window.press_incorrect()
         assert len(window.completed_rounds) == 2
@@ -261,9 +259,7 @@ class TestG3ContinuousCloseout:
             image_consent=True,
         )
         assert rc == 0
-        manifest = _json.loads(
-            (store / "g3w4-smoke-ttl" / "manifest.json").read_text()
-        )
+        manifest = _json.loads((store / "g3w4-smoke-ttl" / "manifest.json").read_text())
         created = datetime.fromisoformat(manifest["created_at_utc"])
         record_exp = datetime.fromisoformat(manifest["record_expires_at_utc"])
         image_exp = datetime.fromisoformat(manifest["image_expires_at_utc"])
@@ -280,9 +276,7 @@ class TestG3ReopenContinuity:
 
         results_csv = tmp_path / "results.csv"
         first_rows: list[dict[str, str]] = []
-        factory = _RoundFactory(
-            tmp_path, FakeCapture(_face_frames()), _matching_scorer
-        )
+        factory = _RoundFactory(tmp_path, FakeCapture(_face_frames()), _matching_scorer)
         window = _open_window(qt_app, factory)
         window.process_until_terminal(max_steps=200)
         window.press_correct()

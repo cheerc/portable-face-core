@@ -355,6 +355,15 @@ class DesktopSession:
         if self._state != "labeled":
             self._state = "closed"
 
+    def release_source(self) -> None:
+        """Release the camera handle, keeping terminal state labelable.
+
+        G3 R1 PR-B: result/Cancel shows with the lens shut while the
+        desktop stays in terminal (label_terminal requires it).
+        """
+        self._controller.release_source()
+        self._recording = False
+
     def detach(self) -> None:
         """Discard a finished round without releasing the shared source.
 
@@ -395,12 +404,12 @@ class DesktopSession:
 
     @property
     def source(self) -> CaptureSource:
-        """Shared capture source (read-only; G3 W2 standby preview)."""
+        """Shared capture source (read-only; R1 Ready shows no preview)."""
         return self._controller.source
 
     @property
     def scorer(self) -> Callable[[FramePacket], FrameObservation]:
-        """Scoring function (read-only; G3 W2 standby face trigger)."""
+        """Scoring function (read-only; rounds start only on Start)."""
         return self._controller.scorer
 
     @property

@@ -118,7 +118,8 @@ def _open_window(
         next_session=factory,
     )
     window.show()
-    window.enter_standby()
+    window.enter_ready()
+    window.start_clicked()
     return window
 
 
@@ -135,7 +136,7 @@ class TestG3LabelButtons:
         assert shown.startswith("person-synth-01")
         round_attempt = factory.attempt_ids[-1]
         window.press_incorrect()
-        assert window.mode == "standby"
+        assert window.mode == "ready"
         stored = factory.recorder.read_label(round_attempt)
         assert stored.kind == "uncertain"
         assert stored.identity_id is None
@@ -152,7 +153,7 @@ class TestG3LabelButtons:
         assert window.mode == "result"
         round_attempt = factory.attempt_ids[-1]
         window.press_correct()
-        assert window.mode == "standby"
+        assert window.mode == "ready"
         stored = factory.recorder.read_label(round_attempt)
         assert stored.kind == "enrolled"
         assert stored.identity_id == "person-synth-01"
@@ -168,7 +169,7 @@ class TestG3LabelButtons:
         assert window.result_text == "找不到此註冊人員"
         round_attempt = factory.attempt_ids[-1]
         window.press_correct()
-        assert window.mode == "standby"
+        assert window.mode == "ready"
         stored = factory.recorder.read_label(round_attempt)
         assert stored.kind == "unenrolled"
         assert stored.identity_id is None
@@ -192,9 +193,7 @@ class TestG3LabelButtons:
             nonlocal counter
             counter += 1
             sibling = DesktopSession(
-                engine=SessionEngine(
-                    _profile(), "gallery-qt-test", "gen-qt-test"
-                ),
+                engine=SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test"),
                 source=source,
                 scorer=_matching_scorer,
                 session_id=f"g3w3-unbound-{counter}",
@@ -212,7 +211,8 @@ class TestG3LabelButtons:
             next_session=next_session,
         )
         window.show()
-        window.enter_standby()
+        window.enter_ready()
+        window.start_clicked()
         window.process_until_terminal(max_steps=200)
         assert window.mode == "result"
         window.press_correct()

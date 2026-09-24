@@ -91,8 +91,7 @@ class LiveController:
             )
         if max_frames <= 0 or max_frames > profile.max_frames:
             raise ValueError(
-                f"max_frames must be in [1, {profile.max_frames}], "
-                f"got {max_frames}"
+                f"max_frames must be in [1, {profile.max_frames}], got {max_frames}"
             )
         if (trace_recorder is None) != (trace_attempt_id is None):
             raise ValueError(
@@ -102,9 +101,7 @@ class LiveController:
         self._source = source
         self._scorer = scorer
         self._sample_interval_ns = sample_interval_ns
-        self._max_frames = (
-            profile.max_frames if fixed_seconds else max_frames
-        )
+        self._max_frames = profile.max_frames if fixed_seconds else max_frames
         self._frame_sink = frame_sink
         self._frame_transform = frame_transform
         self._fixed_seconds = fixed_seconds
@@ -334,9 +331,7 @@ class LiveController:
         )
         append = getattr(self._trace_recorder, "append_trace", None)
         if append is None:
-            raise AttributeError(
-                "trace_recorder has no append_trace method"
-            )
+            raise AttributeError("trace_recorder has no append_trace method")
         try:
             append(self._trace_attempt_id, entry)
         except ValueError as exc:
@@ -624,6 +619,25 @@ class LiveController:
         except Exception:
             pass
 
+    def release_source(self) -> None:
+        """Release the camera handle but keep session state intact.
+
+        G3 R1 PR-B: the terminal result shows while the lens is
+        already shut, yet the desktop must stay labelable
+        (terminal, not closed). Stops and joins the pump first so
+        no native read races the close (issue #64 ordering).
+        """
+        with self._lock:
+            if self._closed:
+                self._join_tracked_locked()
+            else:
+                self._closed = True
+                self._pump_stop.set()
+                self._join_tracked_locked()
+        self._release_source()
+        with self._lock:
+            self._pump_thread = None
+
     def close_without_source(self) -> None:
         """Stop the pump and join workers, keeping the source open.
 
@@ -688,12 +702,12 @@ class LiveController:
 
     @property
     def source(self) -> CaptureSource:
-        """Capture source (read-only; G3 W2 standby preview/trigger)."""
+        """Capture source (read-only; opened only by Start)."""
         return self._source
 
     @property
     def scorer(self) -> Scorer:
-        """Scoring function (read-only; G3 W2 standby face trigger)."""
+        """Scoring function (read-only; rounds start only on Start)."""
         return self._scorer
 
     @property

@@ -67,6 +67,12 @@ jobs:
         run: pip install -e .[dev,research-ui]
       - name: Run offscreen synthetic Qt smoke
         run: python -m pytest tests/live/test_qt_window.py -q
+      - name: Run G3 Start-gated integration (R1 §2/§5, PR-B)
+        run: >-
+          python -m pytest
+          tests/live/test_g3_start_gated_flow.py
+          tests/live/test_g3_commit_on_label.py
+          -q
       - name: Run Qt lifecycle regression (staging fail-closed)
         run: >-
           python -m pytest

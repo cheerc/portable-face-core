@@ -265,7 +265,7 @@ class TestCameraPickerUI:
         # Prompt row + two cameras; nothing preselected, nothing started.
         assert window.camera_combo.count() == 3
         assert window.selected_camera_index() is None
-        assert window.mode == "standby"
+        assert window.mode == "ready"
         assert desktop.state == "idle"
         # Picking the second camera routes its index to the device.
         window.camera_combo.setCurrentIndex(2)
@@ -437,9 +437,7 @@ class TestGalleryConfigCLI:
         assert str(called["config"]).endswith("synthetic-g3-local.json")
         assert str(called["gallery_dir"]).endswith("synthetic-enroll-group")
 
-    def test_config_missing_file_refuses(
-        self, tmp_path: Path, capsys: Any
-    ) -> None:
+    def test_config_missing_file_refuses(self, tmp_path: Path, capsys: Any) -> None:
         """Unreadable config refuses before any camera work."""
         import json as _json
 
