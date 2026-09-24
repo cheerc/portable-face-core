@@ -243,9 +243,7 @@ else:
             offscreen: bool = False,
             clock_ns: Callable[[], int] = time.monotonic_ns,
             clock_advance: Callable[[], None] | None = None,
-            next_session: Callable[
-                [], tuple[DesktopSession, ConsentRecord, str | None]
-            ]
+            next_session: Callable[[], tuple[DesktopSession, ConsentRecord, str | None]]
             | None = None,
             camera_options: list[tuple[int, str]] | None = None,
             results_csv: Path | None = None,
@@ -279,6 +277,9 @@ else:
             # the CLI tail after the window closes).
             self.completed_rounds: list[RoundComplete] = []
             self._round_started_utc: str | None = None
+            # G3 R1 PR-A change 2: per-round clock anchor (this round's
+            # open-time clock value); re-taken on every _start_round.
+            self._round_start_ns: int | None = None
             # G3 W6: camera picker options as (opencv index, label).
             # None means no picker (legacy behavior); an empty list means
             # no camera was found (startup refuses with 找不到相機).
@@ -330,9 +331,7 @@ else:
             self.camera_combo.addItem("請選擇相機", None)
             for cam_index, cam_label in self._camera_options:
                 self.camera_combo.addItem(cam_label, cam_index)
-            self.camera_combo.currentIndexChanged.connect(
-                self._camera_picked
-            )
+            self.camera_combo.currentIndexChanged.connect(self._camera_picked)
             self.preview_label = QLabel("synthetic preview")
             self.preview_label.setMinimumSize(240, 240)
             self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -436,6 +435,11 @@ else:
             return self._result_text
 
         @property
+        def round_start_ns(self) -> int | None:
+            """G3 R1 PR-A: this round's clock anchor (None before start)."""
+            return self._round_start_ns
+
+        @property
         def crop_mapping(self) -> CropMapping | None:
             return self._crop_mapping
 
@@ -492,9 +496,15 @@ else:
                 self._set_status("需要 record consent 與 image consent")
                 return
             try:
+                # G3 R1 PR-A change 2: the 5 s window anchors at this
+                # round's own open — the current clock value is read
+                # here (after the source open in enter_standby / the
+                # on_start open below) and recorded as round_start_ns,
+                # never carried over from a pre-anchored value.
+                round_start_ns = self._clock_ns()
                 self.desktop.on_start(
                     self.consent,
-                    now_ns=self._clock_ns(),
+                    now_ns=round_start_ns,
                     device_id=self.device_id,
                 )
             except Exception as exc:
@@ -502,6 +512,7 @@ else:
                 # case the operator closes the app and picks again).
                 self._set_status(f"相機開啟失敗：{type(exc).__name__}")
                 return
+            self._round_start_ns = round_start_ns
             self.start_button.setEnabled(False)
             self.cancel_button.setEnabled(True)
             self._set_status("採集中 · collecting")
@@ -532,7 +543,12 @@ else:
                 self._timer.stop()
                 return
             try:
-                result = self.desktop.run_until_terminal(max_steps=50)
+                # G3 R1 PR-A change 3: bounded Qt steps must not finish
+                # the round before its 5 s window elapses; exhaustion
+                # leaves the round running for later ticks.
+                result = self.desktop.run_until_terminal(
+                    max_steps=50, finish_on_exhaust=False
+                )
             except Exception as exc:
                 self._set_status(f"processing failed: {type(exc).__name__}")
                 self.desktop.close()
@@ -548,10 +564,7 @@ else:
                 self._update_terminal(result)
             if self.desktop.state != "running":
                 self._timer.stop()
-                if (
-                    self._next_session is not None
-                    and self.desktop.state == "terminal"
-                ):
+                if self._next_session is not None and self.desktop.state == "terminal":
                     self._enter_result(result)
 
         def process_until_terminal(self, max_steps: int = 200) -> None:
@@ -577,8 +590,7 @@ else:
             """
             if self._next_session is None:
                 raise RuntimeError(
-                    "enter_standby requires the continuous loop "
-                    "(next_session factory)"
+                    "enter_standby requires the continuous loop (next_session factory)"
                 )
             if self._mode == self._MODE_RUNNING:
                 return
@@ -668,10 +680,7 @@ else:
             if result is None:
                 return "辨識未完成"
             status = result.status
-            if (
-                status == SessionStatus.matched
-                and result.matched_identity is not None
-            ):
+            if status == SessionStatus.matched and result.matched_identity is not None:
                 score: float | None = None
                 for obs in self.desktop.observations:
                     if result.matched_identity in obs.identity_scores:
@@ -682,11 +691,7 @@ else:
                 return f"{result.matched_identity} {score:.2f}"
             if status in (SessionStatus.timeout, SessionStatus.unknown):
                 return "找不到此註冊人員"
-            reason = (
-                result.reason_codes[0]
-                if result.reason_codes
-                else status.value
-            )
+            reason = result.reason_codes[0] if result.reason_codes else status.value
             return f"{status.value}：{reason}"
 
         def press_correct(self) -> None:
@@ -710,8 +715,7 @@ else:
         def _press_key(self, *, correct: bool) -> None:
             if self._next_session is None:
                 raise RuntimeError(
-                    "label keys require the continuous loop "
-                    "(next_session factory)"
+                    "label keys require the continuous loop (next_session factory)"
                 )
             if self._mode != self._MODE_RESULT:
                 return
@@ -892,9 +896,7 @@ else:
             self.preview_label.setPixmap(QPixmap.fromImage(image))
             return resolved
 
-        def _overlay_guide(
-            self, frame: np.ndarray, mapping: CropMapping
-        ) -> np.ndarray:
+        def _overlay_guide(self, frame: np.ndarray, mapping: CropMapping) -> np.ndarray:
             """Draw the square guide over the full frame (same mapping)."""
             # Overlay contract: render the full source frame and outline the
             # exact crop rectangle instead of showing only the cropped pixmap.

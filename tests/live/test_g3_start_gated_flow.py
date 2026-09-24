@@ -98,6 +98,14 @@ class _RoundFactory:
         self.source = source
         self.counter = 0
         self.attempt_ids: list[str] = []
+        self.retired_initial: list[str] = []
+
+    def retire_initial(self, session_id: str) -> None:
+        """Dispose the never-started initial session (expected product
+        semantics, pending lead ruling): the continuous loop must not
+        keep two active sessions or append_frame refuses everything."""
+        self.recorder.abort(session_id, reason="never_started")
+        self.retired_initial.append(session_id)
 
     def __call__(self) -> tuple[DesktopSession, Any, str]:
         self.counter += 1
@@ -107,11 +115,26 @@ class _RoundFactory:
         self.recorder.begin_attempt(self.manifest, attempt, consent)
         self.recorder.begin(session_id, consent)
         self.attempt_ids.append(attempt.attempt_id)
+        # Mirror the production factory (PR-A change 4): the round owns
+        # its staging (round session) and square-crop mapping (round
+        # attempt). A round without this path stages nothing.
+        from facecore.live.qt_window import crop_packet as _crop_packet
+
+        def _round_transform(packet: FramePacket) -> FramePacket:
+            cropped_packet, mapping = _crop_packet(packet)
+            self.recorder.record_crop_mapping(attempt.attempt_id, mapping.to_dict())
+            return cropped_packet
+
+        def _round_sink(packet: FramePacket) -> None:
+            self.recorder.append_frame(packet)
+
         desktop = DesktopSession(
             engine=SessionEngine(_profile(), "gallery-g3a-test", "gen-g3a-test"),
             source=self.source,
             scorer=_matching_scorer,
             session_id=session_id,
+            frame_sink=_round_sink,
+            frame_transform=_round_transform,
             release_source_on_terminal=False,
             label_recorder=self.recorder,
             label_attempt_id=attempt.attempt_id,
@@ -120,14 +143,89 @@ class _RoundFactory:
 
 
 class TestG3StartGatedFlow:
+    def test_round_factory_wires_own_frame_path(
+        self, qt_app: Any, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """PR-A change 4 (product code): rounds own sink + transform.
+
+        Intercepts DesktopSession construction during a synthetic
+        continuous cmd_live run (offscreen Qt, FakeCapture backend —
+        no camera): every round session (id ``*-r<N>``) must be built
+        with its own frame_sink and frame_transform. Before the fix
+        the factory passed neither (rounds staged nothing).
+        """
+        import json
+
+        import facecore.research.cli as cli_module
+        from facecore.live.desktop import DesktopSession as RealDesktop
+
+        profile = {
+            "schema_version": "v1",
+            "profile_version": "g3a-cli-v1",
+            "timeout_ms": 5000,
+            "sample_interval_ms": 200,
+            "max_frames": 26,
+            "queue_limit": 1,
+            "required_support": 1,
+            "min_support_interval_ms": 1,
+            "match_threshold": 0.10,
+            "review_threshold": 0.05,
+            "margin_threshold": 0.01,
+            "detector_version": "yunet-test",
+            "quality_policy_version": "q-test-v1",
+            "continuity_max_center_delta_ratio": 0.50,
+        }
+        profile_path = tmp_path / "profile.json"
+        profile_path.write_text(json.dumps(profile))
+        frames = _face_frames(120)
+        capture = FakeCapture(frames=frames)
+        seen: list[dict[str, Any]] = []
+        orig_init = RealDesktop.__init__
+
+        def _spy_init(self: Any, *args: Any, **kwargs: Any) -> None:
+            seen.append(dict(kwargs))
+            orig_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(RealDesktop, "__init__", _spy_init)
+        rc = cli_module.cmd_live(
+            profile_path=profile_path,
+            store=tmp_path / "store",
+            key_dir=tmp_path / "keys",
+            device="fake",
+            session_id="sess-g3a-factory",
+            record_consent=True,
+            image_consent=True,
+            ui="qt",
+            qt_offscreen=True,
+            capture_factory=lambda _dev: capture,
+            continuous=True,
+        )
+        assert rc in (0, 4)
+        rounds = [
+            kwargs
+            for kwargs in seen
+            if isinstance(kwargs.get("session_id"), str)
+            and "-r" in str(kwargs.get("session_id"))
+        ]
+        assert rounds, "continuous run must build at least one round session"
+        for kwargs in rounds:
+            assert kwargs.get("frame_sink") is not None, (
+                f"round {kwargs.get('session_id')} must own a frame_sink"
+            )
+            assert kwargs.get("frame_transform") is not None, (
+                f"round {kwargs.get('session_id')} must own a frame_transform"
+            )
+
     def test_round_stages_own_frames_and_mapping(
         self, qt_app: Any, tmp_path: Any
     ) -> None:
-        """PR-A change 4: the round (not the initial session) owns frames.
+        """Round frame-path behavior: sink stages, transform maps.
 
-        After one standby-triggered round reaches terminal, the round's
-        session must hold staged frames and the crop mapping must be
-        persisted under the round's attempt id.
+        Uses a factory mirroring the production round wiring (own sink
+        bound to the round session, own square-crop bound to the round
+        attempt): after one standby-triggered round reaches terminal,
+        the round's session must hold staged frames and the mapping
+        must persist under the round's attempt id.
         """
         source = FakeCapture(_face_frames())
         factory = _RoundFactory(tmp_path, source)
@@ -145,6 +243,7 @@ class TestG3StartGatedFlow:
         )
         window.show()
         window.enter_standby()
+        factory.retire_initial(first_desktop.session_id)
         window.process_until_terminal(max_steps=200)
         assert window.mode == "result"
         round_session_id = window.desktop.session_id
@@ -184,12 +283,18 @@ class TestG3StartGatedFlow:
         )
         window.show()
         window.enter_standby()
+        factory.retire_initial(first_desktop.session_id)
         window.process_until_terminal(max_steps=200)
         assert window.mode == "result"
         first_anchor = window.round_start_ns
         assert first_anchor is not None
+        first_round_session = window.desktop.session_id
         window.press_correct()
         assert window.mode == "standby"
+        # Simulate the commit-on-label release (no csv target here, so
+        # the queue path keeps the session active; the product commit
+        # deletes it from _active via recorder.commit).
+        factory.recorder.abort(first_round_session, reason="test_released")
         window.process_until_terminal(max_steps=200)
         assert window.mode == "result"
         second_anchor = window.round_start_ns
@@ -219,12 +324,9 @@ class TestG3StartGatedFlow:
             release_source_on_terminal=False,
         )
         desktop.on_start(_consent("g3a-slow-round"), now_ns=0, device_id="fake")
-        terminal = desktop.run_until_terminal(
-            max_steps=50, finish_on_exhaust=False
-        )
+        terminal = desktop.run_until_terminal(max_steps=50, finish_on_exhaust=False)
         assert terminal is None, (
-            "50 bounded steps must not finish a round whose 5 s window "
-            "has not elapsed"
+            "50 bounded steps must not finish a round whose 5 s window has not elapsed"
         )
         assert desktop.state == "running"
         desktop.close()

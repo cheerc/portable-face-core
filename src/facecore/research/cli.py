@@ -317,8 +317,8 @@ def g3_round_row(round_: Any) -> dict[str, object]:
 
     assert isinstance(round_, _RC), f"expected RoundComplete, got {type(round_)}"
     terminal = round_.terminal
-    (top1_ident, top1_score), (top2_ident, top2_score), margin = (
-        g3_round_best_scores(round_.observations)
+    (top1_ident, top1_score), (top2_ident, top2_score), margin = g3_round_best_scores(
+        round_.observations
     )
     shown = terminal.matched_identity
     return {
@@ -393,9 +393,7 @@ def commit_g3_rounds(
                 frame_scores=tuple(frame_score_of(o) for o in round_.observations),
             )
         except (KeyError, ValueError) as exc:
-            print(
-                f"research live: round commit failed: {exc}", file=sys.stderr
-            )
+            print(f"research live: round commit failed: {exc}", file=sys.stderr)
             try:
                 recorder.abort(terminal.session_id, reason="round_commit_failed")
             except Exception:
@@ -682,12 +680,8 @@ def cmd_live(
         record_consent=True,
         image_consent=True,
         consented_at_utc=now.isoformat(),
-        record_expires_at_utc=(
-            now + timedelta(days=G3_RETENTION_DAYS)
-        ).isoformat(),
-        image_expires_at_utc=(
-            now + timedelta(days=G3_RETENTION_DAYS)
-        ).isoformat(),
+        record_expires_at_utc=(now + timedelta(days=G3_RETENTION_DAYS)).isoformat(),
+        image_expires_at_utc=(now + timedelta(days=G3_RETENTION_DAYS)).isoformat(),
     )
 
     # E3 wiring (1): attempt pre-placement BEFORE camera open / model setup.
@@ -933,18 +927,28 @@ def cmd_live(
             assert context is not None  # set in the collection fork above
 
             def scorer(packet: FramePacket) -> FrameObservation:
-                return score_frame(
-                    packet, context, diagnostic_sink=_diagnostic_sink
-                )
+                return score_frame(packet, context, diagnostic_sink=_diagnostic_sink)
 
         window_label = "early-stop"
         is_true_path = True
 
-    try:
-        recorder.begin(session_id, consent)
-    except (PermissionError, ValueError) as exc:
-        print(f"research live: recorder refused: {exc}", file=sys.stderr)
-        return 4
+    # G3 R1 PR-A change 5 (lead ruling m-20260924090052055374-357):
+    # the continuous Qt loop never starts the initial desktop (standby
+    # replaces it while idle), so its session must not occupy the
+    # recorder's single-active slot — the first round's begin would
+    # otherwise coexist and every append_frame refuses with KeyError.
+    # Only the session staging begin is skipped (the attempt ledger
+    # begin_attempt above still runs, so the tail's finish_attempt for
+    # the initial attempt id updates a real row). The tail's abort for
+    # the never-begun session id is a no-op (abort pops missing ids)
+    # and every tail finish_attempt sits inside try/except, so skipping
+    # is safe and leaves single-shot/headless paths unchanged.
+    if not (continuous and ui == "qt"):
+        try:
+            recorder.begin(session_id, consent)
+        except (PermissionError, ValueError) as exc:
+            print(f"research live: recorder refused: {exc}", file=sys.stderr)
+            return 4
     # t-3: true path stages each sampled frame encrypted as it is scored;
     # fake path keeps envelope-only behavior. Qt also receives frames for its
     # preview/crop mapping.
@@ -1021,8 +1025,19 @@ def cmd_live(
         return start_ns + _qt_elapsed_ns
 
     def _qt_advance_ns() -> None:
+        # G3 R1 PR-A change 2: the countdown clock follows the live
+        # round's consumed span, not the never-started initial desktop.
+        # qt_window is late-bound (None until built below); before that
+        # the initial desktop is the only source.
         nonlocal _qt_elapsed_ns, _qt_last_consumed_ns
-        consumed = desktop.controller_consumed_ns
+        live_desktop = desktop
+        window = qt_window
+        if window is not None:
+            try:
+                live_desktop = window.desktop
+            except Exception:
+                pass
+        consumed = live_desktop.controller_consumed_ns
         if consumed is not None and consumed > _qt_last_consumed_ns:
             _qt_elapsed_ns += consumed - _qt_last_consumed_ns
             _qt_last_consumed_ns = consumed
@@ -1053,8 +1068,7 @@ def cmd_live(
                 from facecore.live.camera_picker import list_cameras
 
                 camera_options = [
-                    (option.index, option.label)
-                    for option in list_cameras()
+                    (option.index, option.label) for option in list_cameras()
                 ]
             except Exception as exc:
                 print(
@@ -1070,9 +1084,9 @@ def cmd_live(
 
             round_counter = 0
 
-            def next_session_factory() -> (
-                tuple[DesktopSession, ConsentRecord, str | None]
-            ):
+            def next_session_factory() -> tuple[
+                DesktopSession, ConsentRecord, str | None
+            ]:
                 nonlocal round_counter
                 round_counter += 1
                 round_session_id = f"{session_id}-r{round_counter}"
@@ -1119,13 +1133,52 @@ def cmd_live(
                     round_consent,
                 )
                 recorder.begin(round_session_id, round_consent)
+
+                # G3 R1 PR-A change 4: the round owns its frame path —
+                # staging binds the round session, the square-crop
+                # mapping binds the round attempt. Mirrors the initial
+                # desktop closures above, scoped to this round's ids.
+                def _round_capture_transform(
+                    packet: FramePacket,
+                    _attempt_id: str = round_attempt_id,
+                ) -> FramePacket:
+                    cropped_packet, mapping = _crop_packet(packet)
+                    try:
+                        recorder.record_crop_mapping(_attempt_id, mapping.to_dict())
+                    except ValueError as exc:
+                        raise ValueError(
+                            f"capture geometry changed mid-session: {exc}"
+                        ) from exc
+                    except Exception as exc:
+                        staged_errors.append(f"crop:{type(exc).__name__}")
+                    return cropped_packet
+
+                def _round_stage_frame(packet: FramePacket) -> None:
+                    if is_true_path:
+                        try:
+                            recorder.append_frame(packet)
+                        except Exception as exc:
+                            staged_errors.append(
+                                f"{packet.sequence}:{type(exc).__name__}"
+                            )
+                    # qt_window is late-bound (None until the window is
+                    # built below); the closure reads it at call time.
+                    if qt_window is not None:
+                        try:
+                            qt_window.render_full_frame(packet.rgb)
+                        except Exception as exc:
+                            staged_errors.append(f"crop:{type(exc).__name__}")
+
                 round_desktop = DesktopSession(
-                    engine=SessionEngine(
-                        profile, gallery_digest, model_generation
-                    ),
+                    engine=SessionEngine(profile, gallery_digest, model_generation),
                     source=source,
                     scorer=scorer,
                     session_id=round_session_id,
+                    frame_sink=_round_stage_frame
+                    if (is_true_path or ui == "qt")
+                    else None,
+                    frame_transform=_round_capture_transform if ui == "qt" else None,
+                    fixed_seconds=fixed_seconds,
                     release_source_on_terminal=False,
                     label_recorder=recorder,
                     label_attempt_id=round_attempt_id,
@@ -1976,9 +2029,10 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     # G3 W8: config supplies store/key defaults; explicit flags win.
-    if getattr(args, "command", None) == "live" and getattr(
-        args, "config", None
-    ) is not None:
+    if (
+        getattr(args, "command", None) == "live"
+        and getattr(args, "config", None) is not None
+    ):
         from facecore.research.g3_config import load_g3_config as _load_cfg_main
 
         try:
@@ -1990,9 +2044,10 @@ def main(argv: list[str] | None = None) -> int:
             args.store = _cfg_main.store_dir
         if getattr(args, "key_dir", None) is None:
             args.key_dir = _cfg_main.key_dir
-    if getattr(args, "command", None) == "live" and getattr(
-        args, "store", None
-    ) is None:
+    if (
+        getattr(args, "command", None) == "live"
+        and getattr(args, "store", None) is None
+    ):
         print(
             "research live: --store is required (or --config with store_dir)",
             file=sys.stderr,
