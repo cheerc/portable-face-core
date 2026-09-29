@@ -37,7 +37,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from facecore.live.capture import FakeCapture, LatestSlot1Queue
+from facecore.live.capture import CaptureSource, FakeCapture, LatestSlot1Queue
 from facecore.live.contracts import (
     FrameObservation,
     FramePacket,
@@ -132,6 +132,305 @@ class GatedScorer:
         self.gate.set()
 
 
+class BlockingSource(CaptureSource):
+    """read() parks until released; records close-during-read per thread.
+
+    D2's third fault-injection double, alongside GatedScorer (blocked
+    inference) and FakeCapture (instant reads). FakeCapture can never
+    block, so a close-during-read regression is invisible to it; this one
+    makes the failure deterministic without a camera, the same way
+    test_pump_release_race.py does for issue #64.
+    """
+
+    def __init__(self) -> None:
+        self._closed = True
+        self._opened = False
+        self._in_read = 0
+        self._readers: set[str] = set()
+        self._gate = threading.Event()
+        self._close_while_reading = False
+        self._close_while: dict[str, bool] = {}
+        self._lock = threading.Lock()
+        self._seq = 0
+
+    def open(self, device_id: str) -> None:
+        self._closed = False
+        self._opened = True
+
+    def read(self) -> FramePacket | None:
+        with self._lock:
+            if self._closed or not self._opened:
+                return None
+            self._in_read += 1
+            self._readers.add(threading.current_thread().name)
+        if not self._gate.wait(timeout=10):
+            with self._lock:
+                self._in_read -= 1
+            return None
+        with self._lock:
+            self._in_read -= 1
+            self._readers.discard(threading.current_thread().name)
+            if self._closed:
+                return None
+            self._seq += 1
+            return FramePacket(
+                sequence=self._seq,
+                captured_ns=self._seq * 200_000_000,
+                rgb=np.zeros((16, 16, 3), dtype=np.uint8),
+            )
+
+    def close(self) -> None:
+        with self._lock:
+            if self._in_read > 0:
+                self._close_while_reading = True
+                for name in self._readers:
+                    self._close_while[name] = True
+            self._closed = True
+        self._gate.set()
+
+    def arm(self) -> None:
+        """Make the next read park again (the first close consumed the gate)."""
+        self._gate.clear()
+
+    def wait_until_reading(self, timeout_s: float = 5.0) -> bool:
+        deadline = time.monotonic() + timeout_s
+        while self.in_read == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return self.in_read > 0
+
+    def wait_closed(self, timeout_s: float = 5.0) -> bool:
+        deadline = time.monotonic() + timeout_s
+        while not self.is_closed and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return self.is_closed
+
+    @property
+    def is_closed(self) -> bool:
+        with self._lock:
+            return self._closed
+
+    @property
+    def in_read(self) -> int:
+        with self._lock:
+            return self._in_read
+
+    @property
+    def close_while_reading(self) -> bool:
+        with self._lock:
+            return self._close_while_reading
+
+    @property
+    def close_while(self) -> dict[str, bool]:
+        with self._lock:
+            return dict(self._close_while)
+
+
+# ---------------------------------------------------------------------------
+# B1 (reviewer blocking): close() must never release the source while a
+# worker is inside a native read. Both workers carry the issue #64
+# signature; closeEvent -> close() reaches this on the real GUI path.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("thread_name", ["d2-inference", "t4-capture-pump"])
+def test_close_never_releases_the_source_while_a_worker_is_reading(
+    thread_name: str,
+) -> None:
+    """B1: the join-timeout release is the bug, not the join timeout.
+
+    The worker's read is parked longer than the 5 s join budget, so
+    close() proceeds to its release step with that worker still inside
+    read(). close() must then SKIP the release and let the worker's own
+    exit release instead — on AVFoundation releasing under an in-flight
+    native read segfaults (issue #64).
+
+    Mutation-tested: reverting the joined guard (and the per-worker
+    finally) turns this red. FakeCapture can never block, which is
+    exactly why this double exists.
+    """
+    engine = SessionEngine(_profile(), "digest-d2", "gen-1")
+    source = BlockingSource()
+    controller = LiveController(engine, source, _matching_scorer)
+    controller.start_session("d2-close-race", 0, device_id="fake")
+    if thread_name == "t4-capture-pump":
+        controller.start_background_pump()
+    else:
+        controller.start_inference_worker()
+    try:
+        assert source.wait_until_reading(), f"{thread_name} never entered read()"
+        source.arm()  # close() will consume this gate
+        started = time.monotonic()
+        controller.close()
+        elapsed = time.monotonic() - started
+        assert source.close_while_reading is False, (
+            f"close() released the source while {thread_name} was still "
+            "reading — close-during-read segfaults AVFoundation (issue #64)"
+        )
+        # Bounded: close() must not wait forever for a read that never
+        # returns. (The budget itself is not what's under test.)
+        assert elapsed < 15.0, f"close() took {elapsed:.1f}s"
+        assert controller.workers_joined is False, (
+            "the read is still parked; the worker cannot have exited yet"
+        )
+    finally:
+        # Let the parked read return so the worker runs its own exit path.
+        source._gate.set()
+    assert source.wait_closed(timeout_s=5.0), (
+        "no worker released the source on exit — the camera is leaked"
+    )
+    assert controller.workers_joined is True, "the worker never exited"
+
+
+def test_close_with_both_workers_reading_still_skips_the_release() -> None:
+    """B1: the two #64 workers must guard each other, not just the caller.
+
+    Found by the B1 probe after the first fix went green. With a capture
+    pump AND an inference worker alive, close() skips its own release
+    correctly — but the inference worker then hit the join timeout and
+    ran its own exit release WHILE the pump was still parked in a read.
+    The caller's guard was not enough: each worker's exit path has to
+    defer to a live sibling too.
+
+    This is the shape the GUI can actually reach (headless drivers start
+    a pump and never an inference worker, so the parametrized cases above
+    cannot see it).
+    """
+    engine = SessionEngine(_profile(), "digest-d2", "gen-1")
+    source = BlockingSource()
+    controller = LiveController(engine, source, _matching_scorer)
+    controller.start_session("d2-both-workers", 0, device_id="fake")
+    controller.start_background_pump()
+    controller.start_inference_worker()
+    try:
+        assert source.wait_until_reading(), "no worker entered read()"
+        source.arm()  # the first close() consumes this gate
+        controller.close()
+        assert source.close_while_reading is False, (
+            "close released while a worker was still reading: "
+            f"{source.close_while}"
+        )
+    finally:
+        source._gate.set()
+    # The last worker out must still release — the guard must defer,
+    # never drop, the release.
+    assert source.wait_closed(timeout_s=10.0), (
+        "no worker released the source on exit — the camera is leaked"
+    )
+
+
+def test_close_stops_the_worker_it_cannot_make_stop_itself() -> None:
+    """B1/N1: close() must tell the inference worker to stop.
+
+    close() used to set only _pump_stop while the inference worker polls
+    _inference_stop. With a healthy scorer the worker reached its
+    terminal on its own, so the bug was invisible.
+
+    Two things are arranged here so the stop signal is the ONLY way out:
+
+    - The scorer always rejects, so B never locks and the worker has no
+      terminal of its own to finish on. (A matching scorer locks B at
+      the 3rd frame and exits immediately, which is why the obvious
+      version of this test passed in 0.18 s under the mutation.)
+    - Scoring costs 200 ms per frame, so even with 26 frames queued the
+      worker cannot get through the round inside the 5 s join budget.
+      The stop flag is polled between frames, so it ends the worker
+      after the frame in flight.
+
+    Mutation-tested: removing `self._inference_stop.set()` from close()
+    leaves the worker running, `workers_joined` False.
+    """
+    class _SlowRejectingScorer:
+        """Always rejects, slowly: no terminal, and no fast exit."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self, packet: FramePacket) -> FrameObservation:
+            self.calls += 1
+            time.sleep(0.2)
+            return FrameObservation(
+                sequence=packet.sequence,
+                captured_ns=packet.captured_ns,
+                processed_ns=packet.captured_ns + 200_000_000,
+                quality_pass=True,
+                quality_reasons=(),
+                face_count=1,
+                face_box=(0.0, 0.0, 2.0, 2.0),
+                identity_scores={"enroll-23": 0.10},
+                quality_rank=0.9,
+                model_generation="gen-1",
+                gallery_digest="digest-d2",
+            )
+
+    scorer = _SlowRejectingScorer()
+    engine = SessionEngine(_profile(), "digest-d2", "gen-1")
+    controller = LiveController(
+        engine, FakeCapture(_face_frames(400)), scorer
+    )
+    controller.start_session("d2-close-stops-worker", 0, device_id="fake")
+    controller.start_inference_worker()
+    try:
+        deadline = time.monotonic() + 5.0
+        while scorer.calls < 1 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert scorer.calls >= 1, "the worker never started scoring"
+        controller.close()
+        assert controller.workers_joined is True, (
+            "close() did not stop the inference worker: the flag it sets "
+            "is not the one the worker polls, so the join fell back to "
+            "its 5 s timeout with the worker still running"
+        )
+    finally:
+        controller.close()
+
+
+def test_the_workers_own_exit_releases_the_source_the_caller_skipped() -> None:
+    """B1: the skipped release is a handoff, not a leak.
+
+    close() may not release while a read is in flight, so the source
+    stays open at that moment. It must NOT stay open afterwards: the
+    worker releases it on its own way out. Asserted after the read is
+    released, so it is not the "close() did it" tautology.
+    """
+    engine = SessionEngine(_profile(), "digest-d2", "gen-1")
+    source = BlockingSource()
+    controller = LiveController(engine, source, _matching_scorer)
+    controller.start_session("d2-close-handoff", 0, device_id="fake")
+    controller.start_inference_worker()
+    try:
+        assert source.wait_until_reading(), "the worker never entered read()"
+        source.arm()
+        controller.close()
+        assert source.is_closed is False, (
+            "close() must skip the release while a read is in flight"
+        )
+    finally:
+        source._gate.set()
+    assert source.wait_closed(timeout_s=5.0), (
+        "the source was never released: close() skipped it and no worker "
+        "took over — that is a leaked camera"
+    )
+
+
+def test_close_releases_normally_when_no_read_is_in_flight() -> None:
+    """B1 must not cost the ordinary case its release.
+
+    A worker that has already exited leaves nothing to protect, so
+    close() releases immediately — the guard must not turn every close
+    into "skip and wait for a worker that has already gone".
+    """
+    engine = SessionEngine(_profile(), "digest-d2", "gen-1")
+    source = BlockingSource()
+    controller = LiveController(engine, source, _matching_scorer)
+    controller.start_session("d2-close-clean", 0, device_id="fake")
+    controller.start_inference_worker()
+    source._gate.set()  # reads return immediately; the round runs to terminal
+    assert controller.wait_for_terminal(timeout_s=10.0) is not None
+    controller.close()
+    assert source.is_closed, "close() left the camera open after a clean round"
+    assert source.close_while_reading is False
+
+
 # ---------------------------------------------------------------------------
 # Scope 1: inference runs off the UI thread
 # ---------------------------------------------------------------------------
@@ -147,7 +446,7 @@ def test_inference_runs_on_a_worker_not_the_calling_thread() -> None:
     scorer.release()  # let it through; we only care about the thread
     engine = SessionEngine(_profile(), "digest-d2", "gen-1")
     controller = LiveController(
-        engine, FakeCapture(_face_frames(6)), scorer, preview_sink=lambda p: None
+        engine, FakeCapture(_face_frames(6)), scorer
     )
     controller.start_session("d2-thread", 0, device_id="fake")
 
@@ -179,7 +478,6 @@ def test_preview_is_produced_by_the_worker_for_the_ui_to_drain() -> None:
         engine,
         FakeCapture(_face_frames(10)),
         _matching_scorer,
-        preview_sink=lambda packet: None,
     )
     controller.start_session("d2-preview", 0, device_id="fake")
     controller.start_inference_worker()
@@ -211,7 +509,6 @@ def test_preview_channel_is_bounded_and_keeps_only_the_latest() -> None:
         engine,
         FakeCapture(_face_frames(200)),
         _matching_scorer,
-        preview_sink=lambda packet: None,
     )
     controller.start_session("d2-bounded", 0, device_id="fake")
     controller.start_inference_worker()
@@ -243,7 +540,6 @@ def test_worker_exits_in_bounded_time_on_close() -> None:
         engine,
         FakeCapture(_face_frames(200)),
         _matching_scorer,
-        preview_sink=lambda packet: None,
     )
     controller.start_session("d2-bounded-exit", 0, device_id="fake")
     controller.start_inference_worker()
@@ -260,7 +556,7 @@ def test_close_releases_the_camera_source() -> None:
     source = FakeCapture(_face_frames(10))
     engine = SessionEngine(_profile(), "digest-d2", "gen-1")
     controller = LiveController(
-        engine, source, _matching_scorer, preview_sink=lambda p: None
+        engine, source, _matching_scorer
     )
     controller.start_session("d2-release", 0, device_id="fake")
     controller.start_inference_worker()
@@ -276,7 +572,6 @@ def test_repeated_rounds_do_not_accumulate_workers() -> None:
         engine,
         FakeCapture(_face_frames(6)),
         _matching_scorer,
-        preview_sink=lambda packet: None,
     )
     baseline = len(threading.enumerate())
     for round_index in range(10):
@@ -288,7 +583,6 @@ def test_repeated_rounds_do_not_accumulate_workers() -> None:
             SessionEngine(_profile(), "digest-d2", "gen-1"),
             FakeCapture(_face_frames(6)),
             _matching_scorer,
-            preview_sink=lambda packet: None,
         )
     after = len(threading.enumerate())
     assert after <= baseline + 1, (
@@ -301,39 +595,77 @@ def test_repeated_rounds_do_not_accumulate_workers() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_ui_thread_progresses_while_inference_is_blocked() -> None:
+def test_ui_thread_stays_responsive_while_inference_is_blocked() -> None:
     """D2 scope 7: a blocked scorer must not freeze the UI thread.
 
-    This is the fault-injection acceptance: while the scorer is held
-    open on the worker, the UI thread must still be able to run its
-    tick work. It deliberately does NOT claim real Qt event-loop
-    concurrency — no repo test drives exec()/processEvents() — that is a
-    D4 on-device measurement.
+    The fault-injection acceptance: while the scorer is held open on the
+    worker, the UI thread must still be able to run its tick work. It
+    deliberately does NOT claim real Qt event-loop concurrency — no repo
+    test drives exec()/processEvents() — that is a D4 on-device
+    measurement.
+
+    RED for the reviewer's S2. The previous version called
+    `controller.current_thread_can_read_state()` in a loop without
+    checking the return value, and that method is
+    `return self._terminal is None or self._terminal is not None` — a
+    tautology. It only ever measured "the main thread can run a while
+    loop", so it stayed green even when a mutation held `self._lock`
+    across the scorer call (a real UI freeze). The helper was also
+    deleted: a method that cannot fail is not a check.
+
+    What is measured instead is UI work that genuinely takes
+    `self._lock` — the same lock an inference-side freeze would hold —
+    with each call bounded so a real freeze fails the test on elapsed
+    time rather than hanging it.
     """
     scorer = GatedScorer()
     engine = SessionEngine(_profile(), "digest-d2", "gen-1")
-    controller = LiveController(
-        engine,
-        FakeCapture(_face_frames(30)),
-        scorer,
-        preview_sink=lambda packet: None,
-    )
+    controller = LiveController(engine, FakeCapture(_face_frames(30)), scorer)
     controller.start_session("d2-ui-free", 0, device_id="fake")
     controller.start_inference_worker()
     try:
         assert scorer.entered.wait(timeout=5.0), "worker never entered the scorer"
 
-        # The UI thread is free to do its own work while the worker is
-        # parked inside the scorer. Simulate the timer tick's work.
-        ticks = 0
+        # The UI tick's real reads. wait_for_terminal takes the lock and
+        # workers_joined reads the tracked-thread list under it; both are
+        # what a scorer-side freeze would block. timeout_s=0 makes each
+        # call a poll instead of a wait, so a contended lock shows up as
+        # elapsed time on a probe below rather than as a hang here.
+        polls = 0
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
-            controller.current_thread_can_read_state()
-            ticks += 1
+            controller.wait_for_terminal(timeout_s=0)
+            polls += 1
+            assert controller.workers_joined is False, (
+                "the worker is parked inside the scorer; it cannot be joined"
+            )
+            assert controller.state_is_running(), "the round stopped on its own"
+            assert controller.frames_sampled >= 1, (
+                "the worker never sampled a frame the UI could read"
+            )
             time.sleep(0.005)
-        assert ticks > 10, f"UI thread managed only {ticks} ticks while blocked"
+        assert polls > 10, f"UI thread managed only {polls} polls while blocked"
+
+        # The lock a freeze would hold, probed the same way. RLock by
+        # construction (a worker may re-enter from a worker-side call),
+        # so "acquired" cannot be confused with "free".
+        probe_lock = controller._lock
+        started = time.monotonic()
+        acquired = probe_lock.acquire(timeout=1.0)
+        probe_elapsed = time.monotonic() - started
+        if acquired:
+            probe_lock.release()
+        assert acquired, (
+            f"the UI thread could not take the controller lock in "
+            f"{probe_elapsed:.2f}s while a scorer was parked — the UI is "
+            "blocked behind the worker"
+        )
+        assert probe_elapsed < 0.5, (
+            f"the controller lock took {probe_elapsed:.2f}s; the worker is "
+            "holding it across inference, which freezes the UI"
+        )
+
         # Cancel must remain callable from the UI thread mid-inference.
-        assert controller.state_is_running()
         controller.cancel_inference()
     finally:
         scorer.release()
@@ -348,7 +680,6 @@ def test_cancel_during_inference_terminates_the_round() -> None:
         engine,
         FakeCapture(_face_frames(30)),
         scorer,
-        preview_sink=lambda packet: None,
     )
     controller.start_session("d2-cancel-mid", 0, device_id="fake")
     controller.start_inference_worker()
@@ -384,7 +715,6 @@ def test_preview_survives_a_failing_research_sink() -> None:
         FakeCapture(_face_frames(10)),
         _matching_scorer,
         research_sink=_boom,
-        preview_sink=lambda packet: None,
     )
     controller.start_session("d2-preview-independent", 0, device_id="fake")
     controller.start_inference_worker()
@@ -397,58 +727,76 @@ def test_preview_survives_a_failing_research_sink() -> None:
         controller.close()
 
 
-def test_closed_source_does_not_wait_out_the_jitter_bar() -> None:
-    """D2 scope 3: a closed source ends the round, and this test says how
-    far it can and cannot prove that.
+def test_closed_source_terminates_on_the_first_dry_read() -> None:
+    """D2 scope 3: a source that goes away ends the round immediately.
 
-    Mutation-tested twice, and both attempts failed to discriminate:
+    RED for the reviewer's S1: the previous version of this test
+    (b43186d) asserted `elapsed < 1.0` after setting closed_flag right
+    after start_inference_worker(). The worker had already matched 3
+    frames off FakeCapture and returned, so the closed-source branch
+    never ran, the assertion measured how fast 3 frames matched, and the
+    test stayed green even when a closed source never terminated at all.
 
-    - Relaxing test_qt_window.py's `_consecutive_dry == 1` to `>= 1` and
-      then reverting the closed-source short-circuit left every assertion
-      green. The counter is now worker-maintained, so the UI sees a
-      settled value.
-    - Asserting elapsed time instead also passed against the mutation:
-      FakeCapture's closed read returns None immediately, so all three
-      jitter-bar iterations complete in microseconds. The ~100 ms cost of
-      the bar only exists at a real camera's 30 fps cadence, which this
-      repo has no way to reproduce (no test drives a real capture source).
+    This version cannot make that mistake. The source is closed BEFORE
+    the worker starts, so no frame can ever match; the branch under test
+    is the only path to a terminal. And the fast path is asserted
+    structurally — read_count == 1 — instead of by elapsed time, so it
+    discriminates regardless of machine speed.
 
-    So the timing claim is NOT proven here and no fake protection is left
-    standing. What this does pin is the behaviour that is observable: a
-    closed source ends the round as a terminal instead of hanging or
-    being retried. The short-circuit itself remains verified by reading
-    the diff and is a D4 on-device item alongside the rest of the
-    camera-cadence questions.
+    Honest limit (unchanged, and it is a real one): this proves the
+    branch ends the round after one dry read. It does NOT measure what
+    the ~100 ms jitter bar costs at a real camera's 30 fps cadence,
+    which only exists with real hardware — that part stays a D4
+    on-device item. What is now genuinely pinned is the part this
+    environment CAN pin: a closed source cannot hang, and cannot burn
+    further reads.
     """
-    class _ClosedSource(FakeCapture):
-        def __init__(self, frames: list[FramePacket]) -> None:
-            super().__init__(frames)
-            self.closed_flag = False
+    class _DrySource(CaptureSource):
+        """Closed source whose read costs time, so a read count is visible."""
+
+        def __init__(self, per_read_s: float) -> None:
+            self._closed = True
+            self.read_count = 0
+            self._per_read_s = per_read_s
+
+        def open(self, device_id: str) -> None:
+            self._closed = False
+
+        def read(self) -> FramePacket | None:
+            time.sleep(self._per_read_s)
+            self.read_count += 1
+            return None
 
         def close(self) -> None:
-            self.closed_flag = True
-            super().close()
+            self._closed = True
 
         @property
         def is_closed(self) -> bool:
-            return self.closed_flag
+            return self._closed
 
-    source = _ClosedSource(_face_frames(20))
-    engine = SessionEngine(_profile(), "digest-d2", "gen-1")
-    controller = LiveController(
-        engine, source, _matching_scorer, preview_sink=lambda p: None
-    )
+    # required_support far above anything this source can deliver: the
+    # engine must never lock B, so "matched" is not reachable at all.
+    profile = _profile(required_support=99)
+    engine = SessionEngine(profile, "digest-d2", "gen-1")
+    source = _DrySource(per_read_s=0.05)
+    controller = LiveController(engine, source, _matching_scorer)
     controller.start_session("d2-closed", 0, device_id="fake")
+    source.close()  # the camera went away before the worker ever read
     controller.start_inference_worker()
-    source.closed_flag = True  # the camera went away before any frame
-
-    started = time.monotonic()
-    terminal = controller.wait_for_terminal(timeout_s=10.0)
-    elapsed = time.monotonic() - started
     try:
-        assert terminal is not None, "a closed source never ended the round"
-        # Bounded and prompt: the round must not hang or spin.
+        started = time.monotonic()
+        terminal = controller.wait_for_terminal(timeout_s=10.0)
+        elapsed = time.monotonic() - started
+        assert terminal is not None, (
+            "a closed source never ended the round — the round hangs"
+        )
+        assert source.read_count == 1, (
+            f"closed source took {source.read_count} dry reads; the fast "
+            "path must conclude on the first one (the 3-read jitter bar is "
+            "only for a live source that briefly reads empty)"
+        )
         assert elapsed < 1.0, f"closed source took {elapsed*1000:.0f}ms to end"
+        assert controller.frames_sampled == 0
     finally:
         controller.close()
 
@@ -470,7 +818,6 @@ def test_failing_research_sink_does_not_kill_the_inference_worker() -> None:
         FakeCapture(_face_frames(10)),
         _matching_scorer,
         research_sink=_boom,
-        preview_sink=lambda packet: None,
     )
     controller.start_session("d2-sink-failure", 0, device_id="fake")
     controller.start_inference_worker()
@@ -503,7 +850,6 @@ def test_slow_research_sink_does_not_delay_preview_frames() -> None:
         FakeCapture(_face_frames(30)),
         _matching_scorer,
         research_sink=_slow,
-        preview_sink=lambda packet: None,
     )
     controller.start_session("d2-slow-disk", 0, device_id="fake")
     controller.start_inference_worker()
@@ -536,7 +882,6 @@ def test_d1_first_frame_anchor_still_arms_under_the_worker() -> None:
         engine,
         FakeCapture(_face_frames(8, first_ns=2_000_000_000)),
         _matching_scorer,
-        preview_sink=lambda packet: None,
     )
     controller.start_session("d2-anchor", 0, device_id="fake")
     controller.start_inference_worker()

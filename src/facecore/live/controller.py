@@ -66,7 +66,6 @@ class LiveController:
         trace_attempt_id: str | None = None,
         release_source_on_terminal: bool = True,
         research_sink: Callable[[FramePacket], None] | None = None,
-        preview_sink: Callable[[FramePacket], None] | None = None,
     ) -> None:
         """frame_sink (t-3): optional per-sampled-frame staging hook.
 
@@ -74,15 +73,19 @@ class LiveController:
         engine observe, so encrypted staging (recorder.append_frame) sees
         exactly the frames the engine scored. None keeps prior behavior.
 
-        D2: `frame_sink` is split into two channels so the preview stops
-        depending on research persistence (scope 5). `research_sink` is
-        the encrypted-disk path: it runs on the inference worker and is
-        allowed to be slow or to fail. `preview_sink` is the UI path: it
-        must not wait on the research sink, and when it is absent the
-        worker pushes the packet onto the bounded `preview_queue` that
-        the UI thread drains on its own tick. Both default to
-        `frame_sink` when only that is given, so existing callers keep
-        their exact behavior.
+        D2: `frame_sink` is split so the preview stops depending on
+        research persistence (scope 5). `research_sink` is the
+        encrypted-disk path: it runs on the inference worker and is
+        allowed to be slow or to fail. The preview has no sink at all —
+        the worker pushes each sampled packet onto the bounded
+        `preview_queue` that the UI thread drains on its own tick, which
+        is what makes the preview independent of both disk latency and
+        the quality gate. Both channels default to `frame_sink` when only
+        that is given, so existing callers keep their exact behavior.
+
+        (The rework removed the `preview_sink` parameter: it was
+        documented as the UI path but never called, and a parameter that
+        cannot be reached is a promise the code does not keep.)
 
         frame_transform (E7-B): optional input transformation applied before
         the scorer (e.g. square capture geometry per Appendix A).
@@ -121,7 +124,6 @@ class LiveController:
         self._research_sink = (
             research_sink if research_sink is not None else frame_sink
         )
-        self._preview_sink = preview_sink
         self._frame_transform = frame_transform
         self._fixed_seconds = fixed_seconds
         self._trace_recorder = trace_recorder
@@ -371,9 +373,8 @@ class LiveController:
         self._scored_observations.append(observation)
         # D2: the preview is published to the bounded channel FIRST and
         # cannot wait on the research sink (scope 5). The channel is the
-        # UI contract — it is pushed on every sampled frame regardless of
-        # a preview_sink, because a sink is an extra observer, not a
-        # replacement for the channel.
+        # whole UI contract — it is pushed on every sampled frame,
+        # before the quality gate has any say and before any disk work.
         self._preview_queue.push(packet)
         if self._research_sink is not None:
             # E7-B Appendix A.7: staging/preview keep the original full
@@ -693,8 +694,14 @@ class LiveController:
 
     def _stop_pump_and_join(self) -> None:
         self._pump_stop.set()
-        with self._lock:
-            self._join_tracked_locked()
+        # B1: join WITHOUT the lock. A worker's own exit path calls
+        # _release_if_quiescent, which takes self._lock to inspect the
+        # tracked threads. Joining under the lock deadlocks that worker
+        # at the join, so the join burns its full 5 s budget and every
+        # teardown pays for it. The lock buys nothing here anyway —
+        # _tracked_threads is append-only, and the flag above is what
+        # the workers actually poll.
+        self._join_tracked_locked()
 
     def _stop_and_release(self) -> None:
         """Stop the pump, join it (bounded), then release — iff safe.
@@ -733,7 +740,11 @@ class LiveController:
             finally:
                 # The pump thread owns the source close on its way out:
                 # close and read never run concurrently on two threads.
-                self._release_source()
+                # B1: it defers to a live SIBLING worker, because the
+                # inference worker may still be parked in its own read.
+                self._release_if_quiescent(
+                    exclude=threading.current_thread()
+                )
 
         thread = threading.Thread(
             target=_pump_loop, name="t4-capture-pump", daemon=True
@@ -766,68 +777,81 @@ class LiveController:
                 raise RuntimeError("inference worker is already running")
 
         def _inference_loop() -> None:
-            while not self._inference_stop.is_set():
-                # Pump first so a slow scorer does not starve capture, then
-                # consume one packet. Both steps are bounded, so the stop
-                # flag is observed between frames.
-                pumped = self._pump_once()
-                _consumed, terminal = self._consume_one()
-                if terminal is not None:
+            try:
+                while not self._inference_stop.is_set():
+                    # Pump first so a slow scorer does not starve capture, then
+                    # consume one packet. Both steps are bounded, so the stop
+                    # flag is observed between frames.
+                    pumped = self._pump_once()
+                    _consumed, terminal = self._consume_one()
+                    if terminal is not None:
+                        self._inference_terminal_seen.set()
+                        return
+                    if _consumed is not None:
+                        # B2 parity: a drained+scored packet is never dry, even
+                        # when the engine has not locked B yet. A transient
+                        # empty read on an open camera must not retire the
+                        # collector while the queue still feeds.
+                        self._consecutive_dry = 0
+                        continue
+                    if pumped:
+                        self._consecutive_dry = 0
+                        continue
+                    # Nothing pumped and nothing consumed. The synchronous path
+                    # in run_until_terminal tolerates transient empty reads
+                    # (~100 ms at 30 fps) before concluding, and concludes on
+                    # a closed source immediately. Mirror that bar exactly, or
+                    # the worker would end rounds the sync path keeps alive.
+                    self._consecutive_dry += 1
+                    closed = self._source_closed()
+                    # D2: a closed source is final — conclude on the FIRST dry
+                    # read rather than burning the 3-read jitter bar, which
+                    # would add ~100 ms of dead time to every round that ends
+                    # because the camera went away.
+                    if not closed and self._consecutive_dry < 3:
+                        continue
+                    if not self._fixed_seconds:
+                        self.finish(self._controller_now_ns())
+                    else:
+                        self._finalize_collection()
+                        # D2 parity: the synchronous path always ends a round
+                        # with a terminal. A fixed-window collector that stops
+                        # on a dry source before B ever locked has no
+                        # inference terminal, so synthesize one — otherwise the
+                        # UI would wait forever for a result that the sync
+                        # path would have produced.
+                        if self._terminal is None:
+                            self._terminal = self._engine.finish(
+                                self._controller_now_ns(), reason="timeout"
+                            )
                     self._inference_terminal_seen.set()
                     return
-                if _consumed is not None:
-                    # B2 parity: a drained+scored packet is never dry, even
-                    # when the engine has not locked B yet. A transient
-                    # empty read on an open camera must not retire the
-                    # collector while the queue still feeds.
-                    self._consecutive_dry = 0
-                    continue
-                if pumped:
-                    self._consecutive_dry = 0
-                    continue
-                # Nothing pumped and nothing consumed. The synchronous path
-                # in run_until_terminal tolerates transient empty reads
-                # (~100 ms at 30 fps) before concluding, and concludes on
-                # a closed source immediately. Mirror that bar exactly, or
-                # the worker would end rounds the sync path keeps alive.
-                self._consecutive_dry += 1
-                closed = self._source_closed()
-                # D2: a closed source is final — conclude on the FIRST dry
-                # read rather than burning the 3-read jitter bar, which
-                # would add ~100 ms of dead time to every round that ends
-                # because the camera went away.
-                if not closed and self._consecutive_dry < 3:
-                    continue
-                if not self._fixed_seconds:
-                    self.finish(self._controller_now_ns())
-                else:
-                    self._finalize_collection()
-                    # D2 parity: the synchronous path always ends a round
-                    # with a terminal. A fixed-window collector that stops
-                    # on a dry source before B ever locked has no
-                    # inference terminal, so synthesize one — otherwise the
-                    # UI would wait forever for a result that the sync
-                    # path would have produced.
-                    if self._terminal is None:
+                # D2: the stop flag may have been set while a scorer was
+                # parked inside an uninterruptible inference. Finishing that
+                # frame is unavoidable, but the round must still END as
+                # cancelled rather than continuing to the deadline — the
+                # operator pressed Cancel and must not be ignored because a
+                # frame happened to be in flight.
+                if self._inference_stop.is_set() and self._terminal is None:
+                    try:
                         self._terminal = self._engine.finish(
-                            self._controller_now_ns(), reason="timeout"
+                            self._controller_now_ns(), reason="cancelled"
                         )
+                    except RuntimeError:
+                        pass
                 self._inference_terminal_seen.set()
-                return
-            # D2: the stop flag may have been set while a scorer was
-            # parked inside an uninterruptible inference. Finishing that
-            # frame is unavoidable, but the round must still END as
-            # cancelled rather than continuing to the deadline — the
-            # operator pressed Cancel and must not be ignored because a
-            # frame happened to be in flight.
-            if self._inference_stop.is_set() and self._terminal is None:
-                try:
-                    self._terminal = self._engine.finish(
-                        self._controller_now_ns(), reason="cancelled"
-                    )
-                except RuntimeError:
-                    pass
-            self._inference_terminal_seen.set()
+            finally:
+                # B1: the D1 pump closes the source on its way out; this
+                # worker does the same. close() may have SKIPPED its own
+                # release because this thread was still inside a native
+                # read (issue #64), and that read has just returned — so
+                # the release is owed here, on the one thread that knows
+                # its own read is over — but it still defers to a live
+                # sibling (the capture pump may be mid-read). Without it,
+                # a closed window can leave the camera open.
+                self._release_if_quiescent(
+                    exclude=threading.current_thread()
+                )
 
         thread = threading.Thread(
             target=_inference_loop, name="d2-inference", daemon=True
@@ -874,14 +898,6 @@ class LiveController:
                 return self._terminal
         return self._terminal
 
-    def current_thread_can_read_state(self) -> bool:
-        """D2: cheap UI-thread read that must never block on the worker.
-
-        The UI tick calls this to prove it stays responsive while a
-        scorer is parked; it touches only lock-free mirrors of state.
-        """
-        return self._terminal is None or self._terminal is not None
-
     def state_is_running(self) -> bool:
         """D2: UI-thread view of "the round is still going"."""
         return self._terminal is None and not self._closed
@@ -911,6 +927,42 @@ class LiveController:
         except Exception:
             pass
 
+    def _release_if_quiescent(
+        self, *, exclude: threading.Thread | None = None
+    ) -> None:
+        """Release the source only if no worker is inside a native read.
+
+        B1 (issue #64). D2 made the Qt window drive the controller, and
+        with `background_inference` on, the GUI can now have a thread
+        parked inside `CaptureSource.read()` while the UI thread closes
+        the window. Releasing the source under an in-flight native read
+        segfaults AVFoundation, so a release that reaches this point with
+        a worker still reading is a bug, not a cleanup.
+
+        Both #64-bearing workers are covered, because BOTH of them park
+        in `read()`: the D1 capture pump and the D2 inference worker. A
+        caller that only guarded the new worker would leave the pump's
+        path exactly as exposed as it was before D2.
+
+        `exclude` is the thread doing the releasing: a worker's own exit
+        path is not an "in-flight read" for itself — its read has just
+        returned — but it still must not release out from under a SIBLING
+        worker that is parked in a read right now. That is exactly what
+        happens when the window closes with both a pump and an inference
+        worker running: the inference worker gives up at the join timeout
+        and releases, while the pump is still inside its own read.
+
+        This is a handoff, never a leak: the last worker to exit finds no
+        live sibling and releases. When nothing is in flight the release
+        happens inline, so an ordinary close is unaffected.
+        """
+        with self._lock:
+            read_in_flight = any(
+                t.is_alive() for t in self._tracked_threads if t is not exclude
+            )
+        if not read_in_flight:
+            self._release_source()
+
     def release_source(self) -> None:
         """Release the camera handle but keep session state intact.
 
@@ -920,13 +972,18 @@ class LiveController:
         no native read races the close (issue #64 ordering).
         """
         with self._lock:
-            if self._closed:
-                self._join_tracked_locked()
-            else:
+            if not self._closed:
                 self._closed = True
                 self._pump_stop.set()
-                self._join_tracked_locked()
-        self._release_source()
+                self._inference_stop.set()
+        # B1: join WITHOUT the lock. A worker's own exit path calls
+        # _release_if_quiescent, which takes self._lock; joining under it
+        # deadlocks that worker at the join. (See _stop_pump_and_join.)
+        self._join_tracked_locked()
+        # Unconditional, as before: release_source() may be called twice
+        # (result screen, then teardown) and the second call is a no-op
+        # on an already-closed source.
+        self._release_if_quiescent()
         with self._lock:
             self._pump_thread = None
 
@@ -938,30 +995,51 @@ class LiveController:
         round) owns the final release via close().
         """
         with self._lock:
-            if self._closed:
-                self._join_tracked_locked()
-                return
-            self._closed = True
-            self._pump_stop.set()
-            self._join_tracked_locked()
+            if not self._closed:
+                self._closed = True
+                self._pump_stop.set()
+        # B1: join outside the lock (see _stop_pump_and_join).
+        self._join_tracked_locked()
         with self._lock:
             self._pump_thread = None
 
     def close(self) -> None:
-        """Stop the pump, join it, then release the source.
+        """Stop every worker, join it, then release the source.
 
-        Ordering (issue #64): the pump thread closes the source itself
-        on exit; this release is a no-op then. Never release while a
-        native read may still be in flight.
+        Ordering (issue #64): a worker thread closes the source itself
+        on exit; this release is a no-op then. It is SKIPPED while any
+        worker may still be inside a native read — the GUI window reaches
+        here from closeEvent, and with D2 the GUI is the path that runs
+        inference on a worker, so the read is genuinely in flight
+        (B1). The worker's own `finally` covers the skipped case
+        whenever its read returns.
+
+        Deliberate trade-off (inherited from `_stop_and_release`, which
+        reached the same judgement first): if a native read outlives the
+        5 s join budget, close() returns with the camera STILL OPEN,
+        released later by the worker as it exits (or by process teardown
+        for a daemon thread). That is the accepted cost of not releasing
+        under an in-flight read — a bounded delay, not an unbounded leak,
+        and strictly preferable to a daemon-thread leak or the
+        close-during-read segfault. Verified only with fault injection:
+        whether a real AVFoundation read can outlive 5 s, and whether any
+        camera indicator stays lit, is a D4 on-device question.
         """
         with self._lock:
-            if self._closed:
-                self._join_tracked_locked()
-                return
-            self._closed = True
-            self._pump_stop.set()
-            self._join_tracked_locked()
-        self._release_source()
+            if not self._closed:
+                self._closed = True
+                self._pump_stop.set()
+                # B1 (N1): the inference worker watches _inference_stop, not
+                # _pump_stop. Without this it was never asked to stop, so the
+                # join below routinely ran out its budget on a closed window.
+                self._inference_stop.set()
+        # B1: join WITHOUT the lock. A worker's own exit path calls
+        # _release_if_quiescent, which takes self._lock; joining under it
+        # deadlocks that worker at the join. (See _stop_pump_and_join.)
+        # The already-closed early return is deliberately kept as a plain
+        # "release again, harmlessly" call, exactly as before.
+        self._join_tracked_locked()
+        self._release_if_quiescent()
         with self._lock:
             self._pump_thread = None
 

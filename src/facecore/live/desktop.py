@@ -302,16 +302,6 @@ class DesktopSession:
         return result
 
     @property
-    def worker_terminal(self) -> SessionResult | None:
-        """D2: the inference worker's terminal, read by the UI tick.
-
-        Deliberately NOT named `inference_terminal`: that name is the
-        E3 fixed-window B-lock property with a different meaning, and
-        shadowing it would corrupt the collector contract.
-        """
-        return self._controller.terminal
-
-    @property
     def research_sink_errors(self) -> list[str]:
         """D2: research-staging failures contained during the round."""
         return self._controller.research_sink_errors
