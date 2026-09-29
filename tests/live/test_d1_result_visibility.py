@@ -25,6 +25,7 @@ classifier, plus a direct probe of the short-circuit condition.
 
 from __future__ import annotations
 
+import importlib.util
 from typing import Any
 
 import numpy as np
@@ -110,9 +111,25 @@ def _obs(
 
 
 # The classifier under test, plus the exact short-circuit the review named.
-from facecore.live.qt_window import _QtResearchWindow  # noqa: E402
+#
+# `classify_failure` lives on the nested window class, which is only
+# defined when PySide6 imported successfully — the module-level factory
+# substitutes an "unavailable" stand-in otherwise. Import it lazily and
+# skip without it, the same way tests/live/test_qt_window.py does, so a
+# dev-only environment (the ci `verify` job installs .[dev] and has no
+# research-ui) collects this module instead of erroring the whole run.
+_QT_AVAILABLE = importlib.util.find_spec("PySide6") is not None
+pytestmark = pytest.mark.skipif(
+    not _QT_AVAILABLE,
+    reason="classify_failure requires the optional research-ui extra (pyside6)",
+)
 
-_classify = _QtResearchWindow.classify_failure
+
+def _classify(**kwargs: Any) -> str:
+    """Call the real window classifier, imported only when it exists."""
+    from facecore.live.qt_window import _QtResearchWindow
+
+    return _QtResearchWindow.classify_failure(**kwargs)
 
 
 # ---------------------------------------------------------------------------

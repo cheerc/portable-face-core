@@ -66,7 +66,17 @@ jobs:
       - name: Install package with research UI extra
         run: pip install -e .[dev,research-ui]
       - name: Run offscreen synthetic Qt smoke
-        run: python -m pytest tests/live/test_qt_window.py -q
+        # D1: the operator-visible result classification (B1/S1) is
+        # skipped when pyside6 is absent, so the `verify` job — which
+        # installs .[dev] only — cannot exercise it. It must be run
+        # here, where research-ui is installed, or the split between
+        # "saw a face, evidence too thin" and "not enrolled" would ship
+        # with no CI guard at all.
+        run: |
+          python -m pytest tests/live/test_qt_window.py -q
+          python -m pytest \
+            tests/live/test_d1_result_visibility.py \
+            tests/live/test_d1_camera_clock.py -q
       - name: Run G3 Start-gated integration (R1 §2/§5, PR-B)
         run: >-
           python -m pytest
