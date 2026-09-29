@@ -232,21 +232,23 @@ class BlockingSource(CaptureSource):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("method_name", ["close", "release_source"])
 @pytest.mark.parametrize("thread_name", ["d2-inference", "t4-capture-pump"])
 def test_close_never_releases_the_source_while_a_worker_is_reading(
+    method_name: str,
     thread_name: str,
 ) -> None:
     """B1: the join-timeout release is the bug, not the join timeout.
 
     The worker's read is parked longer than the 5 s join budget, so
-    close() proceeds to its release step with that worker still inside
-    read(). close() must then SKIP the release and let the worker's own
-    exit release instead — on AVFoundation releasing under an in-flight
-    native read segfaults (issue #64).
+    close() / release_source() proceeds to its release step with that
+    worker still inside read(). The caller must then SKIP the release
+    and let the worker's own exit release instead — on AVFoundation
+    releasing under an in-flight native read segfaults (issue #64).
 
     Mutation-tested: reverting the joined guard (and the per-worker
-    finally) turns this red. FakeCapture can never block, which is
-    exactly why this double exists.
+    finally) turns this red for both close() (M5) and release_source() (M6).
+    FakeCapture can never block, which is exactly why this double exists.
     """
     engine = SessionEngine(_profile(), "digest-d2", "gen-1")
     source = BlockingSource()
@@ -258,17 +260,18 @@ def test_close_never_releases_the_source_while_a_worker_is_reading(
         controller.start_inference_worker()
     try:
         assert source.wait_until_reading(), f"{thread_name} never entered read()"
-        source.arm()  # close() will consume this gate
+        source.arm()  # close/release will consume this gate
+        release_fn = getattr(controller, method_name)
         started = time.monotonic()
-        controller.close()
+        release_fn()
         elapsed = time.monotonic() - started
         assert source.close_while_reading is False, (
-            f"close() released the source while {thread_name} was still "
+            f"{method_name}() released the source while {thread_name} was still "
             "reading — close-during-read segfaults AVFoundation (issue #64)"
         )
-        # Bounded: close() must not wait forever for a read that never
+        # Bounded: the release path must not wait forever for a read that never
         # returns. (The budget itself is not what's under test.)
-        assert elapsed < 15.0, f"close() took {elapsed:.1f}s"
+        assert elapsed < 15.0, f"{method_name}() took {elapsed:.1f}s"
         assert controller.workers_joined is False, (
             "the read is still parked; the worker cannot have exited yet"
         )
@@ -614,9 +617,10 @@ def test_ui_thread_stays_responsive_while_inference_is_blocked() -> None:
     deleted: a method that cannot fail is not a check.
 
     What is measured instead is UI work that genuinely takes
-    `self._lock` — the same lock an inference-side freeze would hold —
-    with each call bounded so a real freeze fails the test on elapsed
-    time rather than hanging it.
+    `self._lock` — the same lock an inference-side freeze would hold.
+    Under real lock contention, UI polling blocks until the GatedScorer
+    gate times out or the bounded lock probe fails, rather than
+    succeeding blindly.
     """
     scorer = GatedScorer()
     engine = SessionEngine(_profile(), "digest-d2", "gen-1")
@@ -628,9 +632,7 @@ def test_ui_thread_stays_responsive_while_inference_is_blocked() -> None:
 
         # The UI tick's real reads. wait_for_terminal takes the lock and
         # workers_joined reads the tracked-thread list under it; both are
-        # what a scorer-side freeze would block. timeout_s=0 makes each
-        # call a poll instead of a wait, so a contended lock shows up as
-        # elapsed time on a probe below rather than as a hang here.
+        # what a scorer-side freeze would block.
         polls = 0
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
@@ -646,9 +648,9 @@ def test_ui_thread_stays_responsive_while_inference_is_blocked() -> None:
             time.sleep(0.005)
         assert polls > 10, f"UI thread managed only {polls} polls while blocked"
 
-        # The lock a freeze would hold, probed the same way. RLock by
-        # construction (a worker may re-enter from a worker-side call),
-        # so "acquired" cannot be confused with "free".
+        # The lock a freeze would hold, probed the same way. Standard
+        # threading.Lock (non-reentrant), so if held by a worker, acquire()
+        # from the UI thread will block and report the contention.
         probe_lock = controller._lock
         started = time.monotonic()
         acquired = probe_lock.acquire(timeout=1.0)
