@@ -501,9 +501,37 @@ class _NullRecorder:
     channel (``record_crop_mapping``) are NOT routed here: those are
     guarded explicitly at their call sites, because "no recorder" must
     never read as "silently stage the frame anyway".
+
+    The no-op set is an explicit ALLOW-LIST, not a catch-all. A blanket
+    ``__getattr__`` would answer every ``getattr(recorder, "x", None)``
+    capability probe in the codebase — including
+    ``controller._append_live_trace``'s
+    ``getattr(self._trace_recorder, "append_trace", None)`` — so a
+    renamed or misspelled recorder method would resolve to a no-op and
+    lose its write without any error. The allow-list makes that failure
+    loud instead: an unexpected method raises, exactly as a real
+    recorder missing that method would.
     """
 
+    _NO_OPS = frozenset(
+        {
+            "abort",
+            "begin",
+            "commit",
+            "finish_attempt",
+            "begin_attempt",
+        }
+    )
+
     def __getattr__(self, name: str) -> Any:
+        if name not in self._NO_OPS:
+            raise AttributeError(
+                f"_NullRecorder has no {name!r}: demo mode must never reach a "
+                "recorder channel that writes (this is the guard that keeps "
+                "frames, embeddings and the attempt ledger out of the "
+                "non-recording path)"
+            )
+
         def _noop(*args: Any, **kwargs: Any) -> None:
             return None
 

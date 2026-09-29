@@ -572,6 +572,47 @@ class TestDemoRowCarriesNoBiometrics:
         assert row["required_support"] == "3"
 
 
+# ---------------------------------------------------------------------------
+# 5. The null recorder is an ALLOW-LIST, not a catch-all.
+# ---------------------------------------------------------------------------
+
+
+class TestNullRecorderRefusesWriteChannels:
+    """A blanket __getattr__ would defeat the codebase's capability probes.
+
+    ``controller._append_live_trace`` decides whether the recorder supports
+    tracing with ``getattr(self._trace_recorder, "append_trace", None)``.
+    A catch-all null object answers that probe for every name, so a renamed
+    or misspelled recorder method would resolve to a silent no-op and lose
+    its write with no error anywhere. These tests pin the refusal.
+    """
+
+    def test_bookkeeping_methods_are_allowed(self) -> None:
+        from facecore.research.cli import NULL_RECORDER
+
+        for name in ("abort", "begin", "commit", "finish_attempt", "begin_attempt"):
+            assert getattr(NULL_RECORDER, name)() is None
+
+    def test_write_channels_are_refused_loudly(self) -> None:
+        from facecore.research.cli import NULL_RECORDER
+
+        for name in (
+            "append_frame",
+            "record_crop_mapping",
+            "append_trace",
+            "write_label",
+        ):
+            with pytest.raises(AttributeError):
+                getattr(NULL_RECORDER, name)
+
+    def test_an_unknown_method_is_refused_not_swallowed(self) -> None:
+        """A typo must fail loudly rather than silently lose a write."""
+        from facecore.research.cli import NULL_RECORDER
+
+        with pytest.raises(AttributeError, match="typo_method_name"):
+            getattr(NULL_RECORDER, "typo_method_name")
+
+
 def _research_row_value(round_: Any, key: str) -> Any:
     from facecore.research.cli import g3_round_row
 
