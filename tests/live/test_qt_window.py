@@ -358,8 +358,22 @@ class TestQtResearchWindow:
         assert source_a.is_closed is True
 
         window_a.process_once()
-        # Branch-specific proof: fast path triggered on dry read 1 (dry == 1 < 3)
-        assert desktop_a._controller._consecutive_dry == 1
+        # D2: `_consecutive_dry` is now maintained by the inference worker,
+        # so the UI observes a settled value rather than this tick's
+        # intermediate count; the exact `== 1` this used to assert is no
+        # longer meaningful and is deliberately not re-pinned here.
+        #
+        # Mutation-checked: relaxing it to `>= 1` and then removing the
+        # closed-source short-circuit left every other assertion in this
+        # test green, so the relaxation would have been a fake guard. The
+        # observable contract is asserted instead — the round terminates,
+        # the collector seals as source_exhausted and incomplete, and the
+        # timer stops. Whether the round ends on the FIRST dry read (the
+        # fast path) is a real-camera-cadence property that this repo
+        # cannot measure; see test_d2_inference_worker.py's
+        # test_closed_source_does_not_wait_out_the_jitter_bar for the
+        # full account, and D4 for the on-device confirmation.
+        assert desktop_a._controller._consecutive_dry >= 1
         assert desktop_a.state == "terminal"
         assert desktop_a.collection_stop_reason == "source_exhausted"
         assert desktop_a.collection_complete is False

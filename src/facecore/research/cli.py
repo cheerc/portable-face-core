@@ -1210,6 +1210,13 @@ def cmd_live(
             results_csv=store_root / "results.csv"
             if next_session_factory is not None
             else None,
+            # D2: only a real Qt event loop gets worker-driven inference.
+            # A real GUI would otherwise block on inference, encrypted
+            # staging and camera reads inside one timer callback. The
+            # offscreen driver below and the headless path keep the
+            # synchronous tick, whose determinism and step budget the
+            # existing tests pin.
+            background_inference=not qt_offscreen,
         )
         if device != "fake" and not camera_options:
             # G3 W6 spec §7-2: no camera at all → Chinese reason, stay

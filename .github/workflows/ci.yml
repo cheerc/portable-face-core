@@ -77,6 +77,10 @@ jobs:
           python -m pytest \
             tests/live/test_d1_result_visibility.py \
             tests/live/test_d1_camera_clock.py -q
+          # D2: the worker lifecycle and the GUI-vs-offscreen wiring split
+          # only exist where pyside6 does, for the same reason as above —
+          # without this the inference worker would ship unguarded.
+          python -m pytest tests/live/test_d2_inference_worker.py -q
       - name: Run G3 Start-gated integration (R1 §2/§5, PR-B)
         run: >-
           python -m pytest

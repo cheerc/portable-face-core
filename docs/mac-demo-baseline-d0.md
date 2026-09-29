@@ -235,6 +235,7 @@ D0 僅變更文件，故 regression 以上述 repo baseline 為準。
 | 6 | 分段時間量測（open 開始／完成、首幀、推論開始／完成、結果完成） | 尚未實作 | D1 |
 | 7 | 首幀 open／read 分攤的**真機**數值 | 合成重現無法回答真機相機行為 | D1 量測＋D4 實測 |
 | 8 | `ruff check .`（全 repo）有 1 個 E501 | `experiments/mac_live_capture_probe.py:521`；CI 只跑 `ruff check src tests` 故綠。非本 PR 引入，**本次不併入 D0 修正**（保持 source 零變更的可審計形態） | 之後的 lint 清理 |
+| 9 | `close()` 的 **join 逾時路徑**真機行為 | D2 讓真機 GUI 有 worker 停在原生 read 內；read 若活得比 5s join 預算久，`close()` 會帶著**仍開啟的相機**返回（刻意的取捨，見 `controller.close()` docstring 與 `_stop_and_release()` 既有判定）。合成環境只能證明「不釋放、不崩潰、有界」，**證明不了真機 AVFoundation 的 read 是否可能逾時 5s、逾時後相機是否確實釋放、使用者是否看得見燈號殘留** | D4 實測 |
 
 **本清單不授權任何相機操作。** 真機測試需 operator 在場並另行授權（`--device local` 未授權）。
 

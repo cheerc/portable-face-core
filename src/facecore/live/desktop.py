@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timezone
+import threading
 from typing import Literal
 
 from facecore.live.capture import CaptureSource
@@ -262,6 +263,48 @@ class DesktopSession:
             self._recording = False
         _ = timeout_s
         return terminal
+
+    def start_inference_worker(self) -> threading.Thread:
+        """D2: hand capture, inference and staging to a worker thread."""
+        return self._controller.start_inference_worker()
+
+    def cancel_inference(self) -> SessionResult | None:
+        """D2: stop the round from the UI thread while a worker is parked."""
+        return self._controller.cancel_inference()
+
+    def drain_preview(self) -> FramePacket | None:
+        """D2: UI-thread drain of the newest preview frame."""
+        return self._controller.drain_preview()
+
+    def wait_for_terminal(self, timeout_s: float = 10.0) -> SessionResult | None:
+        """D2: bounded wait for the inference worker's terminal.
+
+        Also mirrors the worker's result into this desktop's state, so the
+        state machine the UI reads ("running" → "terminal") advances on
+        the worker's schedule rather than only when some caller happens to
+        invoke `run_until_terminal`.
+        """
+        result = self._controller.wait_for_terminal(timeout_s=timeout_s)
+        if result is not None and self._state == "running":
+            self._terminal = result
+            # Fixed-window keeps the view running after B locks so Cancel
+            # can stop the remaining collector — the same rule the
+            # synchronous path applies in run_until_terminal.
+            if (
+                self._controller._fixed_seconds
+                and self._controller.collection_stop_reason == "in_progress"
+            ):
+                self._state = "running"
+                self._recording = True
+            else:
+                self._state = "terminal"
+                self._recording = False
+        return result
+
+    @property
+    def research_sink_errors(self) -> list[str]:
+        """D2: research-staging failures contained during the round."""
+        return self._controller.research_sink_errors
 
     def display_identity(self) -> str | None:
         """Identity display rule: matched shows the name; else nothing."""
