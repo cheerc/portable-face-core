@@ -83,6 +83,10 @@ jobs:
           python -m pytest tests/live/test_d2_inference_worker.py -q
           # D3: result verifiability panel and failure reason visibility
           python -m pytest tests/live/test_d3_result_verifiability.py -q
+          # D3b: recording stays byte-identical, demo mode records nothing.
+          # The byte-level proofs only mean something where the Qt window
+          # and the consent-gated cmd_live path actually run.
+          python -m pytest tests/live/test_d3b_optional_recording.py -q
       - name: Run G3 Start-gated integration (R1 §2/§5, PR-B)
         run: >-
           python -m pytest

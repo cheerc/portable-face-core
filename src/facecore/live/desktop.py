@@ -71,6 +71,7 @@ class DesktopSession:
         label_recorder: object | None = None,
         label_attempt_id: str | None = None,
         label_actor_ref: str = "desktop-operator",
+        demo_label_sink: object | None = None,
         release_source_on_terminal: bool = True,
     ) -> None:
         if not session_id:
@@ -104,6 +105,13 @@ class DesktopSession:
         self._label_recorder = label_recorder
         self._label_attempt_id = label_attempt_id
         self._label_actor_ref = label_actor_ref
+        # D3b: the non-recording demo label sink. Distinct from the
+        # encrypted sidecar above: this one is a plaintext csv row, so the
+        # verdict is readable without decrypting anything. Constructor-level
+        # so EVERY round desktop in the continuous loop is born configured —
+        # a post-construction call would be silently forgotten for the
+        # rounds the next_session factory builds.
+        self._demo_label_sink = demo_label_sink
         if (label_recorder is None) != (label_attempt_id is None):
             raise ValueError(
                 "label_recorder and label_attempt_id must be given together"
@@ -376,6 +384,31 @@ class DesktopSession:
         self._label_attempt_id = attempt_id
         self._label_actor_ref = actor_ref
 
+    def configure_demo_label_persistence(
+        self,
+        demo_csv: object,
+        *,
+        actor_ref: str = "desktop-operator",
+    ) -> None:
+        """D3b: attach the plaintext demo sink before terminal labeling.
+
+        Separate from configure_label_persistence so the encrypted sidecar
+        and the plaintext demo file are independently auditable: a round
+        can have one, the other, or both, and the operator-verdict guard
+        accepts any writable sink (commander decision
+        d-20260929193128013174-12 item 2). Recorder behavior in record mode
+        is untouched by this method existing.
+        """
+        if self._state not in ("idle", "terminal"):
+            raise RuntimeError(
+                f"cannot configure demo label persistence in state {self._state!r}"
+            )
+        if demo_csv is None:
+            raise ValueError("demo_csv must not be None")
+        if not actor_ref:
+            raise ValueError("actor_ref must not be empty")
+        self._demo_label_sink = demo_csv
+
     def label_terminal(
         self,
         ground_truth: str | None,
@@ -466,8 +499,27 @@ class DesktopSession:
 
     @property
     def has_label_persistence(self) -> bool:
-        """True when a verdict key press can persist (G3 W3 fail-closed)."""
-        return self._label_recorder is not None and self._label_attempt_id is not None
+        """True when a verdict key press can persist (G3 W3 fail-closed).
+
+        D3b (commander decision d-20260929193128013174-12 item 2): the
+        verdict is allowed when there is ANY configured, writable label
+        sink — the encrypted recorder sidecar (record mode) or the
+        plaintext demo file (demo mode). Previously this asked only about
+        the recorder, which made demo mode's 正確／錯誤 buttons dead. The
+        fail-closed case is preserved exactly: a round with neither sink
+        still refuses the key press and reports why.
+        """
+        if (
+            self._label_recorder is not None
+            and self._label_attempt_id is not None
+        ):
+            return True
+        return self._demo_label_sink is not None
+
+    @property
+    def demo_label_sink(self) -> object | None:
+        """D3b: the plaintext demo sink, or None in record mode."""
+        return self._demo_label_sink
 
     @property
     def profile(self) -> ResearchProfile:

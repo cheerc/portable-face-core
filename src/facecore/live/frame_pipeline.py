@@ -237,9 +237,14 @@ def build_gallery_from_folder(
             vector, _model_ver = embedder.embed(crop)
             embeddings[ident] = vector
             identity_sources[ident] = photo_path
-        except ValueError:
-            raise
         except Exception as exc:
+            # D3b (D3a review N3): alignment/embedding failures are per-photo
+            # failures, not whole-run failures. `align_crop` raises ValueError
+            # when the detector returned anything other than exactly 5
+            # landmarks, and a single malformed face used to abort the loop
+            # and discard the identities already embedded — which made the
+            # D3a load report unreachable on exactly that path. Strict mode
+            # still refuses on the first bad photo.
             if strict:
                 raise ValueError(
                     f"enrollment photo {photo_path.name} failed: {exc}"
