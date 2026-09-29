@@ -522,9 +522,10 @@ def test_qt_countdown_uses_recognition_anchor(qt_app: Any) -> None:
     recognition anchor, so a slow open does not display "0 ms" while
     evidence is still being gathered.
     """
+    from datetime import datetime, timedelta, timezone
+
     from facecore.live.desktop import DesktopSession
     from facecore.research.records import ConsentRecord
-    from datetime import datetime, timedelta, timezone
 
     desktop = DesktopSession(
         engine=SessionEngine(_profile(), "digest-d1", "gen-1"),
@@ -550,3 +551,64 @@ def test_qt_countdown_uses_recognition_anchor(qt_app: Any) -> None:
     # Terminal reached; the countdown must read zero, not a negative or
     # an unbounded value.
     assert desktop.countdown_ms_remaining(10_000_000_000) == 0
+
+
+def test_countdown_is_monotonically_non_increasing(qt_app: Any) -> None:
+    """N2 (review ce0a95a7): the countdown never freezes or rises.
+
+    D1 made `countdown_ms_remaining` read the engine's armed deadline
+    instead of re-deriving start+timeout, so the label is now one
+    subtraction away from a stale anchor. A regression that re-read a
+    cached or pre-anchor value would show up here as a stalled or rising
+    sequence, which no existing test covered.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from facecore.live.desktop import DesktopSession
+    from facecore.research.records import ConsentRecord
+
+    desktop = DesktopSession(
+        engine=SessionEngine(_profile(), "digest-d1", "gen-1"),
+        source=FakeCapture(_face_frames(30, first_ns=2_000_000_000)),
+        scorer=_matching_scorer,
+        session_id="d1-countdown-seq",
+    )
+    consent = ConsentRecord(
+        session_id="d1-countdown-seq",
+        participant_id="synthetic-01",
+        consented_at_utc=datetime.now(timezone.utc).isoformat(),
+        record_expires_at_utc=(
+            datetime.now(timezone.utc) + timedelta(days=1)
+        ).isoformat(),
+        image_expires_at_utc=(
+            datetime.now(timezone.utc) + timedelta(days=1)
+        ).isoformat(),
+        record_consent=True,
+        image_consent=True,
+    )
+    # Round starts at 0 but its first frame is captured 2 s later, so the
+    # recognition anchor is 2 s and the window runs to 7 s. Sample across
+    # the anchor: the pre-anchor reads drain from the round anchor, the
+    # anchor re-arms, and the label must never rise across that seam.
+    desktop.on_start(consent, now_ns=0, device_id="fake")
+    timeline = list(range(0, 8_000_000_000, 500_000_000))
+    before = [desktop.countdown_ms_remaining(t) for t in timeline[:5]]
+    assert desktop._engine.recognition_anchored is False
+    assert before == sorted(before, reverse=True)
+    assert before[0] == 5_000, f"pre-anchor starts at the full window: {before}"
+
+    desktop._controller._pump_once()  # deliver frame 1 -> anchor at 2 s
+    assert desktop._engine.recognition_anchored is True
+
+    after = [desktop.countdown_ms_remaining(t) for t in timeline[4:]]
+    assert after == sorted(after, reverse=True), f"must not rise: {after}"
+    assert after[-1] == 0, "countdown must bottom out at 0, never go negative"
+
+    # The seam is the point: the last pre-anchor reading must not be
+    # followed by a larger one, even though re-arming implies a longer
+    # window than the round anchor had left.
+    assert after[0] <= before[-1], (
+        f"countdown rose across the anchor: {before[-1]} -> {after[0]}"
+    )
+    # And it must still genuinely advance afterwards.
+    assert len(set(after)) > 1, f"countdown must keep moving: {after}"

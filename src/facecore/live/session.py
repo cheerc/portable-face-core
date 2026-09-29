@@ -612,27 +612,41 @@ class SessionEngine:
 
         # D1: frames qualified but the multi-frame rule never closed.
         # "A person was visible but the evidence was too thin" is a
-        # different operator-facing outcome than "nothing was visible",
-        # and it must not be reported as matched. The best-frame band
-        # rides along as a diagnostic; it is not a gate — a strong single
-        # frame is still insufficient under the 3-frame rule.
+        # different operator-facing outcome than "nobody resembling the
+        # gallery was here" — and only the first must be reported as
+        # insufficient. The gate is the review band: a face whose best
+        # score never reached `review_threshold` is a stranger, and
+        # 「找不到此註冊人員」 is the honest answer for a stranger.
+        # Lumping them together (the pre-rework D1 behaviour) showed
+        # "saw a face, evidence too thin" for people who simply were not
+        # in the gallery — the mirror image of the defect review
+        # ce0a95a7 raised, and it broke the R1 not-found contract.
+        #
+        # The band is not a match gate: reaching `review` is NOT
+        # matched, and a strong single frame is still insufficient under
+        # the 3-frame rule. It only decides which sentence the operator
+        # reads.
         if self._frames_usable > 0 and (
             len(self._support_sequences) < self.profile.required_support
         ):
             _, baseline_status, _ = compute_baseline_best_quality(
                 self._observations, self.profile
             )
-            return self._terminate_terminal(
-                status=SessionStatus.timeout,
-                identity=None,
-                reason_codes=(
-                    "insufficient_evidence",
-                    f"support_{len(self._support_sequences)}"
-                    f"_of_{self.profile.required_support}",
-                    f"best_baseline_{baseline_status.value}",
-                ),
-                now_ns=now_ns,
-            )
+            if baseline_status in (
+                SessionStatus.review,
+                SessionStatus.matched,
+            ):
+                return self._terminate_terminal(
+                    status=SessionStatus.timeout,
+                    identity=None,
+                    reason_codes=(
+                        "insufficient_evidence",
+                        f"support_{len(self._support_sequences)}"
+                        f"_of_{self.profile.required_support}",
+                        f"best_baseline_{baseline_status.value}",
+                    ),
+                    now_ns=now_ns,
+                )
 
         # Baseline best-frame evaluation
         best_obs, baseline_status, _ = compute_baseline_best_quality(
