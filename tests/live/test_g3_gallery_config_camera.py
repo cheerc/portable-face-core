@@ -41,6 +41,31 @@ class _NoFaceDetector:
         return []
 
 
+class _SelectiveDetector:
+    """Stub detector: selectively rejects specific pixel shades."""
+
+    def __init__(self, reject_shades: set[int]) -> None:
+        self.reject_shades = reject_shades
+
+    def detect(self, decoded: Any) -> list[DetectedFace]:
+        shade = int(decoded.pixels[0])
+        if shade in self.reject_shades:
+            return []
+        return [
+            DetectedFace(
+                box=(1.0, 1.0, 6.0, 6.0),
+                landmarks=(
+                    (2.0, 2.0),
+                    (5.0, 2.0),
+                    (3.5, 3.0),
+                    (2.5, 4.5),
+                    (4.5, 4.5),
+                ),
+                confidence=0.99,
+            )
+        ]
+
+
 class _StubEmbedder:
     model_version = "sface-test"
 
@@ -112,6 +137,48 @@ class TestFolderGallery:
             generation="gen-g3w6-test",
         )
         assert sorted(gallery.embeddings.keys()) == ["enroll-01"]
+
+    def test_partial_failure_collects_report_and_loads_valid_identities(
+        self, tmp_path: Path
+    ) -> None:
+        """D3 Scope 1: partial failures load valid identities and record load report."""
+        from facecore.live.frame_pipeline import build_gallery_from_folder
+
+        # enroll-00 (pass), enroll-01 (fail), enroll-02 (pass)
+        folder = _enrollment_dir(
+            tmp_path, ["enroll-00.png", "enroll-01.png", "enroll-02.png"]
+        )
+        gallery = build_gallery_from_folder(
+            folder,
+            detector=_SelectiveDetector(reject_shades={110}),
+            embedder=_StubEmbedder(),
+            generation="gen-g3w6-test",
+        )
+        assert sorted(gallery.embeddings.keys()) == ["enroll-00", "enroll-02"]
+        report = gallery.load_report
+        assert report is not None
+        assert report.expected_count == 3
+        assert report.loaded_count == 2
+        assert len(report.failures) == 1
+        assert report.failures[0].filename == "enroll-01.png"
+        assert report.failures[0].reason == "input_no_face"
+
+    def test_identity_sources_points_to_original_files(
+        self, tmp_path: Path
+    ) -> None:
+        """D3 Scope 2: gallery records direct paths to original enrollment photos."""
+        from facecore.live.frame_pipeline import build_gallery_from_folder
+
+        folder = _enrollment_dir(tmp_path, ["enroll-05.png", "enroll-06.jpg"])
+        gallery = build_gallery_from_folder(
+            folder,
+            detector=_SingleFaceDetector(),
+            embedder=_StubEmbedder(),
+            generation="gen-g3w6-test",
+        )
+        assert gallery.identity_sources is not None
+        assert gallery.identity_sources["enroll-05"] == folder / "enroll-05.png"
+        assert gallery.identity_sources["enroll-06"] == folder / "enroll-06.jpg"
 
 
 class TestLocalConfig:

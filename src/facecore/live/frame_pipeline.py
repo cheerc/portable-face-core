@@ -37,6 +37,24 @@ from facecore.policy.identify import cosine_score
 
 
 @dataclass(frozen=True)
+class EnrollmentFailure:
+    """A rejected enrollment photo with filename and cause."""
+
+    filename: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class GalleryLoadReport:
+    """Startup summary of enrollment folder loading (D3)."""
+
+    expected_count: int
+    loaded_count: int
+    failures: tuple[EnrollmentFailure, ...]
+    source_dir: Path | None = None
+
+
+@dataclass(frozen=True)
 class ResearchGallery:
     """Immutable, isolated in-memory gallery of unit-norm face embeddings."""
 
@@ -44,6 +62,8 @@ class ResearchGallery:
     model_version: str
     generation: str
     digest: str
+    load_report: GalleryLoadReport | None = None
+    identity_sources: Mapping[str, Path] | None = None
 
     def __init__(
         self,
@@ -52,6 +72,8 @@ class ResearchGallery:
         model_version: str,
         generation: str,
         digest: str,
+        load_report: GalleryLoadReport | None = None,
+        identity_sources: Mapping[str, Path] | None = None,
     ) -> None:
         if not embeddings:
             raise ValueError("research gallery must not be empty")
@@ -73,6 +95,14 @@ class ResearchGallery:
         object.__setattr__(self, "model_version", model_version)
         object.__setattr__(self, "generation", generation)
         object.__setattr__(self, "digest", digest)
+        object.__setattr__(self, "load_report", load_report)
+        object.__setattr__(
+            self,
+            "identity_sources",
+            MappingProxyType(dict(identity_sources))
+            if identity_sources is not None
+            else None,
+        )
 
     def compute_digest(self) -> str:
         """Deterministic digest calculated from sorted identity embeddings."""
@@ -139,13 +169,16 @@ def build_gallery_from_folder(
     detector: Any,
     embedder: Any,
     generation: str = "gen-1",
+    strict: bool = False,
 ) -> ResearchGallery:
-    """Build a G3 gallery straight from an enrollment folder (spec §2-2).
+    """Build a G3 gallery straight from an enrollment folder (spec §2-2, D3).
 
     Identity is the file stem (e.g. ``enroll-23.png`` → ``enroll-23``).
-    Every photo must hold exactly one face; otherwise the offending file
-    is named LOUD. Non-image files are ignored. Duplicate identities
-    (same stem, different suffix) refuse.
+    Valid photos with exactly one face are enrolled. Failures are collected
+    into ``load_report``; if all photos fail or no usable photo is enrolled,
+    the whole enrollment fails closed and raises ValueError naming the rejected
+    file(s). Duplicate identities (same stem, different suffix) always refuse.
+    Non-image files are ignored.
     """
     if not folder.is_dir():
         raise ValueError(f"enrollment folder missing: {folder}")
@@ -157,35 +190,74 @@ def build_gallery_from_folder(
     if not photos:
         raise ValueError(f"enrollment folder holds no photos: {folder}")
     embeddings: dict[str, np.ndarray] = {}
+    identity_sources: dict[str, Path] = {}
+    failures: list[EnrollmentFailure] = []
     for photo_path in photos:
         ident = photo_path.stem
         if not ident:
-            raise ValueError(f"enrollment photo has empty identity: {photo_path}")
+            if strict:
+                raise ValueError(f"enrollment photo has empty identity: {photo_path}")
+            failures.append(
+                EnrollmentFailure(filename=photo_path.name, reason="empty identity")
+            )
+            continue
         if ident in embeddings:
             raise ValueError(
                 f"duplicate identity in enrollment folder: {ident!r} "
                 f"({photo_path.name})"
             )
-        with Image.open(photo_path) as img:
-            rgb_img = img.convert("RGB")
-            width, height = rgb_img.width, rgb_img.height
-            pixels = rgb_img.tobytes()
-        decoded = DecodedImage(
-            width=width,
-            height=height,
-            color_order="RGB",
-            pixels=pixels,
-        )
-        detected_faces = detector.detect(decoded)
-        status, reason, face = enforce_single_face(detected_faces)
-        if status != "ok" or face is None:
-            raise ValueError(
-                f"enrollment photo {photo_path.name} rejected: "
-                f"{reason or 'no single face'}"
+        try:
+            with Image.open(photo_path) as img:
+                rgb_img = img.convert("RGB")
+                width, height = rgb_img.width, rgb_img.height
+                pixels = rgb_img.tobytes()
+            decoded = DecodedImage(
+                width=width,
+                height=height,
+                color_order="RGB",
+                pixels=pixels,
             )
-        crop = align_crop(decoded.pixels, decoded.width, decoded.height, face)
-        vector, _model_ver = embedder.embed(crop)
-        embeddings[ident] = vector
+            detected_faces = detector.detect(decoded)
+            status, reason, face = enforce_single_face(detected_faces)
+            if status != "ok" or face is None:
+                err_msg = (
+                    f"enrollment photo {photo_path.name} rejected: "
+                    f"{reason or 'no single face'}"
+                )
+                if strict:
+                    raise ValueError(err_msg)
+                failures.append(
+                    EnrollmentFailure(
+                        filename=photo_path.name,
+                        reason=reason or "no single face",
+                    )
+                )
+                continue
+            crop = align_crop(decoded.pixels, decoded.width, decoded.height, face)
+            vector, _model_ver = embedder.embed(crop)
+            embeddings[ident] = vector
+            identity_sources[ident] = photo_path
+        except ValueError:
+            raise
+        except Exception as exc:
+            if strict:
+                raise ValueError(
+                    f"enrollment photo {photo_path.name} failed: {exc}"
+                ) from exc
+            failures.append(
+                EnrollmentFailure(filename=photo_path.name, reason=str(exc))
+            )
+            continue
+
+    if not embeddings:
+        if failures:
+            fail_summary = "; ".join(f"{f.filename}: {f.reason}" for f in failures)
+            first_fail = f"{failures[0].filename} rejected: {failures[0].reason}"
+            count_info = f"({len(failures)}/{len(photos)} photos rejected, 0 loaded"
+            raise ValueError(
+                f"enrollment photo {first_fail} {count_info}; {fail_summary})"
+            )
+        raise ValueError("research gallery must not be empty")
 
     hasher = hashlib.sha256()
     for ident in sorted(embeddings.keys()):
@@ -194,11 +266,19 @@ def build_gallery_from_folder(
     gal_digest = hasher.hexdigest()
 
     model_ver = getattr(embedder, "model_version", "sface_2021dec")
+    load_report = GalleryLoadReport(
+        expected_count=len(photos),
+        loaded_count=len(embeddings),
+        failures=tuple(failures),
+        source_dir=folder,
+    )
     return ResearchGallery(
         embeddings=embeddings,
         model_version=model_ver,
         generation=generation,
         digest=gal_digest,
+        load_report=load_report,
+        identity_sources=identity_sources,
     )
 
 

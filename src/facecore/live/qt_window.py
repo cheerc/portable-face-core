@@ -275,6 +275,9 @@ else:
             camera_options: list[tuple[int, str]] | None = None,
             results_csv: Path | None = None,
             background_inference: bool = False,
+            gallery: Any = None,
+            enrollment_dir: Path | None = None,
+            load_report: Any = None,
         ) -> None:
             super().__init__()
             self.desktop = desktop
@@ -314,6 +317,10 @@ else:
             self._results_csv = results_csv
             # D2: opt-in worker-driven inference (see _start_round).
             self._background_inference = background_inference
+            # D3: gallery, enrollment folder and startup loading report.
+            self.gallery = gallery
+            self.enrollment_dir = enrollment_dir
+            self.load_report = load_report or getattr(gallery, "load_report", None)
 
             if (recorder is None) != (attempt_id is None):
                 raise ValueError("recorder and attempt_id must be given together")
@@ -340,6 +347,9 @@ else:
                 f"image {self.consent.image_expires_at_utc}"
             )
             self.ttl_label.setObjectName("ttl")
+            self.enrollment_label = QLabel()
+            self.enrollment_label.setObjectName("enrollmentReport")
+            self._update_enrollment_ui()
             self.status_label = QLabel()
             self.status_label.setObjectName("status")
             remaining_ms = self.desktop.countdown_ms_remaining(self._clock_ns())
@@ -351,6 +361,26 @@ else:
             self.identity_label.setObjectName("identity")
             self.guide_label = QLabel("方形引導框 · square guide: 待採集")
             self.guide_label.setObjectName("guide")
+
+            # D3: result verification panel (candidate thumbnail, ID, scores,
+            # frames, failure reason)
+            self.candidate_thumbnail_label = QLabel("無縮圖")
+            self.candidate_thumbnail_label.setObjectName("candidateThumbnail")
+            self.candidate_thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.candidate_thumbnail_label.setMinimumSize(120, 120)
+
+            self.result_identity_label = QLabel()
+            self.result_identity_label.setObjectName("resultIdentity")
+
+            self.scores_label = QLabel()
+            self.scores_label.setObjectName("resultScores")
+
+            self.frames_label = QLabel()
+            self.frames_label.setObjectName("resultFrames")
+
+            self.failure_reason_label = QLabel()
+            self.failure_reason_label.setObjectName("failureReason")
+
             # G3 W6: camera picker. First row is the unselected prompt so
             # no camera is preselected; the operator must pick one.
             self.camera_combo = QComboBox()
@@ -400,12 +430,18 @@ else:
             layout.addWidget(self.watermark_label)
             layout.addWidget(self.device_label)
             layout.addWidget(self.ttl_label)
+            layout.addWidget(self.enrollment_label)
             layout.addWidget(self.status_label)
             layout.addWidget(self.countdown_label)
             layout.addWidget(self.saved_state_label)
             layout.addWidget(self.identity_label)
             layout.addWidget(self.guide_label)
             layout.addWidget(self.preview_label)
+            layout.addWidget(self.candidate_thumbnail_label)
+            layout.addWidget(self.result_identity_label)
+            layout.addWidget(self.scores_label)
+            layout.addWidget(self.frames_label)
+            layout.addWidget(self.failure_reason_label)
             layout.addWidget(self.camera_combo)
             layout.addLayout(consent_row)
             layout.addLayout(controls)
@@ -448,6 +484,284 @@ else:
             self.correct_button.setEnabled(False)
             self.incorrect_button.setEnabled(False)
             self._set_status(message)
+
+        def _update_enrollment_ui(self) -> None:
+            """Update enrollment report with expected/loaded counts and failures."""
+            if self.load_report is not None:
+                rep = self.load_report
+                if rep.failures:
+                    fails_str = "、".join(
+                        f"{f.filename}（{f.reason}）" for f in rep.failures
+                    )
+                    head = (
+                        f"註冊組：應載入 {rep.expected_count} 人，"
+                        f"實際載入 {rep.loaded_count} 人"
+                    )
+                    detail = f"註冊失敗（{len(rep.failures)} 檔）：{fails_str}"
+                    self.enrollment_label.setText(f"{head}\n{detail}")
+                else:
+                    self.enrollment_label.setText(
+                        f"註冊組：應載入 {rep.expected_count} 人，"
+                        f"實際載入 {rep.loaded_count} 人（全部成功）"
+                    )
+            elif (
+                self.gallery is not None
+                and getattr(self.gallery, "embeddings", None)
+            ):
+                count = len(self.gallery.embeddings)
+                self.enrollment_label.setText(
+                    f"註冊組：應載入 {count} 人，實際載入 {count} 人（全部成功）"
+                )
+            else:
+                self.enrollment_label.setText("註冊組：未載入")
+
+        def find_identity_photo(self, ident: str) -> Path | None:
+            """Locate the local enrollment photo file for identity (stem).
+
+            Directly reads the original enrollment photo file without copying.
+            Returns None if not found or unreadable.
+            """
+            if not ident:
+                return None
+            if self.gallery is not None:
+                sources = getattr(self.gallery, "identity_sources", None)
+                if sources and ident in sources:
+                    path = sources[ident]
+                    if isinstance(path, Path) and path.is_file():
+                        return path
+            enr_dir = self.enrollment_dir
+            if enr_dir is None and self.load_report is not None:
+                enr_dir = self.load_report.source_dir
+            if enr_dir is not None and enr_dir.is_dir():
+                for suffix in (
+                    ".jpg",
+                    ".jpeg",
+                    ".png",
+                    ".bmp",
+                    ".tiff",
+                    ".tif",
+                    ".webp",
+                ):
+                    candidate = enr_dir / f"{ident}{suffix}"
+                    if candidate.is_file():
+                        return candidate
+                    candidate_upper = enr_dir / f"{ident}{suffix.upper()}"
+                    if candidate_upper.is_file():
+                        return candidate_upper
+                try:
+                    for p in enr_dir.iterdir():
+                        if p.is_file() and p.stem == ident:
+                            return p
+                except Exception:
+                    pass
+            return None
+
+        def _display_thumbnail(self, photo_path: Path | None) -> None:
+            """Display local candidate thumbnail directly without copying."""
+            if photo_path is not None and photo_path.is_file():
+                try:
+                    pixmap = QPixmap(str(photo_path))
+                    if not pixmap.isNull():
+                        scaled = pixmap.scaled(
+                            120,
+                            120,
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation,
+                        )
+                        self.candidate_thumbnail_label.setPixmap(scaled)
+                        self.candidate_thumbnail_label.setToolTip(
+                            f"註冊照片：{photo_path.name}"
+                        )
+                        return
+                except Exception:
+                    pass
+            self.candidate_thumbnail_label.clear()
+            self.candidate_thumbnail_label.setText("無縮圖")
+
+        def _clear_result_panel(self) -> None:
+            """Clear result details panel when returning to ready or starting."""
+            self.candidate_thumbnail_label.clear()
+            self.candidate_thumbnail_label.setText("無縮圖")
+            self.result_identity_label.setText("")
+            self.scores_label.setText("")
+            self.frames_label.setText("")
+            self.failure_reason_label.setText("")
+
+        def _update_result_details(self, result: Any) -> None:
+            """Update verification result details (scores, frames, causes)."""
+            if result is None:
+                self.result_identity_label.setText("身分 · identity: 辨識未完成")
+                self.scores_label.setText("Top 1: 無 · Top 2: 無 · 差距: 無")
+                self.frames_label.setText("有效幀／所需幀: 0/0")
+                self.failure_reason_label.setText("失敗原因: 辨識未完成")
+                self._display_thumbnail(None)
+                return
+
+            profile = getattr(
+                self.desktop,
+                "profile",
+                getattr(getattr(self.desktop, "_engine", None), "profile", None),
+            )
+            required_support = getattr(profile, "required_support", 3)
+            review_thresh = getattr(profile, "review_threshold", 0.30)
+
+            observations = tuple(self.desktop.observations)
+            status = result.status
+            is_matched = (
+                status == SessionStatus.matched
+                and result.matched_identity is not None
+            )
+
+            top1_ident: str | None = None
+            top1_score: float | None = None
+            top2_ident: str | None = None
+            top2_score: float | None = None
+            margin: float | None = None
+            effective_frames = 0
+            thumbnail_ident: str | None = None
+
+            if is_matched:
+                matched_id = str(result.matched_identity)
+                thumbnail_ident = matched_id
+                self.result_identity_label.setText(f"身分 · identity: {matched_id}")
+                self.identity_label.setText(matched_id)
+                self.failure_reason_label.setText("失敗原因: 無（辨識成功）")
+
+                scored_obs = [
+                    o
+                    for o in observations
+                    if o.identity_scores and matched_id in o.identity_scores
+                ]
+                if scored_obs:
+                    scored_obs.sort(
+                        key=lambda o: (
+                            o.identity_scores.get(matched_id, 0.0),
+                            getattr(o, "quality_rank", 0.0),
+                        ),
+                        reverse=True,
+                    )
+                    best_obs = scored_obs[0]
+                    sorted_scores = sorted(
+                        best_obs.identity_scores.items(),
+                        key=lambda it: it[1],
+                        reverse=True,
+                    )
+                    top1_ident, top1_score = sorted_scores[0]
+                    if len(sorted_scores) > 1:
+                        top2_ident, top2_score = sorted_scores[1]
+                        margin = top1_score - top2_score
+                else:
+                    top1_ident = matched_id
+                    top1_score = None
+
+                support_count = sum(
+                    1
+                    for o in observations
+                    if o.identity_scores
+                    and getattr(o, "quality_pass", False)
+                    and getattr(o, "face_count", 0) == 1
+                    and max(o.identity_scores.items(), key=lambda it: it[1])[0]
+                    == matched_id
+                )
+                effective_frames = max(support_count, required_support)
+            else:
+                self.identity_label.setText("")
+                usable_frames = [
+                    o
+                    for o in observations
+                    if getattr(o, "quality_pass", False)
+                    and getattr(o, "face_count", 0) == 1
+                    and o.identity_scores
+                ]
+                if usable_frames:
+                    usable_frames.sort(
+                        key=lambda o: (
+                            getattr(o, "quality_rank", 0.0),
+                            -getattr(o, "sequence", 0),
+                        ),
+                        reverse=True,
+                    )
+                    best_frame = usable_frames[0]
+                    sorted_scores = sorted(
+                        best_frame.identity_scores.items(),
+                        key=lambda it: it[1],
+                        reverse=True,
+                    )
+                    top1_ident, top1_score = sorted_scores[0]
+                    thumbnail_ident = top1_ident
+                    if len(sorted_scores) > 1:
+                        top2_ident, top2_score = sorted_scores[1]
+                        margin = top1_score - top2_score
+
+                    support_code = next(
+                        (
+                            c
+                            for c in result.reason_codes
+                            if c.startswith("support_") and "_of_" in c
+                        ),
+                        None,
+                    )
+                    if support_code:
+                        try:
+                            effective_frames = int(support_code.split("_")[1])
+                        except (ValueError, IndexError):
+                            effective_frames = sum(
+                                1
+                                for o in usable_frames
+                                if o.identity_scores.get(top1_ident, 0.0)
+                                >= review_thresh
+                            )
+                    else:
+                        effective_frames = sum(
+                            1
+                            for o in usable_frames
+                            if o.identity_scores.get(top1_ident, 0.0)
+                            >= review_thresh
+                        )
+                    self.result_identity_label.setText(
+                        f"候選 · candidate: {top1_ident}"
+                    )
+                else:
+                    self.result_identity_label.setText("身分 · identity: 無候選")
+                    thumbnail_ident = None
+
+                failure_text = self.classify_failure(
+                    observations=observations,
+                    reason_codes=tuple(result.reason_codes),
+                )
+                self.failure_reason_label.setText(f"失敗原因: {failure_text}")
+
+            if top1_ident is not None and top1_score is not None:
+                top1_text = f"Top 1: {top1_ident}（相似度 {top1_score:.3f}）"
+                if top2_ident is not None and top2_score is not None:
+                    top2_text = f"Top 2: {top2_ident}（相似度 {top2_score:.3f}）"
+                    margin_text = (
+                        f"差距: {margin:.3f}" if margin is not None else "差距: 無"
+                    )
+                    self.scores_label.setText(
+                        f"{top1_text} · {top2_text} · {margin_text}"
+                    )
+                else:
+                    self.scores_label.setText(
+                        f"{top1_text} · Top 2: 無 · 差距: 無"
+                    )
+            elif top1_ident is not None:
+                self.scores_label.setText(
+                    f"Top 1: {top1_ident} · Top 2: 無 · 差距: 無"
+                )
+            else:
+                self.scores_label.setText("Top 1: 無 · Top 2: 無 · 差距: 無")
+
+            self.frames_label.setText(
+                f"有效幀／所需幀: {effective_frames}/{required_support}"
+            )
+
+            photo_path = (
+                self.find_identity_photo(thumbnail_ident)
+                if thumbnail_ident
+                else None
+            )
+            self._display_thumbnail(photo_path)
 
         @property
         def mode(self) -> str:
@@ -794,6 +1108,7 @@ else:
             except Exception:
                 pass
             self.identity_label.setText("")
+            self._clear_result_panel()
             self._set_guide()
 
         def _enter_result(self, result: Any) -> None:
@@ -809,6 +1124,7 @@ else:
             text = self._format_result(result)
             self._result_text = text
             self._set_status(text)
+            self._update_result_details(result)
             self._mode = self._MODE_RESULT
             self.start_button.setEnabled(False)
             self.cancel_button.setEnabled(False)
@@ -893,6 +1209,8 @@ else:
 
             # D1: frames arrived and every one was rejected. Say which
             # cause, using the real quality reasons where we have them.
+            if "input_multiple_faces" in codes or "multiple_faces_detected" in codes:
+                return "未取得可辨識影格：畫面有多張人臉"
             if "all_frames_rejected_mixed_causes" in codes:
                 return "未取得可辨識影格：部分無臉、部分品質不合格"
             if "all_frames_rejected_no_face" in codes:
@@ -903,6 +1221,8 @@ else:
 
             if not observations:
                 return "未取得可辨識影格：相機無影格"
+            if any(getattr(o, "face_count", 0) > 1 for o in observations):
+                return "未取得可辨識影格：畫面有多張人臉"
             faced = [o for o in observations if o.face_count >= 1]
             if not faced:
                 return "未取得可辨識影格：未偵測到人臉"
@@ -1031,6 +1351,7 @@ else:
             self._set_status(result.status.value)
             identity = self.desktop.display_identity()
             self.identity_label.setText(identity or "")
+            self._update_result_details(result)
 
         def delete_clicked(self) -> None:
             """Delete the session bundle plus linked attempts (operator action).

@@ -729,6 +729,7 @@ def cmd_live(
 
     window_label = "early-stop"
     source: CaptureSource
+    context: Any = None
     if device == "fake":
         model_generation = "cli-fake-gen-1"
         gallery_digest = "cli-fake-gallery"
@@ -1217,6 +1218,8 @@ def cmd_live(
             # synchronous tick, whose determinism and step budget the
             # existing tests pin.
             background_inference=not qt_offscreen,
+            gallery=getattr(context, "gallery", None) if context is not None else None,
+            enrollment_dir=gallery_dir,
         )
         if device != "fake" and not camera_options:
             # G3 W6 spec §7-2: no camera at all → Chinese reason, stay
