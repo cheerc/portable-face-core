@@ -8,12 +8,23 @@ d-20260924080117997753-5.
 This supersedes R1 §2-4 for the Qt App path only. The research CLI
 path is untouched.
 
-**The guard that matters here is the camera handle itself.** D2, D3a
-and D3b each shipped a false protection in the same shape — an
-assertion aimed at a path the code never walks. So every test below
-asserts against `FakeCapture.open_calls` / `close_calls` / `is_closed`,
-which change exactly when the camera opens and releases. A passing
-test here cannot be satisfied by an attribute nothing writes.
+The camera-handle assertions are the load-bearing ones here.
+D2, D3a and D3b each shipped a false protection in the same
+shape — an assertion aimed at a path the code never walks — so the
+scopes below assert against `FakeCapture.open_calls` / `close_calls`
+/ `is_closed`, which change exactly when the camera opens and
+releases. A passing assertion on those cannot be satisfied by a value
+nothing writes.
+
+That property is scoped to the camera-handle assertions, not to
+every test in this file. `TestUnlabeledRound` is the counter-example
+that keeps it honest: its first guard originally read
+`assert not hasattr(EvaluationLabel, "UNLABELED")`, which was
+constant-false-and-therefore-meaningless (a dataclass carries no
+label-kind attributes) and survived a mutation that genuinely
+polluted the research enumeration. It now asserts the enumeration
+itself. Read this as "the camera assertions are falsifiable", not as
+a claim that this file is immune to that failure mode.
 
 Synthetic frames and an offscreen Qt application only. No camera, no
 real faces, no gallery, no photos, no real uids.
@@ -454,13 +465,28 @@ class TestUnlabeledRound:
     def test_unlabeled_never_enters_the_research_label_kinds(
         self, qt_app: Any, tmp_path: Path
     ) -> None:
-        """Decision -11: the research label_kind enumeration is unchanged."""
-        from facecore.research.experiment import EvaluationLabel
+        """Decision -11: the research label_kind enumeration is unchanged.
 
-        # The research CSV's label_kind vocabulary lives with the
-        # EvaluationLabel sidecar; demo rows are a separate file entirely.
-        # This test pins that no research enum gained a demo-only value.
-        assert not hasattr(EvaluationLabel, "UNLABELED")
-        from facecore.research.cli import G3_DEMO_RESULTS_CSV_COLUMNS as cols
+        S1 (reviewer-found): this used to read
+        `assert not hasattr(EvaluationLabel, "UNLABELED")`, which was
+        the fourth same-shape false protection. `EvaluationLabel` is a
+        dataclass whose only public attributes are `from_dict` /
+        `schema_version` / `to_dict` — it carries no label-kind members
+        at all, so the hasattr was constant-false no matter what the
+        code did. Adding "unlabeled" to the real enumeration left this
+        test green.
 
-        assert "label_kind" in cols
+        The authority is the module-level `LABEL_KINDS`, which
+        `EvaluationLabel.__post_init__` validates every instance
+        against. Assert that directly, and pin the whole set so a
+        future addition has to be deliberate here rather than silent.
+        """
+        from facecore.research.experiment import LABEL_KINDS
+
+        assert "unlabeled" not in LABEL_KINDS, (
+            "the demo-only label value leaked into the research "
+            "enumeration; report.py/analysis.py would start counting it"
+        )
+        assert LABEL_KINDS == frozenset({"enrolled", "unenrolled", "uncertain"}), (
+            f"the research label vocabulary changed: {sorted(LABEL_KINDS)}"
+        )

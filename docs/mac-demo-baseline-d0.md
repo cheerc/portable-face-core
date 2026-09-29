@@ -240,6 +240,8 @@ D0 僅變更文件，故 regression 以上述 repo baseline 為準。
 | 11 | `tests/cli/test_derive_int8bq.py:63` 寫死本機真實照片路徑 | commander 於 D3b 裁定（`d-20260929193128013174-12` item 5）不併入 D3b：該檔有 skipif 與存在檢查、唯讀，且不在 D0–D4 範圍內 | 另案處理 |
 | 12 | **launcher 行為變更會影響 D4 驗收可重現性** | D3b 已把 `scripts/g3-local-test-app.command` 由 record 模式改為 `--mode demo`（decision `d-20260929193651396921-13` item 4），而本表第 5 項已記錄 launcher 啟動時會自動 `git pull --ff-only` 快轉 main。D4 若要求固定版本驗收，launcher 本身已是會變動的因子 | **D4 驗收前必須處理**（受控 checkout 或暫停 pull，並同步更新 `docs/g3-local-test-sop.md`） |
 
+| 13 | **D2b 引入的雙重釋放路徑在真機 `OpenCVCapture` 上未實測** | `cancel_clicked` 仍呼叫 `release_source()`，接著 `enter_ready` 現在也呼叫 `close()` —— 這條路徑在 D2b 之前不存在（當時 `enter_ready` 是 detach-only）。合成環境實測安全（`close()` 抽象契約明寫 `Idempotent`，`OpenCVCapture.close()` 以 `handle, self._handle = self._handle, None` 守衛使二次呼叫跳過；FakeCapture 實測 Cancel 後 `is_closed=True`、thread 數 `1 → 1` 不增長、相機可重新 Start），**但真機 AVFoundation 的 handle 釋放冪等性未經實測** | D4 實測 |
+
 **D2b 對第 12 項的影響（2026-09-30，decision `d-20260929173733098323-10`）：** 連續預覽使 operator 得以連續重試，**每輪不再必然以標註收尾**。因此 SOP 已同步更新，明確記錄 `label_kind=unlabeled` 這個 demo 專用值代表「跑過但沒標註」，且它不影響研究用的 `results.csv` 列舉與 `report.py`／`analysis.py` 的統計分類（決策 `-11`）。D4 若以 demo 模式做固定版本驗收，**必須先決定 `unlabeled` 列計入分母的規則**，否則逐輪數與已完成測試數會不一致 —— 這是 D2b 新增的驗收前提，第 5、12 項的 pull 凍結仍須一併處理。
 
 **本清單不授權任何相機操作。** 真機測試需 operator 在場並另行授權（`--device local` 未授權）。

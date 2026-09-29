@@ -58,7 +58,9 @@ uv run --extra research-ui python -m facecore.research.cli live \
 - `~/Downloads/face_sample/_facecore/store/results.csv`：**record 模式**的逐輪摘要（固定 17 欄）。demo 模式**不會**寫這個檔，既有內容與修改時間都不變。
 - `~/Downloads/face_sample/_facecore/store/`：record 模式下的加密影像與逐幀診斷。解密鍵在同層的 `research_keys/`，**不要隨意複製、上傳或分享這兩個資料夾**。demo 模式不會在這裡留下加密資料。
 - CSV 裡「錯誤」的 `label_kind` 目前記作 `uncertain`：這代表你按了「錯誤」，**不是系統已知道正確身份**。事後請 AI 依你實際測試的人和畫面結果解讀，不要直接把 `uncertain` 當作「未註冊」。
-- CSV 裡 `label_kind` 記作 **`unlabeled`** 的列，表示那一輪你**按了「再次辨識」而沒有標註**。這樣記是為了**不讓已發生的那一輪被靜默丟棄**：輪次、結果、幀數、gallery digest 都留著，只有標註欄留空。這個值**只出現在 demo 模式的 `demo-results.csv`**，研究用的 `results.csv` 與統計工具（`report.py`／`analysis.py`）的分類完全不認它。解讀時請把 `unlabeled` 的列當作「有跑但沒有答案」，不要當成答錯。
+- CSV 裡 `label_kind` 記作 **`unlabeled`** 的列，表示那一輪你**按了「再次辨識」而沒有標註**。這樣記是為了**不讓已發生的那一輪被靜默丟棄**：輪次、結果、幀數、gallery digest 都留著，只有標註欄留空。解讀時請把 `unlabeled` 的列當作「有跑但沒有答案」，不要當成答錯。
+  - 這個值**只出現在 demo 模式的 `demo-results.csv`**。研究用的 `results.csv` 與 `report.py`／`analysis.py` 的分類**都不認它**（可接受的值只有 `enrolled`／`unenrolled`／`uncertain`）。
+  - **容易混淆，請注意：** `analysis.py` 裡另有一個**既有**的 `unlabeled` 計數欄，那是統計研究樣本時 `truth_kind` 缺值的填充值，**與本欄同名不同義**。若你在程式中 grep 到 `unlabeled`，那是兩件事。
 - 影像與紀錄設定的保存期限為 **30 天**；不要等到期限到了才請 AI 分析。可以在本機對 AI 說：「我完成 G3 測試。請先唯讀分析 `~/Downloads/face_sample/_facecore/store/demo-results.csv`（若我用的是研究錄製則是 `results.csv`），告訴我每輪是否正確、錯誤型態與下一步；**不要開相機、修改資料、把照片上傳或拿測試結果調門檻**。」
 
 ## 卡住時
