@@ -356,6 +356,191 @@ def append_g3_results_csv(results_csv: Path, round_: Any) -> None:
         writer.writerow({key: row[key] for key in G3_RESULTS_CSV_COLUMNS})
 
 
+# D3b (decision d-20260929174858816709-11 item 2): the non-recording mode's
+# plaintext demo result file. It lives in the same store directory as
+# results.csv but is a DIFFERENT file with its OWN header, so the frozen
+# 17-column research ledger and its 29 existing rounds are never touched.
+#
+# Plaintext, therefore privacy-relevant: every column below is a scalar
+# summary already present in results.csv or the session envelope. No frame
+# pixels, no embeddings, no gallery photos, no face boxes.
+G3_DEMO_RESULTS_CSV_NAME = "demo-results.csv"
+
+G3_DEMO_RESULTS_CSV_COLUMNS = (
+    # mode + provenance: a demo row is distinguishable from research evidence
+    "mode",
+    "app_version",
+    "profile_version",
+    "model_generation",
+    "gallery_digest",
+    "profile_digest",
+    # round identity and timing
+    "round_id",
+    "session_id",
+    "started_utc",
+    "labeled_at_utc",
+    "elapsed_ms",
+    # D1 reason codes: the whole point of the D1 split is that a thin-evidence
+    # round is not the same event as "not enrolled", and this file is where
+    # that distinction survives without decryption.
+    "result",
+    "reason_codes",
+    # top1/top2 similarity and margin, formatted exactly like results.csv
+    "top1_identity",
+    "top1_score",
+    "top2_identity",
+    "top2_score",
+    "margin",
+    # effective / required frames
+    "frames_sampled",
+    "frames_usable",
+    "required_support",
+    # operator verdict (label_terminal semantics, unchanged)
+    "label_kind",
+    "label_identity",
+)
+
+
+def _app_version() -> str:
+    """Installed package version, recorded in every demo row."""
+    try:
+        from importlib.metadata import version as _pkg_version  # noqa: PLC0415
+
+        return _pkg_version("facecore")
+    except Exception:
+        return "unknown"
+
+
+def g3_demo_round_row(
+    round_: Any,
+    *,
+    required_support: int,
+    labeled_at_utc: str,
+    app_version: str | None = None,
+) -> dict[str, object]:
+    """Reduce one labeled round to its demo row (D3b decision -11 item 2).
+
+    Reuses g3_round_row for the shared top1/top2/margin reduction so the
+    demo file cannot drift from the research ledger's semantics. Only the
+    D1 reason codes, the frame counts, and the mode/version provenance are
+    added here.
+    """
+    from facecore.live.qt_window import RoundComplete as _RC
+
+    assert isinstance(round_, _RC), f"expected RoundComplete, got {type(round_)}"
+    terminal = round_.terminal
+    base = g3_round_row(round_)
+    return {
+        "mode": "demo-no-recording",
+        "app_version": app_version or _app_version(),
+        "profile_version": base["profile_version"],
+        "model_generation": base["model_generation"],
+        "gallery_digest": base["gallery_digest"],
+        "profile_digest": terminal.profile_digest,
+        "round_id": base["round_id"],
+        "session_id": base["session_id"],
+        "started_utc": base["started_utc"],
+        "labeled_at_utc": labeled_at_utc,
+        "elapsed_ms": base["elapsed_ms"],
+        "result": base["result"],
+        "reason_codes": "|".join(terminal.reason_codes),
+        "top1_identity": base["top1_identity"],
+        "top1_score": base["top1_score"],
+        "top2_identity": base["top2_identity"],
+        "top2_score": base["top2_score"],
+        "margin": base["margin"],
+        "frames_sampled": base["frames_sampled"],
+        "frames_usable": str(terminal.frames_usable),
+        "required_support": str(required_support),
+        "label_kind": base["label_kind"],
+        "label_identity": base["label_identity"],
+    }
+
+
+def append_g3_demo_results_csv(
+    demo_csv: Path,
+    round_: Any,
+    *,
+    required_support: int,
+    labeled_at_utc: str,
+) -> None:
+    """Append one non-recording round to the plaintext demo result file.
+
+    The header is written once, exactly like append_g3_results_csv, and the
+    row is derived from g3_round_row so the two ledgers agree on scores.
+    """
+    import csv as _csv
+
+    row = g3_demo_round_row(
+        round_,
+        required_support=required_support,
+        labeled_at_utc=labeled_at_utc,
+    )
+    write_header = not demo_csv.is_file()
+    demo_csv.parent.mkdir(parents=True, exist_ok=True)
+    with open(demo_csv, "a", newline="", encoding="utf-8") as handle:
+        writer = _csv.DictWriter(handle, fieldnames=G3_DEMO_RESULTS_CSV_COLUMNS)
+        if write_header:
+            writer.writeheader()
+        writer.writerow({key: row[key] for key in G3_DEMO_RESULTS_CSV_COLUMNS})
+
+
+class _NullRecorder:
+    """D3b demo-mode stand-in for the encrypted ResearchRecorder.
+
+    Decision d-20260929193128013174-12 item 3 forbids constructing a
+    ResearchRecorder in the non-recording mode, because ``__init__``
+    mkdirs the store root and ``begin_attempt`` opens the attempt ledger.
+    This object performs no I/O at all: it opens no bundle, writes no
+    encrypted store, and appends no attempt row.
+
+    It exists so the ~20 bookkeeping call sites in ``cmd_live`` (abort,
+    finish_attempt, purge-style tails) do not each need their own
+    ``if recording`` branch — the DEMO path simply has no ledger to
+    update. The biometric channel (``append_frame``) and the spatial
+    channel (``record_crop_mapping``) are NOT routed here: those are
+    guarded explicitly at their call sites, because "no recorder" must
+    never read as "silently stage the frame anyway".
+
+    The no-op set is an explicit ALLOW-LIST, not a catch-all. A blanket
+    ``__getattr__`` would answer every ``getattr(recorder, "x", None)``
+    capability probe in the codebase — including
+    ``controller._append_live_trace``'s
+    ``getattr(self._trace_recorder, "append_trace", None)`` — so a
+    renamed or misspelled recorder method would resolve to a no-op and
+    lose its write without any error. The allow-list makes that failure
+    loud instead: an unexpected method raises, exactly as a real
+    recorder missing that method would.
+    """
+
+    _NO_OPS = frozenset(
+        {
+            "abort",
+            "begin",
+            "commit",
+            "finish_attempt",
+            "begin_attempt",
+        }
+    )
+
+    def __getattr__(self, name: str) -> Any:
+        if name not in self._NO_OPS:
+            raise AttributeError(
+                f"_NullRecorder has no {name!r}: demo mode must never reach a "
+                "recorder channel that writes (this is the guard that keeps "
+                "frames, embeddings and the attempt ledger out of the "
+                "non-recording path)"
+            )
+
+        def _noop(*args: Any, **kwargs: Any) -> None:
+            return None
+
+        return _noop
+
+
+NULL_RECORDER = _NullRecorder()
+
+
 def _g3_round_op_status(status_value: str) -> str:
     """Map a round terminal status onto the attempt ledger vocabulary."""
     if status_value == "matched":
@@ -600,6 +785,7 @@ def cmd_live(
     continuous: bool = False,
     config: Path | None = None,
     gallery_dir: Path | None = None,
+    mode: str = "record",
 ) -> int:
     """Run one bounded research session (fake pump or real camera).
 
@@ -610,6 +796,13 @@ def cmd_live(
     that round's label sidecar. G3 W8: the key press commits the round
     at once (bundle + attempt + csv row); the close-out tail only
     aborts the never-labeled remainder.
+
+    mode (D3b, decision d-20260929193651396921-13): ``"record"`` is the
+    research executor and stays byte-identical to b9e3bb8 — encrypted
+    staging, attempt ledger, and the frozen 17-column results.csv.
+    ``"demo"`` is the non-recording path the double-clicked G3 App uses:
+    no ResearchRecorder, no encrypted store, no attempt ledger, and one
+    plaintext demo result file instead.
     """
     try:
         profile = _load_profile(profile_path)
@@ -617,10 +810,26 @@ def cmd_live(
     except (ValueError, StorePathError) as exc:
         print(f"research live: {exc}", file=sys.stderr)
         return 2
-    if not record_consent or not image_consent:
+    # D3b: the mode flag decides whether consent is required or forbidden.
+    # Both directions refuse loudly — silently ignoring a consent flag in
+    # demo mode would let an operator believe recording is on when it is not.
+    if mode not in {"record", "demo"}:
+        print(f"research live: unsupported mode {mode!r}", file=sys.stderr)
+        return 2
+    recording = mode == "record"
+    if recording and not (record_consent and image_consent):
         print(
             "research live: explicit --record-consent and --image-consent "
-            "are both required",
+            "are both required in record mode",
+            file=sys.stderr,
+        )
+        return 2
+    if not recording and (record_consent or image_consent):
+        print(
+            "research live: --record-consent/--image-consent are refused in "
+            "demo mode: demo mode records no encrypted frames or embeddings, "
+            "so consent flags would wrongly imply recording. Use "
+            "--mode record to record research evidence.",
             file=sys.stderr,
         )
         return 2
@@ -709,12 +918,22 @@ def cmd_live(
         error_code=None,
         bundle_ref=None,
     )
-    recorder = ResearchRecorder(store_root=store_root, key_dir=key_dir, clock=_now_utc)
-    try:
-        recorder.begin_attempt(attempt_manifest, attempt, consent)
-    except (PermissionError, ValueError) as exc:
-        print(f"research live: attempt refused: {exc}", file=sys.stderr)
-        return 4
+    # D3b: demo mode never constructs a ResearchRecorder (its __init__ would
+    # mkdir the store root and its begin_attempt would open the ledger).
+    # The plaintext demo file lives in the same store directory and creates
+    # its own parent; nothing else is written.
+    recorder: ResearchRecorder | Any
+    if recording:
+        recorder = ResearchRecorder(
+            store_root=store_root, key_dir=key_dir, clock=_now_utc
+        )
+        try:
+            recorder.begin_attempt(attempt_manifest, attempt, consent)
+        except (PermissionError, ValueError) as exc:
+            print(f"research live: attempt refused: {exc}", file=sys.stderr)
+            return 4
+    else:
+        recorder = NULL_RECORDER
 
     def _finish_attempt_error(error_code: str) -> None:
         try:
@@ -944,7 +1163,7 @@ def cmd_live(
     # the never-begun session id is a no-op (abort pops missing ids)
     # and every tail finish_attempt sits inside try/except, so skipping
     # is safe and leaves single-shot/headless paths unchanged.
-    if not (continuous and ui == "qt"):
+    if recording and not (continuous and ui == "qt"):
         try:
             recorder.begin(session_id, consent)
         except (PermissionError, ValueError) as exc:
@@ -965,18 +1184,29 @@ def cmd_live(
 
     def _square_capture_transform(packet: FramePacket) -> FramePacket:
         cropped_packet, mapping = _crop_packet(packet)
-        try:
-            recorder.record_crop_mapping(resolved_attempt_id, mapping.to_dict())
-        except ValueError as exc:
-            # Geometry mismatch across frames: same-frame evidence would be
-            # unreconstructible, so the scorer input is refused fail-closed.
-            raise ValueError(f"capture geometry changed mid-session: {exc}") from exc
-        except Exception as exc:
-            staged_errors.append(f"crop:{type(exc).__name__}")
+        # D3b: the crop mapping is per-round spatial state that only the
+        # encrypted research bundle needs. Demo mode has no bundle, so the
+        # write is skipped rather than routed through a null ledger.
+        if recording:
+            try:
+                recorder.record_crop_mapping(
+                    resolved_attempt_id, mapping.to_dict()
+                )
+            except ValueError as exc:
+                # Geometry mismatch across frames: same-frame evidence would be
+                # unreconstructible, so the scorer input is refused fail-closed.
+                raise ValueError(
+                    f"capture geometry changed mid-session: {exc}"
+                ) from exc
+            except Exception as exc:
+                staged_errors.append(f"crop:{type(exc).__name__}")
         return cropped_packet
 
     def _stage_frame(packet: FramePacket) -> None:
-        if is_true_path:
+        # D3b: append_frame is the ONE biometric channel — raw frame pixels.
+        # Gating it on "is recording" rather than on the recorder's identity
+        # is what makes demo mode provably write no frames.
+        if is_true_path and recording:
             try:
                 recorder.append_frame(packet)
             except Exception as exc:
@@ -990,6 +1220,10 @@ def cmd_live(
             except Exception as exc:
                 staged_errors.append(f"crop:{type(exc).__name__}")
 
+    # D3b: the demo result file, resolved once so the initial desktop and
+    # every round the next_session factory builds share the same target.
+    demo_csv_path = store_root / G3_DEMO_RESULTS_CSV_NAME
+
     desktop = DesktopSession(
         engine=engine,
         source=source,
@@ -1000,6 +1234,9 @@ def cmd_live(
         fixed_seconds=fixed_seconds,
         trace_recorder=recorder if is_true_path else None,
         trace_attempt_id=resolved_attempt_id if is_true_path else None,
+        # D3b: the plaintext demo sink for the initial desktop. The rounds
+        # built by next_session_factory below get the same value.
+        demo_label_sink=demo_csv_path if not recording else None,
         # G3 W2: the continuous loop keeps one camera handle across
         # rounds; the terminal path must not release it mid-loop.
         release_source_on_terminal=False if continuous else True,
@@ -1112,28 +1349,29 @@ def cmd_live(
                 # the CLI tail can commit the encrypted bundle per round.
                 # A begin failure fails closed: the round never starts and
                 # Ready shows the error.
-                recorder.begin_attempt(
-                    attempt_manifest,
-                    _Attempt(
-                        experiment_id=experiment_id,
-                        attempt_id=round_attempt_id,
-                        participant_id="cli-operator",
-                        visit_id="visit-cli-001",
-                        condition_id="cond-cli-live",
-                        attempt_index=round_counter + 1,
-                        retry_of=None,
-                        consent_ref=round_session_id,
-                        requested_at_utc=round_now.isoformat(),
-                        accepted_at_utc=round_now.isoformat(),
-                        started_at_utc=None,
-                        ended_at_utc=None,
-                        operational_status="accepted",
-                        error_code=None,
-                        bundle_ref=None,
-                    ),
-                    round_consent,
-                )
-                recorder.begin(round_session_id, round_consent)
+                if recording:
+                    recorder.begin_attempt(
+                        attempt_manifest,
+                        _Attempt(
+                            experiment_id=experiment_id,
+                            attempt_id=round_attempt_id,
+                            participant_id="cli-operator",
+                            visit_id="visit-cli-001",
+                            condition_id="cond-cli-live",
+                            attempt_index=round_counter + 1,
+                            retry_of=None,
+                            consent_ref=round_session_id,
+                            requested_at_utc=round_now.isoformat(),
+                            accepted_at_utc=round_now.isoformat(),
+                            started_at_utc=None,
+                            ended_at_utc=None,
+                            operational_status="accepted",
+                            error_code=None,
+                            bundle_ref=None,
+                        ),
+                        round_consent,
+                    )
+                    recorder.begin(round_session_id, round_consent)
 
                 # G3 R1 PR-A change 4: the round owns its frame path —
                 # staging binds the round session, the square-crop
@@ -1144,6 +1382,9 @@ def cmd_live(
                     _attempt_id: str = round_attempt_id,
                 ) -> FramePacket:
                     cropped_packet, mapping = _crop_packet(packet)
+                    # D3b: demo mode has no bundle to bind the mapping to.
+                    if not recording:
+                        return cropped_packet
                     try:
                         recorder.record_crop_mapping(_attempt_id, mapping.to_dict())
                     except ValueError as exc:
@@ -1155,7 +1396,10 @@ def cmd_live(
                     return cropped_packet
 
                 def _round_stage_frame(packet: FramePacket) -> None:
-                    if is_true_path:
+                    # D3b: raw pixels go to the encrypted store only while
+                    # recording. The preview below is a separate callback and
+                    # is NOT gated here — previewing never stages a frame.
+                    if is_true_path and recording:
                         try:
                             recorder.append_frame(packet)
                         except Exception as exc:
@@ -1181,8 +1425,14 @@ def cmd_live(
                     frame_transform=_round_capture_transform if ui == "qt" else None,
                     fixed_seconds=fixed_seconds,
                     release_source_on_terminal=False,
-                    label_recorder=recorder,
-                    label_attempt_id=round_attempt_id,
+                    # D3b: the encrypted label sidecar only exists while
+                    # recording. Demo mode labels into the plaintext demo file.
+                    label_recorder=recorder if recording else None,
+                    label_attempt_id=round_attempt_id if recording else None,
+                    # D3b: every round needs the demo sink, not just the
+                    # initial desktop, or the operator verdict is refused
+                    # with 「標註未綁定」 from the second round onward.
+                    demo_label_sink=None if recording else demo_csv_path,
                     trace_recorder=recorder if is_true_path else None,
                     trace_attempt_id=round_attempt_id if is_true_path else None,
                 )
@@ -1199,17 +1449,28 @@ def cmd_live(
         qt_window = QtResearchWindow(
             desktop,
             consent=consent,
-            recorder=recorder,
-            attempt_id=resolved_attempt_id,
+            # D3b: the window distinguishes record from demo by the
+            # recorder's IDENTITY, not by a separate flag. Passing
+            # NULL_RECORDER would make demo mode look like "a recorder
+            # exists but does nothing" and would route verdicts into
+            # results.csv, so demo mode passes None here.
+            recorder=recorder if recording else None,
+            attempt_id=resolved_attempt_id if recording else None,
             device_id=device,
             offscreen=qt_offscreen,
             clock_ns=qt_clock_ns,
             clock_advance=_qt_advance_ns,
             next_session=next_session_factory,
             camera_options=camera_options if device != "fake" else None,
-            # G3 W8: commit on label needs the csv target up front.
+            # G3 W8: commit on label needs the csv target up front. D3b: the
+            # research ledger target exists ONLY while recording, so demo
+            # mode can never reach append_g3_results_csv.
             results_csv=store_root / "results.csv"
-            if next_session_factory is not None
+            if next_session_factory is not None and recording
+            else None,
+            # D3b: the plaintext demo result file, same store directory.
+            demo_results_csv=demo_csv_path
+            if next_session_factory is not None and not recording
             else None,
             # D2: only a real Qt event loop gets worker-driven inference.
             # A real GUI would otherwise block on inference, encrypted
@@ -1435,13 +1696,24 @@ def cmd_live(
         qt_window.close()
         committed = len(rounds)
         if committed > 0:
+            # D3b: name the file this mode actually wrote. Emitting
+            # results.csv in demo mode would point an operator (or a
+            # script) at a file the run never touched.
             _emit(
                 {
                     "session_id": session_id,
                     "status": "continuous_complete",
                     "window": window_label,
                     "rounds_committed": committed,
-                    "results_csv": str(store_root / "results.csv"),
+                    "mode": mode,
+                    (
+                        "results_csv"
+                        if recording
+                        else "demo_results_csv"
+                    ): str(
+                        store_root
+                        / ("results.csv" if recording else G3_DEMO_RESULTS_CSV_NAME)
+                    ),
                     "generation": model_generation,
                     "gallery_digest": gallery_digest,
                 }
@@ -2005,6 +2277,20 @@ def main(argv: list[str] | None = None) -> int:
             "(all existing callers unchanged)"
         ),
     )
+    live.add_argument(
+        "--mode",
+        choices=["record", "demo"],
+        default="record",
+        help=(
+            "D3b: 'record' (default) is the research executor — encrypted "
+            "staging, attempt ledger, frozen 17-column results.csv, and it "
+            "requires --record-consent --image-consent. 'demo' records "
+            "nothing encrypted: no frames, no embeddings, no attempt "
+            "ledger; the operator verdict goes to a plaintext demo result "
+            "file instead, and passing consent flags in demo mode is a "
+            "usage error rather than a silent no-op"
+        ),
+    )
 
     replay = sub.add_parser("replay")
     replay.add_argument("--store", required=True, type=Path)
@@ -2093,6 +2379,7 @@ def main(argv: list[str] | None = None) -> int:
             config=args.config,
             presence_mode=args.presence_mode,
             continuous=args.continuous,
+            mode=args.mode,
         )
     if args.command == "replay":
         return cmd_replay(

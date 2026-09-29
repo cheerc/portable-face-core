@@ -278,6 +278,7 @@ else:
             gallery: Any = None,
             enrollment_dir: Path | None = None,
             load_report: Any = None,
+            demo_results_csv: Path | None = None,
         ) -> None:
             super().__init__()
             self.desktop = desktop
@@ -315,6 +316,8 @@ else:
             # G3 W8: results.csv path for commit-on-label (None keeps the
             # W4 memory-queue behavior for callers without a csv target).
             self._results_csv = results_csv
+            # D3b: plaintext demo result file for the non-recording mode.
+            self.demo_results_csv = demo_results_csv
             # D2: opt-in worker-driven inference (see _start_round).
             self._background_inference = background_inference
             # D3: gallery, enrollment folder and startup loading report.
@@ -327,6 +330,17 @@ else:
             if recorder is not None and attempt_id is not None:
                 desktop.configure_label_persistence(
                     recorder, attempt_id, actor_ref="qt-operator"
+                )
+            if demo_results_csv is not None and recorder is None:
+                # D3b: demo mode has no encrypted sidecar, so the round's
+                # verdict needs the plaintext sink for the guard below to
+                # accept it. The rounds the next_session factory builds carry
+                # this via their own DesktopSession(demo_label_sink=...); this
+                # call covers the initial desktop and any caller that hands us
+                # an unconfigured one. Commander decision
+                # d-20260929193128013174-12 item 2.
+                desktop.configure_demo_label_persistence(
+                    demo_results_csv, actor_ref="qt-operator"
                 )
 
             if offscreen:
@@ -1325,6 +1339,27 @@ else:
                         self.recorder, self._results_csv, [round_complete]
                     )
                     if failed > 0 or committed != 1:
+                        self._set_status("紀錄寫入失敗")
+                        return
+                elif self.demo_results_csv is not None:
+                    # D3b: demo mode. The verdict row is appended to the
+                    # plaintext demo file; recorder.commit is NOT called,
+                    # because there is no bundle and no attempt ledger to
+                    # commit into. The round still queues so the tail can
+                    # count it, and a write failure still refuses the
+                    # advance (fail-closed, same as record mode).
+                    from facecore.research.cli import append_g3_demo_results_csv
+
+                    try:
+                        append_g3_demo_results_csv(
+                            self.demo_results_csv,
+                            round_complete,
+                            required_support=getattr(
+                                self.desktop.profile, "required_support", 0
+                            ),
+                            labeled_at_utc=datetime.now(timezone.utc).isoformat(),
+                        )
+                    except OSError:
                         self._set_status("紀錄寫入失敗")
                         return
                 # Queue the labeled round (committed above when a csv

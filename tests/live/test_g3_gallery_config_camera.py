@@ -66,6 +66,36 @@ class _SelectiveDetector:
         ]
 
 
+class _BadLandmarkDetector:
+    """Stub detector: exactly one face, but only 3 landmarks (D3b N3).
+
+    `align_crop` refuses anything other than exactly 5 landmarks with a
+    ValueError, so this reproduces the real malformed-detection path that
+    used to abort the whole gallery load.
+    """
+
+    def detect(self, decoded: Any) -> list[DetectedFace]:
+        return [
+            DetectedFace(
+                box=(1.0, 1.0, 6.0, 6.0),
+                landmarks=((2.0, 2.0), (5.0, 2.0), (3.5, 3.0)),
+                confidence=0.99,
+            )
+        ]
+
+
+class _ShadeLandmarkDetector:
+    """Stub detector: 5 landmarks, except 3 landmarks for rejected shades."""
+
+    def __init__(self, bad_landmark_shades: set[int]) -> None:
+        self.bad_landmark_shades = bad_landmark_shades
+
+    def detect(self, decoded: Any) -> list[DetectedFace]:
+        if int(decoded.pixels[0]) in self.bad_landmark_shades:
+            return list(_BadLandmarkDetector().detect(decoded))
+        return list(_SingleFaceDetector().detect(decoded))
+
+
 class _StubEmbedder:
     model_version = "sface-test"
 
@@ -179,6 +209,71 @@ class TestFolderGallery:
         assert gallery.identity_sources is not None
         assert gallery.identity_sources["enroll-05"] == folder / "enroll-05.png"
         assert gallery.identity_sources["enroll-06"] == folder / "enroll-06.jpg"
+
+
+class TestGalleryAlignmentFailureIsCollected:
+    """D3b N3: a per-photo alignment failure must not abort the load.
+
+    `align_crop` raises ValueError when the detector returns anything other
+    than exactly 5 landmarks. Before D3b the collection loop re-raised that
+    ValueError, so one malformed face discarded the identities already
+    embedded AND produced no load report at all — which made the D3a startup
+    loading report unreachable on exactly this path.
+    """
+
+    def test_alignment_failure_keeps_the_other_identities(
+        self, tmp_path: Path
+    ) -> None:
+        from facecore.live.frame_pipeline import build_gallery_from_folder
+
+        folder = _enrollment_dir(
+            tmp_path, ["enroll-00.png", "enroll-01.png", "enroll-02.png"]
+        )
+        gallery = build_gallery_from_folder(
+            folder,
+            detector=_ShadeLandmarkDetector(bad_landmark_shades={110}),
+            embedder=_StubEmbedder(),
+            generation="gen-d3b-n3-test",
+        )
+        assert sorted(gallery.embeddings.keys()) == ["enroll-00", "enroll-02"]
+        report = gallery.load_report
+        assert report is not None
+        assert report.expected_count == 3
+        assert report.loaded_count == 2
+        assert len(report.failures) == 1
+        assert report.failures[0].filename == "enroll-01.png"
+        assert "landmarks" in report.failures[0].reason
+
+    def test_only_bad_landmark_photo_still_fails_closed(self, tmp_path: Path) -> None:
+        """A gallery that could embed nothing must still refuse, by name."""
+        from facecore.live.frame_pipeline import build_gallery_from_folder
+
+        folder = _enrollment_dir(tmp_path, ["enroll-bad.png"])
+        with pytest.raises(ValueError, match="enroll-bad"):
+            build_gallery_from_folder(
+                folder,
+                detector=_BadLandmarkDetector(),
+                embedder=_StubEmbedder(),
+                generation="gen-d3b-n3-test",
+            )
+
+    def test_strict_still_refuses_the_first_alignment_failure(
+        self, tmp_path: Path
+    ) -> None:
+        """strict keeps its first-raise contract, including ValueError."""
+        from facecore.live.frame_pipeline import build_gallery_from_folder
+
+        folder = _enrollment_dir(
+            tmp_path, ["enroll-00.png", "enroll-01.png", "enroll-02.png"]
+        )
+        with pytest.raises(ValueError, match="enroll-01"):
+            build_gallery_from_folder(
+                folder,
+                detector=_ShadeLandmarkDetector(bad_landmark_shades={110}),
+                embedder=_StubEmbedder(),
+                generation="gen-d3b-n3-test",
+                strict=True,
+            )
 
 
 class TestLocalConfig:

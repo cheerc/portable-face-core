@@ -237,6 +237,8 @@ D0 僅變更文件，故 regression 以上述 repo baseline 為準。
 | 8 | `ruff check .`（全 repo）有 1 個 E501 | `experiments/mac_live_capture_probe.py:521`；CI 只跑 `ruff check src tests` 故綠。非本 PR 引入，**本次不併入 D0 修正**（保持 source 零變更的可審計形態） | 之後的 lint 清理 |
 | 9 | `close()` 的 **join 逾時路徑**真機行為 | D2 讓真機 GUI 有 worker 停在原生 read 內；read 若活得比 5s join 預算久，`close()` 會帶著**仍開啟的相機**返回（刻意的取捨，見 `controller.close()` docstring 與 `_stop_and_release()` 既有判定）。合成環境只能證明「不釋放、不崩潰、有界」，**證明不了真機 AVFoundation 的 read 是否可能逾時 5s、逾時後相機是否確實釋放、使用者是否看得見燈號殘留** | D4 實測 |
 | 10 | **UI 與下游報表統計語意不一致（known divergence）** | `report.py:147`／`:175` 與 `analysis.py:627` 以 `status==timeout` 歸類，把 `insufficient_evidence` 計入 timeouts；UI 以 reason codes 區分「已看見人臉，但多幀確認未成立」與一般超時（找不到人員）。commander 裁定新舊分母刻意並存、不重新詮釋既有報表分類，D3 只保證新紀錄帶可區分的 reason code、模式與版本供日後分析分流 | D3（紀錄保留 reason code，分類維持現狀） |
+| 11 | `tests/cli/test_derive_int8bq.py:63` 寫死本機真實照片路徑 | commander 於 D3b 裁定（`d-20260929193128013174-12` item 5）不併入 D3b：該檔有 skipif 與存在檢查、唯讀，且不在 D0–D4 範圍內 | 另案處理 |
+| 12 | **launcher 行為變更會影響 D4 驗收可重現性** | D3b 已把 `scripts/g3-local-test-app.command` 由 record 模式改為 `--mode demo`（decision `d-20260929193651396921-13` item 4），而本表第 5 項已記錄 launcher 啟動時會自動 `git pull --ff-only` 快轉 main。D4 若要求固定版本驗收，launcher 本身已是會變動的因子 | **D4 驗收前必須處理**（受控 checkout 或暫停 pull，並同步更新 `docs/g3-local-test-sop.md`） |
 
 **本清單不授權任何相機操作。** 真機測試需 operator 在場並另行授權（`--device local` 未授權）。
 

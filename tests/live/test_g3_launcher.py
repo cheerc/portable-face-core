@@ -36,6 +36,29 @@ class TestLauncher:
         assert "profiles/g3-v1.json" in text
         assert "uv sync --extra research-ui" in text
 
+    def test_launcher_runs_in_demo_mode(self) -> None:
+        """D3b: the double-clicked App must not record (decision -13 item 4).
+
+        This is the operator's real entry point, and the whole point of
+        D3b is that ordinary recognition leaves no encrypted frames or
+        embeddings behind. If the launcher ever gains a consent flag
+        again, cmd_live refuses the run outright (exit 2) — the operator
+        would see a broken App, not a silent recording.
+
+        Only the invoked command line is inspected: the file's comment
+        block deliberately mentions both consent flags when explaining
+        which mode it is NOT using.
+        """
+        lines = [
+            line
+            for line in LAUNCHER.read_text(encoding="utf-8").splitlines()
+            if not line.lstrip().startswith("#")
+        ]
+        command = "\n".join(lines)
+        assert "--mode demo" in command
+        assert "--record-consent" not in command
+        assert "--image-consent" not in command
+
     def test_launcher_executable(self) -> None:
         import os as _os
 
