@@ -461,8 +461,17 @@ class TestStartGatedLifecycle:
         assert source.read_calls > 0
         window.close()
 
-    def test_result_releases_and_clears_photo(self, qt_app: Any, tmp_path: Any) -> None:
-        """R1 §2-4: terminal releases first, then clears the photo."""
+    def test_result_keeps_the_camera_open(self, qt_app: Any, tmp_path: Any) -> None:
+        """D2b: terminal keeps the camera open so the preview continues.
+
+        Supersedes the R1 §2-4 version of this test, which asserted
+        `is_closed is True` and `preview_image is None` at result. That
+        contract is exactly what operator decision
+        d-20260929173733098323-10 (「B」= continuous preview) replaced:
+        the operator now reads the result against a live preview, and
+        the camera is released by 停止相機 or by closing the window
+        (both still asserted below and in the D2b file).
+        """
         source = _GatedCountingSource(_face_frames(120))
         window, _factory = _gated_window(qt_app, tmp_path, source)
         window.enter_ready()
@@ -470,9 +479,14 @@ class TestStartGatedLifecycle:
         window.start_clicked()
         window.process_until_terminal(max_steps=200)
         assert window.mode == "result"
-        assert source.is_closed is True, "result must release the camera"
-        assert window.preview_image is None, "result must clear the photo"
+        assert source.is_closed is False, (
+            "D2b: the lens must stay open at result so the preview continues"
+        )
+        assert source.close_calls == 0, "the handle was released at result"
         assert window.result_text.startswith("person-synth-01")
+        # The release paths D2b moved the responsibility to:
+        window.stop_camera_clicked()
+        assert source.is_closed is True
         window.close()
 
     def test_labeled_round_returns_to_ready_with_pick_kept(

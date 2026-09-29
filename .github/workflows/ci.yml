@@ -87,6 +87,12 @@ jobs:
           # The byte-level proofs only mean something where the Qt window
           # and the consent-gated cmd_live path actually run.
           python -m pytest tests/live/test_d3b_optional_recording.py -q
+          # D2b: the camera handle now outlives a round, so the release
+          # path and the "next round reuses the open lens" path are
+          # only observable where the real Qt window runs. The
+          # open_calls/close_calls assertions in this file are the guard
+          # for the continuous-preview decision.
+          python -m pytest tests/live/test_d2b_continuous_preview.py -q
       - name: Run G3 Start-gated integration (R1 §2/§5, PR-B)
         run: >-
           python -m pytest

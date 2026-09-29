@@ -191,7 +191,17 @@ class TestQtContinuousMode:
     def test_two_start_gated_rounds_release_between_rounds(
         self, qt_app: Any, tmp_path: Any
     ) -> None:
-        """R1: two rounds each need Start; the lens shuts at result."""
+        """D2b: two rounds, each ending in a released camera.
+
+        Supersedes the R1 version, whose docstring read "the lens shuts
+        at result" and asserted `is_closed is True` immediately after
+        the terminal. Operator decision d-20260929173733098323-10
+        replaced exactly that: the lens now stays open at result, and the
+        release moved to 停止相機 / the verdict key / the window close.
+        The two-round loop itself — each round needs its own Start, and
+        the camera opens once per round — is unchanged, so the
+        open_calls == 2 assertion below still holds.
+        """
         frames = [_face_packet(seq) for seq in range(1, 60)]
         source = _OpenCloseCounter(frames=frames)
         bind = _binder(tmp_path)
@@ -215,7 +225,7 @@ class TestQtContinuousMode:
             next_session=next_session,
         )
         window.show()
-        # Round 1: Ready → Start → terminal matched → result releases.
+        # Round 1: Ready → Start → terminal → result keeps the lens open.
         window.enter_ready()
         assert window.mode == "ready"
         window.start_clicked()
@@ -223,8 +233,10 @@ class TestQtContinuousMode:
         window.process_until_terminal(max_steps=200)
         assert window.mode == "result"
         assert window.result_text.startswith("person-synth-01")
-        assert source.is_closed is True
-        # Key press returns to Ready with the lens shut.
+        assert source.is_closed is False, "D2b: result keeps the lens open"
+        # Key press returns to Ready AND releases (D2b made enter_ready
+        # load-bearing for the release, since the camera now outlives
+        # a round).
         window.press_correct()
         assert window.mode == "ready"
         assert source.is_closed is True
@@ -234,10 +246,11 @@ class TestQtContinuousMode:
         window.process_until_terminal(max_steps=200)
         assert window.mode == "result"
         assert window.result_text.startswith("person-synth-01")
+        assert source.is_closed is False
         window.press_incorrect()
         assert window.mode == "ready"
         assert source.is_closed is True
-        assert source.open_calls == 2
+        assert source.open_calls == 2, "each round still opens the camera once"
         window.close()
 
     def test_timeout_round_shows_not_found_text(

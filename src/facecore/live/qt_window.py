@@ -426,9 +426,22 @@ else:
             # label_enrolled (explicit identity required) / label_unknown.
             self.correct_button = QPushButton("正確")
             self.incorrect_button = QPushButton("錯誤")
+            # D2b (operator decision d-20260929173733098323-10): with the
+            # lens kept open after a round, the operator needs an explicit
+            # way to run another round on the SAME open camera, and an
+            # explicit way to shut it. 再辨識 never re-opens the lens;
+            # 停止相機 is the only in-loop release.
+            self.recognize_again_button = QPushButton("再次辨識")
+            self.recognize_again_button.setObjectName("recognizeAgain")
+            self.stop_camera_button = QPushButton("停止相機")
+            self.stop_camera_button.setObjectName("stopCamera")
             self.start_button.clicked.connect(self.start_clicked)
             self.cancel_button.clicked.connect(self.cancel_clicked)
             self.delete_button.clicked.connect(self.delete_clicked)
+            self.recognize_again_button.clicked.connect(
+                self.recognize_again_clicked
+            )
+            self.stop_camera_button.clicked.connect(self.stop_camera_clicked)
             self.correct_button.clicked.connect(
                 lambda _checked=False: self.press_correct()
             )
@@ -440,6 +453,8 @@ else:
             controls.addWidget(self.delete_button)
             controls.addWidget(self.correct_button)
             controls.addWidget(self.incorrect_button)
+            controls.addWidget(self.recognize_again_button)
+            controls.addWidget(self.stop_camera_button)
 
             layout.addWidget(self.watermark_label)
             layout.addWidget(self.device_label)
@@ -464,6 +479,13 @@ else:
             self.delete_button.setEnabled(True)
             self.correct_button.setEnabled(False)
             self.incorrect_button.setEnabled(False)
+            # D2b: both lens controls are meaningful only in the
+            # Start-gated loop, and only once a round has opened the
+            # camera. They are hidden in the legacy single-round path.
+            self.recognize_again_button.setVisible(self._next_session is not None)
+            self.stop_camera_button.setVisible(self._next_session is not None)
+            self.recognize_again_button.setEnabled(False)
+            self.stop_camera_button.setEnabled(False)
 
         def _camera_picked(self, row: int) -> None:
             """G3 R1: a pick only routes the device; nothing opens.
@@ -839,6 +861,107 @@ else:
                 return
             self._start_round()
 
+        def _record_unlabeled_round(self) -> None:
+            """D2b: persist the round the operator declined to label.
+
+            Commander point (二). 再次辨識 lets the operator move on
+            without a verdict, and a round without a verdict is still a
+            round that happened — dropping it silently would make the
+            demo file disagree with what the operator saw. So it is
+            written with label_kind="unlabeled".
+
+            This value is DEMO-ONLY. The research ledger's label_kind
+            column is the existing enrolled／unenrolled／uncertain
+            enumeration used by report.py and analysis.py, and this
+            method never touches it: it writes the plaintext demo file,
+            which decision -11 item 3 established neither of those
+            modules reads. In record mode an unlabeled round keeps its
+            pre-existing path instead — cmd_live's close-out calls
+            recorder.abort(..., reason="unlabeled_close") — so research
+            statistics are unaffected in both modes.
+            """
+            if self.demo_results_csv is None:
+                return
+            terminal = self.desktop.terminal
+            if terminal is None:
+                return
+            from facecore.research.cli import append_g3_demo_results_csv
+
+            round_complete = RoundComplete(
+                session_id=self.desktop.session_id,
+                attempt_id=self.attempt_id,
+                terminal=terminal,
+                observations=tuple(self.desktop.observations),
+                label_kind="unlabeled",
+                label_identity=None,
+                profile_version=self.desktop.profile_version,
+                started_utc=self._round_started_utc or "",
+            )
+            try:
+                append_g3_demo_results_csv(
+                    self.demo_results_csv,
+                    round_complete,
+                    required_support=getattr(
+                        self.desktop.profile, "required_support", 0
+                    ),
+                    labeled_at_utc=datetime.now(timezone.utc).isoformat(),
+                )
+            except OSError:
+                # Fail-closed: a round we cannot record must not look
+                # like a round that was recorded.
+                self._set_status("紀錄寫入失敗")
+                return
+            self.completed_rounds.append(round_complete)
+
+        def recognize_again_clicked(self) -> None:
+            """D2b 再次辨識: run the next round on the SAME open camera.
+
+            The lens is already open (that is the point of D2b), so this
+            must NOT re-open it: the round is handed off through
+            detach(), which stops the previous round's workers and keeps
+            the shared source, exactly as R1 §2-5 already did between
+            labeled rounds.
+
+            Commander point (二): if the operator skips the verdict, the
+            finished round is recorded as unlabeled rather than dropped.
+            In record mode the existing close-out aborts it instead; both
+            are pre-existing, non-silent paths.
+            """
+            if self._next_session is None:
+                return
+            if self._mode != self._MODE_RESULT:
+                return
+            if self.desktop.state == "terminal":
+                # Never labeled. Record it before the desktop is detached.
+                self._record_unlabeled_round()
+            self._timer.stop()
+            self._start_gated_round()
+
+        def stop_camera_clicked(self) -> None:
+            """D2b 停止相機: shut the lens, clear the view, back to Ready.
+
+            This is the only in-loop release. The camera PICK is kept, so
+            the next Start re-opens the same device — the operator does
+            not have to choose it again.
+            """
+            if self._next_session is None:
+                return
+            self._timer.stop()
+            if self.desktop.state in ("terminal", "labeled", "closed"):
+                self.desktop.detach()
+            try:
+                self.desktop.close()
+            except Exception:
+                pass
+            self._clear_preview()
+            self._clear_result_panel()
+            self._result_text = ""
+            self.recognize_again_button.setEnabled(False)
+            self.stop_camera_button.setEnabled(False)
+            self._mode = self._MODE_READY
+            self._refresh_start_enabled()
+            self._set_status("相機已關閉 · camera stopped")
+
         def _refresh_start_enabled(self) -> None:
             """Enable Start only when a camera is picked (continuous loop)."""
             if self._next_session is None or self._mode != self._MODE_READY:
@@ -856,7 +979,10 @@ else:
                 raise RuntimeError(
                     "gated rounds require the continuous loop (next_session factory)"
                 )
-            if self._mode != self._MODE_READY:
+            # D2b: 再辨識 starts the next round straight from Result, so
+            # the gate is Ready OR Result. Ready is the operator's Start;
+            # Result is the operator's 再次辨識 on the still-open camera.
+            if self._mode not in (self._MODE_READY, self._MODE_RESULT):
                 return
             if not (
                 self.record_consent_checkbox.isChecked()
@@ -864,10 +990,17 @@ else:
             ):
                 self._set_status("需要 record consent 與 image consent")
                 return
-            if self._camera_options and self.selected_camera_index() is None:
+            if (
+                self._camera_options
+                and self._mode == self._MODE_READY
+                and self.selected_camera_index() is None
+            ):
                 self._set_status("請選擇相機")
                 return
             if self.desktop.state in ("terminal", "labeled", "closed"):
+                # detach() stops this round's workers and KEEPS the shared
+                # source: the camera opened by the previous round is still
+                # open, which is what lets 再辨識 skip the reopen.
                 self.desktop.detach()
             try:
                 desktop, consent, attempt_id = self._next_session()
@@ -879,11 +1012,24 @@ else:
             self.attempt_id = attempt_id
             self._result_text = ""
             self._round_started_utc = None
+            # D2b: the previous round's result is gone the moment the next
+            # one starts, so no stale result text, panels or countdown can
+            # bleed into it. (At Result itself nothing is cleared — the
+            # operator is still reading it against the live preview.)
+            self._clear_result_panel()
+            self.identity_label.setText("")
+            self.recognize_again_button.setEnabled(False)
+            self.stop_camera_button.setEnabled(False)
+            # D2b: coming from Result the camera is already open, so the
+            # round must NOT re-open it. From Ready the operator's Start
+            # is the thing that opens the lens, as before.
+            starting_over_open_camera = self._mode == self._MODE_RESULT
+            self._mode = self._MODE_RUNNING
             # R1 §2-3: the open happens inside on_start (see
             # _start_round); the 5 s window anchors right after it.
-            self._start_round()
+            self._start_round(reuse_open_source=starting_over_open_camera)
 
-        def _start_round(self) -> None:
+        def _start_round(self, *, reuse_open_source: bool = False) -> None:
             """Start the current round desktop (single Start or trigger)."""
             if not (
                 self.record_consent_checkbox.isChecked()
@@ -911,6 +1057,7 @@ else:
                     self.consent,
                     now_ns=round_start_ns,
                     device_id=self.device_id,
+                    reuse_open_source=reuse_open_source,
                 )
             except Exception as exc:
                 # G3 W7: a wrong camera pick fails here in Chinese (worst
@@ -998,10 +1145,19 @@ else:
                 result = self.desktop.terminal
                 if result is not None:
                     self._update_terminal(result)
-                self._timer.stop()
                 if self._next_session is not None:
+                    # D2b: _enter_result restarts the timer, because the
+                    # camera stays open and the preview must keep
+                    # updating while the operator reads the result.
                     self._enter_result(result)
-            elif self.desktop.state != "running":
+                else:
+                    self._timer.stop()
+            elif self.desktop.state == "running":
+                pass
+            elif self._mode != self._MODE_RESULT:
+                # D2b: at result the timer is deliberately still running
+                # (continuous preview). Only a non-result, non-running
+                # state stops it.
                 self._timer.stop()
 
         def _process_once_sync(self) -> None:
@@ -1030,12 +1186,15 @@ else:
             if result is not None:
                 self._update_terminal(result)
             if self.desktop.state != "running":
-                self._timer.stop()
                 if (
                     self._next_session is not None
                     and self.desktop.state == "terminal"
                 ):
+                    # D2b: _enter_result keeps the lens open and restarts
+                    # the timer (continuous preview).
                     self._enter_result(result)
+                else:
+                    self._timer.stop()
 
         def _drain_preview(self) -> bool:
             """D2: paint the newest worker-produced frame, if any.
@@ -1083,19 +1242,37 @@ else:
             Keeps the picked camera but never opens it; the preview
             area shows no prior face. Requires the continuous loop
             (next_session factory).
+
+            D2b: "lens shut" is now this method's own responsibility, not
+            something _enter_result already guaranteed. Before D2b the
+            result path released the camera, so the detach() below left
+            nothing open; with the lens held open across rounds, a bare
+            detach() would have leaked the handle whenever a round ended
+            in Ready (after a verdict, or a Cancel). So the release is
+            explicit here.
             """
             if self._next_session is None:
                 raise RuntimeError(
                     "enter_ready requires the continuous loop (next_session factory)"
                 )
             if self.desktop.state in ("terminal", "labeled", "closed"):
+                # D2b: stop this round's workers AND shut the lens. Under
+                # D2 the source was already released at result, so this
+                # was detach-only; holding the camera across rounds makes
+                # the release load-bearing.
                 self.desktop.detach()
+                try:
+                    self.desktop.close()
+                except Exception:
+                    pass
             self._clear_preview()
             self._mode = self._MODE_READY
             self._refresh_start_enabled()
             self.cancel_button.setEnabled(False)
             self.correct_button.setEnabled(False)
             self.incorrect_button.setEnabled(False)
+            self.recognize_again_button.setEnabled(False)
+            self.stop_camera_button.setEnabled(False)
             if status is None:
                 if self._camera_options and self.selected_camera_index() is None:
                     status = "請選擇相機"
@@ -1126,15 +1303,23 @@ else:
             self._set_guide()
 
         def _enter_result(self, result: Any) -> None:
-            """Release first, then show text-only result (R1 §2-4)."""
-            # The lens and the reader must be gone before any result
-            # text shows; the photo pixmap is cleared with them. The
-            # desktop stays terminal (not closed) so the keys can label.
-            try:
-                self.desktop.release_source()
-            except Exception:
-                pass
-            self._clear_preview()
+            """Show the result with the lens still open (D2b).
+
+            Supersedes R1 §2-4 for this window only (operator decision
+            d-20260929173733098323-10). The old contract released the
+            source and cleared the pixmap before any result text showed,
+            because at that point there was no way to run another round.
+
+            Now the camera stays open so the operator can read the
+            result against a live preview, press 正確／錯誤, and then
+            either 再次辨識 (same open camera — no reopen) or 停止相機
+            (the only in-loop release). The photo is therefore NOT
+            cleared: it is a live view now, not a stale capture, and
+            clearing it is exactly the R1 §2-6 behaviour D2b removes.
+
+            The desktop stays terminal (not closed) so the keys can
+            label, and D3a's result panels are still populated.
+            """
             text = self._format_result(result)
             self._result_text = text
             self._set_status(text)
@@ -1144,6 +1329,12 @@ else:
             self.cancel_button.setEnabled(False)
             self.correct_button.setEnabled(True)
             self.incorrect_button.setEnabled(True)
+            # D2b: the lens is open, so both controls are available. The
+            # preview keeps ticking — the worker is still running and
+            # still publishing frames into the preview channel.
+            self.recognize_again_button.setEnabled(True)
+            self.stop_camera_button.setEnabled(True)
+            self._timer.start()
 
         def _format_result(self, result: Any) -> str:
             """R1 §2-4 display text: matched / not-found / diagnosable.
