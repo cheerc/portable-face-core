@@ -831,7 +831,13 @@ class TestQtResearchWindow:
         window.process_once()
         second = window.countdown_label.text()
         assert first != second
-        assert "3000" in second
+        # D1: the countdown follows the recognition anchor, not the round
+        # anchor. Frame 1 is captured at 200 ms (_packet), so the 5 s
+        # window runs to 5200 ms and 2000 ms of clock leaves 3200 ms —
+        # the camera-open time is no longer spent out of the display.
+        # Before D1 this read 3000 (start+5000-2000), which was the
+        # pre-fix behaviour: the window was being drained by the open.
+        assert "3200" in second
         window.close()
 
         # Delete action closes session and purges attempt

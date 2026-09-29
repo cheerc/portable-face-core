@@ -222,6 +222,126 @@ class SessionStatus(str, Enum):
 
 
 @dataclass(frozen=True)
+class TimingMarks:
+    """D1 segmented timing for one live round.
+
+    The field failure this makes visible: a round that ran 34.5 s could
+    not be told apart from one that spent all of it waiting for the
+    camera, because only the total survived. These marks record where
+    the time actually went, in the session clock domain (monotonic).
+
+    Absolute stamps are kept alongside the derived durations so a
+    reader can re-derive them; the durations are what D4 needs to
+    attribute first-frame delay to open versus read.
+    """
+
+    open_begin_ns: int | None = None
+    open_end_ns: int | None = None
+    first_frame_ns: int | None = None
+    recognition_start_ns: int | None = None
+    terminal_ns: int | None = None
+
+    def __post_init__(self) -> None:
+        for name in (
+            "open_begin_ns",
+            "open_end_ns",
+            "first_frame_ns",
+            "recognition_start_ns",
+            "terminal_ns",
+        ):
+            value = getattr(self, name)
+            if value is not None and value < 0:
+                raise ValueError(f"{name} must be >= 0, got {value}")
+        if (
+            self.open_begin_ns is not None
+            and self.open_end_ns is not None
+            and self.open_end_ns < self.open_begin_ns
+        ):
+            raise ValueError("open_end_ns must be >= open_begin_ns")
+        if (
+            self.first_frame_ns is not None
+            and self.recognition_start_ns is not None
+            and self.recognition_start_ns < self.first_frame_ns
+        ):
+            raise ValueError("recognition_start_ns must be >= first_frame_ns")
+
+    @property
+    def open_duration_ms(self) -> float | None:
+        """Wall clock spent inside the capture source's open call.
+
+        None when either end is missing. The two stamps are always on
+        the controller clock, so this duration is always real.
+        """
+        if self.open_begin_ns is None or self.open_end_ns is None:
+            return None
+        return round((self.open_end_ns - self.open_begin_ns) / 1_000_000.0, 2)
+
+    @property
+    def open_to_first_frame_ms(self) -> float | None:
+        """Gap from a completed open to the first captured frame.
+
+        None — never a negative number — when the ordering is
+        impossible. `first_frame_ns` comes from the capture clock while
+        the open stamps come from the controller clock; in production
+        both are `time.monotonic_ns`, but a caller injecting a
+        synthetic or replayed clock can put them in different domains.
+        A negative "wait" would read as a real measurement and mislead
+        D4's open-versus-read attribution, so this reports nothing
+        rather than something false.
+        """
+        if self.open_end_ns is None or self.first_frame_ns is None:
+            return None
+        if self.first_frame_ns < self.open_end_ns:
+            return None
+        return round((self.first_frame_ns - self.open_end_ns) / 1_000_000.0, 2)
+
+    @property
+    def recognition_duration_ms(self) -> float | None:
+        """Time actually spent gathering recognition evidence.
+
+        None when the round never reached the anchor or the terminal
+        stamp, or when the ordering is impossible (clock domains
+        disagree) — same reasoning as open_to_first_frame_ms.
+        """
+        if self.recognition_start_ns is None or self.terminal_ns is None:
+            return None
+        if self.terminal_ns < self.recognition_start_ns:
+            return None
+        return round(
+            (self.terminal_ns - self.recognition_start_ns) / 1_000_000.0, 2
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "open_begin_ns": self.open_begin_ns,
+            "open_end_ns": self.open_end_ns,
+            "first_frame_ns": self.first_frame_ns,
+            "recognition_start_ns": self.recognition_start_ns,
+            "terminal_ns": self.terminal_ns,
+            "open_duration_ms": self.open_duration_ms,
+            "open_to_first_frame_ms": self.open_to_first_frame_ms,
+            "recognition_duration_ms": self.recognition_duration_ms,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> TimingMarks | None:
+        if not data:
+            return None
+
+        def _opt(key: str) -> int | None:
+            raw = data.get(key)
+            return int(raw) if raw is not None else None
+
+        return cls(
+            open_begin_ns=_opt("open_begin_ns"),
+            open_end_ns=_opt("open_end_ns"),
+            first_frame_ns=_opt("first_frame_ns"),
+            recognition_start_ns=_opt("recognition_start_ns"),
+            terminal_ns=_opt("terminal_ns"),
+        )
+
+
+@dataclass(frozen=True)
 class SessionResult:
     """Immutable terminal result envelope of an interactive live research session."""
 
@@ -239,6 +359,10 @@ class SessionResult:
     profile_digest: str
     model_generation: str
     gallery_digest: str
+    # D1: where the round's wall clock actually went. Optional so every
+    # existing construction site and every trace written before D1 still
+    # loads (from_dict tolerates its absence).
+    timing_marks: TimingMarks | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != "v1":
@@ -274,6 +398,9 @@ class SessionResult:
             "profile_digest": self.profile_digest,
             "model_generation": self.model_generation,
             "gallery_digest": self.gallery_digest,
+            "timing_marks": (
+                self.timing_marks.to_dict() if self.timing_marks is not None else None
+            ),
         }
 
     @classmethod
@@ -293,6 +420,7 @@ class SessionResult:
             profile_digest=data["profile_digest"],
             model_generation=data["model_generation"],
             gallery_digest=data["gallery_digest"],
+            timing_marks=TimingMarks.from_dict(data.get("timing_marks")),
         )
 
 

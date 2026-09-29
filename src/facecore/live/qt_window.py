@@ -541,11 +541,20 @@ else:
                 self._set_status("需要 record consent 與 image consent")
                 return
             try:
-                # G3 R1 PR-A change 2: the 5 s window anchors at this
-                # round's own open — the current clock value is read
-                # here (after the source open in _start_gated_round /
-                # the on_start open below) and recorded as round_start_ns,
-                # never carried over from a pre-anchored value.
+                # D1: this clock reading is the ROUND anchor (what the
+                # operator pressed Start at) and is recorded as
+                # round_start_ns. It is deliberately NOT the recognition
+                # window anchor: the camera opens inside on_start, below,
+                # and the engine re-arms the 5 s recognition window at the
+                # first captured frame (LiveController._anchor_first_frame
+                # -> SessionEngine.anchor_recognition).
+                #
+                # The pre-D1 comment here claimed this read happened
+                # "after the source open", which it never did — the open
+                # is the statement below. D0 recorded the discrepancy;
+                # D1 removed the trap. The 5 s budget is evidence time
+                # only: see docs/mac-demo-baseline-d0.md §7 for the
+                # 23/23 field rounds that spent it waiting instead.
                 round_start_ns = self._clock_ns()
                 self.desktop.on_start(
                     self.consent,

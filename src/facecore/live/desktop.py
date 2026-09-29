@@ -271,13 +271,24 @@ class DesktopSession:
         return self._terminal.status.value
 
     def countdown_ms_remaining(self, now_ns: int) -> int:
-        """5-second countdown from the controller clock."""
-        start_ns = self._controller._session_start_ns
-        if start_ns is None:
+        """Remaining recognition time, from the same clock as the engine.
+
+        D1: reads the engine's armed deadline rather than re-deriving
+        start+timeout here. Before the first frame the deadline is still
+        the round anchor (the operator pressed Start, camera opening);
+        once a frame lands the engine has re-armed the recognition window,
+        so the UI counts down the time actually left to gather evidence.
+        Re-deriving from session start would show 0 ms while the round was
+        still legitimately collecting.
+        """
+        if self._controller._session_start_ns is None:
             return int(self._engine.profile.timeout_ms)
-        remaining_ns = (
-            start_ns + int(self._engine.profile.timeout_ms * 1_000_000) - now_ns
-        )
+        deadline_ns = self._engine.deadline_ns
+        if deadline_ns is None:
+            deadline_ns = self._controller._session_start_ns + int(
+                self._engine.profile.timeout_ms * 1_000_000
+            )
+        remaining_ns = deadline_ns - now_ns
         return max(0, remaining_ns // 1_000_000)
 
     def configure_label_persistence(
