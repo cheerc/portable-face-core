@@ -165,12 +165,20 @@ class DesktopSession:
         self._recording = False
 
     def on_start(
-        self, consent: ConsentRecord, now_ns: int, device_id: str = "default"
+        self,
+        consent: ConsentRecord,
+        now_ns: int,
+        device_id: str = "default",
+        *,
+        reuse_open_source: bool = False,
     ) -> None:
         """Start event: requires explicit dual consent (checkbox-mapped).
 
         Fix (a): device_id is passed through to the capture open call so
         the requested --device reaches the camera (no fallback-0).
+
+        D2b: ``reuse_open_source`` starts the round on the camera the
+        previous round left open, so 再次辨識 never re-opens the lens.
         """
         if self._state != "idle":
             raise RuntimeError(f"cannot start from state {self._state!r}")
@@ -182,7 +190,12 @@ class DesktopSession:
             raise PermissionError("record consent absent; refusing to start")
         if not consent.image_consent:
             raise PermissionError("image consent absent; refusing to start")
-        self._controller.start_session(self._session_id, now_ns, device_id=device_id)
+        self._controller.start_session(
+            self._session_id,
+            now_ns,
+            device_id=device_id,
+            reuse_open_source=reuse_open_source,
+        )
         self._anchor_reported_ms = None
         self._state = "running"
         self._recording = True

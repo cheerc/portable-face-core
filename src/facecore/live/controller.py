@@ -180,9 +180,25 @@ class LiveController:
 
     # -- lifecycle ---------------------------------------------------------
     def start_session(
-        self, session_id: str, now_ns: int, device_id: str = "default"
+        self,
+        session_id: str,
+        now_ns: int,
+        device_id: str = "default",
+        *,
+        reuse_open_source: bool = False,
     ) -> None:
         """Open the source and start engine accumulation for one session.
+
+        D2b: ``reuse_open_source`` starts a new session on a camera the
+        previous round left open (D2b 再次辨識), skipping the open. It
+        is an explicit caller decision rather than a guess from
+        ``is_closed``: if the camera really went away, the capture path
+        reports the dry read, and inferring "still open" from a flag the
+        source may set on its own would paper over that.
+
+        The open segment stays unmeasured on the reuse path because no
+        open happened; the round's own first-frame anchor (D1) is what
+        arms the recognition window either way.
 
         D1: the open now happens on its own budget. `now_ns` is the
         caller's pre-open reading and stays exactly what the engine was
@@ -211,14 +227,19 @@ class LiveController:
                 raise ValueError(f"now_ns must be >= 0, got {now_ns}")
             # Both ends on the controller clock — the single authority
             # for wall-clock duration (D1 §D1-1).
-            open_begin_ns = self._controller_now_ns()
-            self._source.open(device_id)
-            open_end_ns = self._controller_now_ns()
-            self._device_id = device_id
-            self._engine.start(session_id, now_ns)
-            self._engine.note_timing(
-                open_begin_ns=open_begin_ns, open_end_ns=open_end_ns
-            )
+            if reuse_open_source:
+                # D2b: the lens is already open from the previous round.
+                # Do not touch it, and do not claim an open segment.
+                self._engine.start(session_id, now_ns)
+            else:
+                open_begin_ns = self._controller_now_ns()
+                self._source.open(device_id)
+                open_end_ns = self._controller_now_ns()
+                self._device_id = device_id
+                self._engine.start(session_id, now_ns)
+                self._engine.note_timing(
+                    open_begin_ns=open_begin_ns, open_end_ns=open_end_ns
+                )
             self._session_id = session_id
             self._session_start_ns = now_ns
             self._frames_sampled = 0
