@@ -397,6 +397,62 @@ def test_preview_survives_a_failing_research_sink() -> None:
         controller.close()
 
 
+def test_closed_source_does_not_wait_out_the_jitter_bar() -> None:
+    """D2 scope 3: a closed source ends the round, and this test says how
+    far it can and cannot prove that.
+
+    Mutation-tested twice, and both attempts failed to discriminate:
+
+    - Relaxing test_qt_window.py's `_consecutive_dry == 1` to `>= 1` and
+      then reverting the closed-source short-circuit left every assertion
+      green. The counter is now worker-maintained, so the UI sees a
+      settled value.
+    - Asserting elapsed time instead also passed against the mutation:
+      FakeCapture's closed read returns None immediately, so all three
+      jitter-bar iterations complete in microseconds. The ~100 ms cost of
+      the bar only exists at a real camera's 30 fps cadence, which this
+      repo has no way to reproduce (no test drives a real capture source).
+
+    So the timing claim is NOT proven here and no fake protection is left
+    standing. What this does pin is the behaviour that is observable: a
+    closed source ends the round as a terminal instead of hanging or
+    being retried. The short-circuit itself remains verified by reading
+    the diff and is a D4 on-device item alongside the rest of the
+    camera-cadence questions.
+    """
+    class _ClosedSource(FakeCapture):
+        def __init__(self, frames: list[FramePacket]) -> None:
+            super().__init__(frames)
+            self.closed_flag = False
+
+        def close(self) -> None:
+            self.closed_flag = True
+            super().close()
+
+        @property
+        def is_closed(self) -> bool:
+            return self.closed_flag
+
+    source = _ClosedSource(_face_frames(20))
+    engine = SessionEngine(_profile(), "digest-d2", "gen-1")
+    controller = LiveController(
+        engine, source, _matching_scorer, preview_sink=lambda p: None
+    )
+    controller.start_session("d2-closed", 0, device_id="fake")
+    controller.start_inference_worker()
+    source.closed_flag = True  # the camera went away before any frame
+
+    started = time.monotonic()
+    terminal = controller.wait_for_terminal(timeout_s=10.0)
+    elapsed = time.monotonic() - started
+    try:
+        assert terminal is not None, "a closed source never ended the round"
+        # Bounded and prompt: the round must not hang or spin.
+        assert elapsed < 1.0, f"closed source took {elapsed*1000:.0f}ms to end"
+    finally:
+        controller.close()
+
+
 def test_failing_research_sink_does_not_kill_the_inference_worker() -> None:
     """D2 scope 5: a disk failure degrades staging, it does not stop inference.
 
