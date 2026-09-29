@@ -116,7 +116,11 @@ embedding 位元組**做 SHA-256，**不是**對檔名或檔案位元組。換�
 | `label_kind` | `uncertain` 26、`unenrolled` 3 |
 | profile / generation | `g3-v1` / `gen-1`（29/29 一致） |
 
-`invalid_input` 的 23 輪中，**22 輪 `frames_sampled=1`**，耗時 5316.0–34558.8 ms。
+`invalid_input` 的 23 輪**全部** `frames_sampled=1`（分佈 `{1: 23}`，無任何一輪採到 2 張以上），
+耗時 5264.2–34558.8 ms（下界為 `att-g3-20260924-192646-r16`）。
+**全數只採到 1 張是更強的診斷訊號**：不是「多數輪次」只拿到一張，而是每一次都在首幀之後就耗盡了
+5 秒窗口，支持 D1「首幀延遲吃掉整個辨識窗口」的假設。
+
 `zero_usable_frames_collected` + `deadline_exceeded` 的失敗模式在
 `src/facecore/live/session.py:504` 產生（無 usable observation 時 finish 為 `invalid_input`）。
 6 輪 `timeout` 有 5–13 張樣本，耗時 5006.9–5221.5 ms。
@@ -160,20 +164,26 @@ D4 要求驗收可重現，因此真機驗收時必須記錄當下 HEAD，且**�
 
 ## 9. 不開相機的重現方式（camera-free）
 
-以 repo **既有** fake 入口，無自造 flag。已於 `b92a276` 實測成功：
+以 repo **既有** fake 入口，無自造 flag。`--store` 與 `--key-dir` **皆為必填**（缺一即 exit 2），
+下列命令已逐字實測可執行（2026-09-29，`b92a276`）。`$(mktemp -d)` 建立暫存目錄，
+確保 copy-paste 後直接可跑，且**不觸碰既有 29 輪結果**：
 
 ```sh
 cd ~/portable-face-core   # 或 D0 worktree
+D0_TMP="$(mktemp -d)"
 QT_QPA_PLATFORM=offscreen uv run --extra research-ui \
   python -m facecore.research.cli live \
     --device fake \
     --profile profiles/g3-v1.json \
     --ui fake \
     --session d0-fake-smoke \
+    --store "$D0_TMP/store" \
+    --key-dir "$D0_TMP/keys" \
     --record-consent --image-consent
+rm -rf "$D0_TMP"
 ```
 
-實測輸出（2026-09-29，暫存 store／key，未觸碰既有結果）：
+實測輸出（2026-09-29，暫存 store／key，未觸碰既有結果；exit 0）：
 
 ```
 {"elapsed_ms": 600.0, "gallery_digest": "cli-fake-gallery", "generation": "cli-fake-gen-1",
@@ -186,8 +196,9 @@ QT_QPA_PLATFORM=offscreen uv run --extra research-ui \
 | 入口 | `src/facecore/research/cli.py` `live` 子命令（`--device fake` 見該檔 :17-18、:732-750） |
 | 假 source | `src/facecore/live/capture.py:97` `FakeCapture`（決定性合成影格） |
 | 假 scorer | `_fake_scorer`（固定分數，不載真模型）→ 故 digest 為 `cli-fake-gallery`，**不可與 §5 真 digest 比較** |
-| 必填旗標 | `--record-consent --image-consent` 兩者皆缺會拒絕執行（實測） |
-| 隔離 | 省略 `--store` / `--key-dir` 時須指定暫存目錄；**不要指向 `~/Downloads/face_sample/_facecore/store`**，否則會混入既有 29 輪 |
+| 必填旗標 A | **`--store` 必填**。省略（且無 `--config`）時 `research live` 拒絕執行並 `exit 2`（`cli.py:2051-2057`）。必須指向可寫入的目錄。 |
+| 必填旗標 B | **`--record-consent --image-consent` 兩者皆必填**，缺一即拒絕執行（實測） |
+| 隔離 | `--store` / `--key-dir` 必須指向**暫存目錄**，**絕不可**指向 `~/Downloads/face_sample/_facecore/store`，否則會把本輪混入既有 29 輪 |
 | 無相機 | `--device fake` 走合成 pump，不開 AVFoundation，適合 CI 與離線重現 |
 
 **D1 的計時失敗重現**（沿用 diagnosis 的三幀思路，但用 repo 既有測試入口，不自造腳本）：

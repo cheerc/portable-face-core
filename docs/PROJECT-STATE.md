@@ -14,7 +14,8 @@ daemon 工作快照。
 的敘述只適用於 Phase 2A 結案當時，**已過時**：
 
 - 29 輪結果：`invalid_input` 23、`timeout` 6、**`matched` 0**；11 輪有 top1，**全部**為 `enroll-23`
-  （score 0.6338–0.6778）。`invalid_input` 的 23 輪中 22 輪只採到 1 張影格。
+  （score 0.6338–0.6778）。**`invalid_input` 的 23 輪全部只採到 1 張影格**（分佈 `{1: 23}`，
+  耗時 5264.2–34558.8 ms）—— 全數如此是首幀延遲吃掉整個 5 秒窗口的強訊號。
 - 失敗模式集中於**計時**：`qt_window.py:549` 在 `on_start` 前讀 clock，開相機耗時被算進 5 秒辨識窗口
   （open 在 `controller.py:158` 的 `on_start` 內）；終局多為
   `zero_usable_frames_collected` + `deadline_exceeded`（`session.py:504`）。
@@ -46,7 +47,7 @@ daemon 工作快照。
 | Gallery | 註冊組 23 張，digest `e3d77c4cfab5b141a8abaecdb908254d7558f747a97395acd138072ded72141f` |
 | 設定 | `~/Downloads/face_sample/_facecore/g3-local.json`（`_facecore` 在此，**不在 repo root**） |
 | 啟動 | `scripts/g3-local-test-app.command`（注意：launcher 啟動會 `git pull --ff-only`，影響 D4 可重現性） |
-| 不開相機重現 | `python -m facecore.research.cli live --device fake --ui fake --record-consent --image-consent`（已實測 `matched`） |
+| 不開相機重現 | `python -m facecore.research.cli live --device fake --ui fake --store <tmp>/store --key-dir <tmp>/keys --record-consent --image-consent`（**四個旗標皆必填**，已實測 `matched`；完整可執行命令見 D0 §9） |
 
 Baseline 驗證：`pytest tests/ -q` → **867 passed, 8 skipped**（`b92a276`，offscreen）。
 
