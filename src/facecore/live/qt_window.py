@@ -274,6 +274,7 @@ else:
             | None = None,
             camera_options: list[tuple[int, str]] | None = None,
             results_csv: Path | None = None,
+            background_inference: bool = False,
         ) -> None:
             super().__init__()
             self.desktop = desktop
@@ -300,6 +301,10 @@ else:
             # G3 R1 PR-A change 2: per-round clock anchor (this round's
             # open-time clock value); re-taken on every _start_round.
             self._round_start_ns: int | None = None
+            # D2: guards the Ready->Result transition to run exactly once
+            # per round, since the terminal is now observed on a tick
+            # that may find the desktop already terminal.
+            self._result_entered = False
             # G3 W6: camera picker options as (opencv index, label).
             # None means no picker (legacy behavior); an empty list means
             # no camera was found (startup refuses with 找不到相機).
@@ -307,6 +312,8 @@ else:
             # G3 W8: results.csv path for commit-on-label (None keeps the
             # W4 memory-queue behavior for callers without a csv target).
             self._results_csv = results_csv
+            # D2: opt-in worker-driven inference (see _start_round).
+            self._background_inference = background_inference
 
             if (recorder is None) != (attempt_id is None):
                 raise ValueError("recorder and attempt_id must be given together")
@@ -583,6 +590,7 @@ else:
                 self._set_status(f"相機開啟失敗：{type(exc).__name__}")
                 return
             self._round_start_ns = round_start_ns
+            self._result_entered = False
             self.start_button.setEnabled(False)
             self.cancel_button.setEnabled(True)
             self._set_status("採集中 · collecting")
@@ -590,13 +598,32 @@ else:
             if self._next_session is not None:
                 self._mode = self._MODE_RUNNING
                 self._round_started_utc = datetime.now(timezone.utc).isoformat()
+            # D2: inference, camera reads and research staging run on a
+            # worker; the timer below only paints.
+            #
+            # `background_inference` is opt-in: a real GUI event loop
+            # needs it (D2's whole point), while the synchronous
+            # `process_until_terminal` driver and the headless CLI paths
+            # keep driving inference in-line, where their determinism
+            # and step budgets are already pinned. Flipping it on
+            # unconditionally would make every existing timing assertion
+            # a race.
+            if self._background_inference:
+                self.desktop.start_inference_worker()
             self._timer.start()
 
         def cancel_clicked(self) -> None:
-            """R1 §2-6: Cancel stops the round, closes the lens, clears."""
+            """R1 §2-6: Cancel stops the round, closes the lens, clears.
+
+            D2: the inference worker must be told to stop FIRST, otherwise
+            it keeps scoring against an engine the UI has already closed
+            out, and the round can land as `timeout` instead of the
+            `cancelled` the operator actually asked for.
+            """
             if self.desktop.state != "running":
                 return
             try:
+                self.desktop.cancel_inference()
                 if self.desktop.inference_terminal is not None:
                     result = self.desktop.cancel_collection(self._clock_ns())
                 else:
@@ -606,13 +633,51 @@ else:
                 return
             self.desktop.release_source()
             self._clear_preview()
+            self._result_entered = False
             if self._next_session is not None:
                 self.enter_ready(status="已取消 · cancelled")
             else:
                 self._update_terminal(result)
 
         def process_once(self) -> None:
-            """Drive one bounded synchronous controller step for Qt tests."""
+            """D2: in background mode this tick only paints.
+
+            With `background_inference` enabled, inference, camera reads
+            and research staging run on the controller's worker, and the
+            frame that used to be scored, encrypted and written to disk
+            inside this call now happens on another thread — so a slow
+            model or a slow disk no longer stalls the window (D2 scope 1).
+
+            Without it the tick keeps its pre-D2 synchronous behavior, so
+            the headless CLI and the deterministic offscreen drivers are
+            untouched.
+            """
+            if not self._background_inference:
+                self._process_once_sync()
+                return
+            self._drain_preview()
+            if self._clock_advance is not None:
+                self._clock_advance()
+            if self.desktop.state == "running":
+                self._set_countdown()
+            # Adopt the worker's terminal if it has landed. This is what
+            # moves the desktop out of "running", so it must run even on
+            # the tick that observes the round already finished — the
+            # terminal transition below has to be reached exactly once.
+            self.desktop.wait_for_terminal(timeout_s=0.0)
+            if self.desktop.state == "terminal" and not self._result_entered:
+                self._result_entered = True
+                result = self.desktop.terminal
+                if result is not None:
+                    self._update_terminal(result)
+                self._timer.stop()
+                if self._next_session is not None:
+                    self._enter_result(result)
+            elif self.desktop.state != "running":
+                self._timer.stop()
+
+        def _process_once_sync(self) -> None:
+            """Pre-D2 tick: drive one bounded synchronous controller step."""
             if self.desktop.state != "running":
                 self._timer.stop()
                 return
@@ -638,15 +703,51 @@ else:
                 self._update_terminal(result)
             if self.desktop.state != "running":
                 self._timer.stop()
-                if self._next_session is not None and self.desktop.state == "terminal":
+                if (
+                    self._next_session is not None
+                    and self.desktop.state == "terminal"
+                ):
                     self._enter_result(result)
 
+        def _drain_preview(self) -> bool:
+            """D2: paint the newest worker-produced frame, if any.
+
+            The channel holds at most one frame, so a UI that ticks slower
+            than the camera captures simply skips frames instead of
+            building a backlog. Called only from the UI thread, which is
+            the only place QPixmap may be touched.
+            """
+            packet = self.desktop.drain_preview()
+            if packet is None:
+                return False
+            try:
+                self.render_full_frame(packet.rgb)
+            except Exception:
+                # A preview paint failure must not stop the round; the
+                # next tick will pick up a newer frame.
+                return False
+            return True
+
         def process_until_terminal(self, max_steps: int = 200) -> None:
-            """Drive synthetic events without opening a camera."""
+            """D2: drive synthetic events to a terminal, waiting on the worker.
+
+            Inference no longer happens inside `process_once` (it happens
+            on the worker), so a synchronous caller that only ticks would
+            spin `max_steps` times against a terminal that never lands.
+            Each iteration therefore waits briefly for the worker's
+            terminal before ticking the UI again — the same bounded,
+            latency-independent handshake the offscreen tests need.
+            """
             for _ in range(max_steps):
                 if self.desktop.state != "running":
                     break
+                if self.desktop.wait_for_terminal(timeout_s=0.05) is None:
+                    # The worker is still running; keep the UI ticking so
+                    # preview and countdown still update.
+                    self.process_once()
+                    continue
                 self.process_once()
+                break
 
         def enter_ready(self, status: str | None = None) -> None:
             """Enter Ready: lens shut, no preview, Start armed (R1 §2-2).

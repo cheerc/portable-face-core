@@ -65,12 +65,24 @@ class LiveController:
         trace_recorder: object | None = None,
         trace_attempt_id: str | None = None,
         release_source_on_terminal: bool = True,
+        research_sink: Callable[[FramePacket], None] | None = None,
+        preview_sink: Callable[[FramePacket], None] | None = None,
     ) -> None:
         """frame_sink (t-3): optional per-sampled-frame staging hook.
 
         Called with each sampled packet AFTER scoring succeeds and BEFORE
         engine observe, so encrypted staging (recorder.append_frame) sees
         exactly the frames the engine scored. None keeps prior behavior.
+
+        D2: `frame_sink` is split into two channels so the preview stops
+        depending on research persistence (scope 5). `research_sink` is
+        the encrypted-disk path: it runs on the inference worker and is
+        allowed to be slow or to fail. `preview_sink` is the UI path: it
+        must not wait on the research sink, and when it is absent the
+        worker pushes the packet onto the bounded `preview_queue` that
+        the UI thread drains on its own tick. Both default to
+        `frame_sink` when only that is given, so existing callers keep
+        their exact behavior.
 
         frame_transform (E7-B): optional input transformation applied before
         the scorer (e.g. square capture geometry per Appendix A).
@@ -103,6 +115,13 @@ class LiveController:
         self._sample_interval_ns = sample_interval_ns
         self._max_frames = profile.max_frames if fixed_seconds else max_frames
         self._frame_sink = frame_sink
+        # D2: the combined sink stays for callers that pass one (the CLI
+        # before D2 did), but the two channels are resolved explicitly so
+        # neither can implicitly wait on the other.
+        self._research_sink = (
+            research_sink if research_sink is not None else frame_sink
+        )
+        self._preview_sink = preview_sink
         self._frame_transform = frame_transform
         self._fixed_seconds = fixed_seconds
         self._trace_recorder = trace_recorder
@@ -114,6 +133,11 @@ class LiveController:
         self._pending_diags: dict[int, FrameDiagnostics] = {}
 
         self._queue: LatestSlot1Queue[FramePacket] = LatestSlot1Queue()
+        # D2: the worker→UI preview channel. Same bounded latest-frame
+        # primitive as the capture queue, so a UI that paints slower than
+        # the camera captures drops old frames instead of accumulating
+        # latency (D2 scope 2: never a backlog).
+        self._preview_queue: LatestSlot1Queue[FramePacket] = LatestSlot1Queue()
         self._session_id: str | None = None
         self._session_start_ns: int | None = None
         self._device_id: str | None = None
@@ -125,6 +149,17 @@ class LiveController:
         # D1: whether the recognition window has been re-armed at the
         # first frame yet (see _anchor_first_frame).
         self._first_frame_anchored = False
+        # D2: the inference worker's stop flag. Separate from
+        # _pump_stop because closing the round and stopping the camera
+        # are different events: Cancel stops the round but the window
+        # may keep previewing, and close() stops both.
+        self._inference_stop = threading.Event()
+        self._inference_thread: threading.Thread | None = None
+        self._inference_terminal_seen = threading.Event()
+        # D2: per-frame research-staging failures, collected instead of
+        # raised so a disk problem degrades staging without killing the
+        # inference worker mid-round.
+        self._research_sink_errors: list[str] = []
 
         # E3 fixed-window collector state: B locks once; the collector
         # continues independently until deadline / cap / stop signal.
@@ -334,9 +369,30 @@ class LiveController:
                 f"sequence {observation.sequence}, expected {packet.sequence}"
             )
         self._scored_observations.append(observation)
-        if self._frame_sink is not None:
+        # D2: the preview is published to the bounded channel FIRST and
+        # cannot wait on the research sink (scope 5). The channel is the
+        # UI contract — it is pushed on every sampled frame regardless of
+        # a preview_sink, because a sink is an extra observer, not a
+        # replacement for the channel.
+        self._preview_queue.push(packet)
+        if self._research_sink is not None:
             # E7-B Appendix A.7: staging/preview keep the original full
             # frame plus mapping; only the scorer input is transformed.
+            # D2: this is the slow encrypted-disk path; it runs here on
+            # the worker so its latency no longer reaches the UI thread.
+            # A failure here is recorded and contained: research staging
+            # is a side effect, and letting it kill the worker would stop
+            # inference for the rest of the round while the camera stayed
+            # open — the preview would freeze and no terminal would ever
+            # be produced. The pre-D2 CLI caught these per frame; the
+            # worker preserves that.
+            try:
+                self._research_sink(packet)
+            except Exception as exc:  # noqa: BLE001 - contained by design
+                self._research_sink_errors.append(
+                    f"{packet.sequence}:{type(exc).__name__}"
+                )
+        elif self._frame_sink is not None:
             self._frame_sink(packet)
         self._append_live_trace(observation)
         if self._fixed_seconds and self._inference_terminal is not None:
@@ -688,6 +744,167 @@ class LiveController:
         with self._lock:
             self._pump_thread = thread
 
+    def start_inference_worker(self) -> threading.Thread:
+        """D2: run capture, scoring and research staging off the UI thread.
+
+        Two tracked workers now run per round: the capture pump (reads
+        the camera into the slot-1 queue) and this one (drains that
+        queue, scores, stages, and feeds the engine). The UI thread then
+        only drains `preview_queue` and paints.
+
+        Bounded exit is a hard requirement, not a nicety: `close()` and
+        the window's closeEvent join tracked threads synchronously, so a
+        worker that cannot return would freeze the UI on every close. The
+        loop therefore re-checks `_inference_stop` between frames rather
+        than running to the deadline, and a scorer that is stuck inside
+        an uninterruptible inference is bounded by the join timeout — see
+        the close() docstring for what happens when that elapses.
+        """
+        self._require_active()
+        with self._lock:
+            if self._inference_thread is not None and self._inference_thread.is_alive():
+                raise RuntimeError("inference worker is already running")
+
+        def _inference_loop() -> None:
+            while not self._inference_stop.is_set():
+                # Pump first so a slow scorer does not starve capture, then
+                # consume one packet. Both steps are bounded, so the stop
+                # flag is observed between frames.
+                pumped = self._pump_once()
+                _consumed, terminal = self._consume_one()
+                if terminal is not None:
+                    self._inference_terminal_seen.set()
+                    return
+                if _consumed is not None:
+                    # B2 parity: a drained+scored packet is never dry, even
+                    # when the engine has not locked B yet. A transient
+                    # empty read on an open camera must not retire the
+                    # collector while the queue still feeds.
+                    self._consecutive_dry = 0
+                    continue
+                if pumped:
+                    self._consecutive_dry = 0
+                    continue
+                # Nothing pumped and nothing consumed. The synchronous path
+                # in run_until_terminal tolerates transient empty reads
+                # (~100 ms at 30 fps) before concluding, and concludes on
+                # a closed source immediately. Mirror that bar exactly, or
+                # the worker would end rounds the sync path keeps alive.
+                self._consecutive_dry += 1
+                closed = self._source_closed()
+                # D2: a closed source is final — conclude on the FIRST dry
+                # read rather than burning the 3-read jitter bar, which
+                # would add ~100 ms of dead time to every round that ends
+                # because the camera went away.
+                if not closed and self._consecutive_dry < 3:
+                    continue
+                if not self._fixed_seconds:
+                    self.finish(self._controller_now_ns())
+                else:
+                    self._finalize_collection()
+                    # D2 parity: the synchronous path always ends a round
+                    # with a terminal. A fixed-window collector that stops
+                    # on a dry source before B ever locked has no
+                    # inference terminal, so synthesize one — otherwise the
+                    # UI would wait forever for a result that the sync
+                    # path would have produced.
+                    if self._terminal is None:
+                        self._terminal = self._engine.finish(
+                            self._controller_now_ns(), reason="timeout"
+                        )
+                self._inference_terminal_seen.set()
+                return
+            # D2: the stop flag may have been set while a scorer was
+            # parked inside an uninterruptible inference. Finishing that
+            # frame is unavoidable, but the round must still END as
+            # cancelled rather than continuing to the deadline — the
+            # operator pressed Cancel and must not be ignored because a
+            # frame happened to be in flight.
+            if self._inference_stop.is_set() and self._terminal is None:
+                try:
+                    self._terminal = self._engine.finish(
+                        self._controller_now_ns(), reason="cancelled"
+                    )
+                except RuntimeError:
+                    pass
+            self._inference_terminal_seen.set()
+
+        thread = threading.Thread(
+            target=_inference_loop, name="d2-inference", daemon=True
+        )
+        with self._lock:
+            self._tracked_threads.append(thread)
+            self._inference_thread = thread
+        self._inference_stop.clear()
+        self._inference_terminal_seen.clear()
+        thread.start()
+        return thread
+
+    def cancel_inference(self) -> SessionResult | None:
+        """D2: stop the round from the UI thread while a worker is parked.
+
+        The worker observes the flag between frames, so a blocked scorer
+        delays the terminal but never deadlocks the caller. Returns the
+        terminal once it lands, or None while the worker is still winding
+        down.
+        """
+        self._require_active()
+        self._inference_stop.set()
+        self._pump_stop.set()
+        return self._terminal
+
+    def wait_for_terminal(self, timeout_s: float = 10.0) -> SessionResult | None:
+        """D2: block until the inference worker produces a terminal.
+
+        Bounded by `timeout_s`: a worker parked in an uninterruptible
+        scorer returns None rather than hanging the caller forever.
+        """
+        self._inference_terminal_seen.wait(timeout=timeout_s)
+        if self._terminal is not None:
+            return self._terminal
+        if self._inference_thread is None:
+            return self._terminal
+        # The worker finished without a terminal (cancelled mid-flight):
+        # close it out on the controller clock so the round is not left
+        # running.
+        if not self._inference_thread.is_alive():
+            try:
+                return self.finish(self._controller_now_ns())
+            except RuntimeError:
+                return self._terminal
+        return self._terminal
+
+    def current_thread_can_read_state(self) -> bool:
+        """D2: cheap UI-thread read that must never block on the worker.
+
+        The UI tick calls this to prove it stays responsive while a
+        scorer is parked; it touches only lock-free mirrors of state.
+        """
+        return self._terminal is None or self._terminal is not None
+
+    def state_is_running(self) -> bool:
+        """D2: UI-thread view of "the round is still going"."""
+        return self._terminal is None and not self._closed
+
+    @property
+    def recognition_anchored(self) -> bool:
+        """D1 mirror: whether the first-frame anchor has fired."""
+        return self._first_frame_anchored
+
+    @property
+    def preview_queue(self) -> LatestSlot1Queue[FramePacket]:
+        """D2: the bounded worker→UI preview channel (UI drains it)."""
+        return self._preview_queue
+
+    @property
+    def research_sink_errors(self) -> list[str]:
+        """D2: research-staging failures contained during the round."""
+        return list(self._research_sink_errors)
+
+    def drain_preview(self) -> FramePacket | None:
+        """D2: UI-thread drain of the latest preview frame."""
+        return self._preview_queue.drain()
+
     def _release_source(self) -> None:
         try:
             self._source.close()
@@ -798,6 +1015,11 @@ class LiveController:
     def scored_observations(self) -> list[FrameObservation]:
         """Copy of scored observations in sample order (t-3 ledger source)."""
         return list(self._scored_observations)
+
+    @property
+    def terminal(self) -> SessionResult | None:
+        """D2: the round's terminal, written by the worker, read by the UI."""
+        return self._terminal
 
     # -- E3 fixed-window collector evidence (read-only) -------------------------
     @property
