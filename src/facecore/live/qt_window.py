@@ -68,6 +68,22 @@ class _SyntheticObservation:
     quality_reasons: tuple[str, ...] = ()
 
 
+def _quality_reason_text(observations: tuple[Any, ...]) -> str:
+    """Collect the real quality reasons across a round's observations.
+
+    A quality rejection is actionable only if the operator learns WHICH
+    one — 「品質不合格」 alone cannot be acted on, while the concrete
+    reasons (exposure, blur, …) can. Returns a parenthesised suffix, or
+    an empty string when the round carried no usable reason text.
+    """
+    reasons: set[str] = set()
+    for obs in observations:
+        reasons.update(getattr(obs, "quality_reasons", ()) or ())
+    if not reasons:
+        return ""
+    return f"（{'、'.join(sorted(reasons))}）"
+
+
 def _require_int(value: object, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"crop_mapping {name} must be an integer")
@@ -541,11 +557,20 @@ else:
                 self._set_status("需要 record consent 與 image consent")
                 return
             try:
-                # G3 R1 PR-A change 2: the 5 s window anchors at this
-                # round's own open — the current clock value is read
-                # here (after the source open in _start_gated_round /
-                # the on_start open below) and recorded as round_start_ns,
-                # never carried over from a pre-anchored value.
+                # D1: this clock reading is the ROUND anchor (what the
+                # operator pressed Start at) and is recorded as
+                # round_start_ns. It is deliberately NOT the recognition
+                # window anchor: the camera opens inside on_start, below,
+                # and the engine re-arms the 5 s recognition window at the
+                # first captured frame (LiveController._anchor_first_frame
+                # -> SessionEngine.anchor_recognition).
+                #
+                # The pre-D1 comment here claimed this read happened
+                # "after the source open", which it never did — the open
+                # is the statement below. D0 recorded the discrepancy;
+                # D1 removed the trap. The 5 s budget is evidence time
+                # only: see docs/mac-demo-baseline-d0.md §7 for the
+                # 23/23 field rounds that spent it waiting instead.
                 round_start_ns = self._clock_ns()
                 self.desktop.on_start(
                     self.consent,
@@ -710,8 +735,16 @@ else:
                 if score is None:
                     return str(result.matched_identity)
                 return f"{result.matched_identity} {score:.2f}"
-            if status in (SessionStatus.timeout, SessionStatus.unknown):
-                return "找不到此註冊人員"
+            # D1: a non-match terminal is classified by its REASONS, not
+            # by its status alone. `insufficient_evidence` is written as
+            # timeout (the window did elapse) while meaning "a face was
+            # seen and the best frame even reached match level, but the
+            # 3-frame rule never closed". Short-circuiting on status
+            # showed 「找不到此註冊人員」 — the exact opposite of the
+            # evidence, and worse than pre-D1, which at least said the
+            # camera produced nothing. classify_failure now owns every
+            # non-match sentence, including the plain ran-out-of-window
+            # case, so this branch would only be a way to skip it.
             return self.classify_failure(
                 observations=tuple(self.desktop.observations),
                 reason_codes=tuple(result.reason_codes),
@@ -723,7 +756,50 @@ else:
             observations: tuple[Any, ...] = (),
             reason_codes: tuple[str, ...] = (),
         ) -> str:
-            """Chinese cause text for a non-match terminal (R1 §2-4)."""
+            """Chinese cause text for a non-match terminal (R1 §2-4, D1).
+
+            Reason codes are consulted FIRST, before the observation
+            heuristics. D1 split the terminal reasons so an operator can
+            tell "nobody was recognised" from "a face was visible but the
+            evidence was too thin", and that split is worthless if the
+            status-only branches answer first: an `insufficient_evidence`
+            round reaches the screen carrying the fact that a face was
+            seen and the best single frame even reached match level, and
+            showing 「找不到此註冊人員」 for it asserts the opposite.
+
+            Every D1 code has prose here. An unrecognised code never
+            reaches the operator as a raw token — the screen is not a
+            place to print a machine identifier at someone.
+            """
+            codes = set(reason_codes)
+
+            # D1: the camera delivered nothing at all. Same event the
+            # empty-observations branch below already described as
+            # 「相機無影格」, so it must not get a second, different
+            # description.
+            if "no_frames_captured" in codes and not observations:
+                return "未取得可辨識影格：相機無影格"
+
+            # D1: a face was visible and scored, but the multi-frame rule
+            # never closed. The operator needs to know a person WAS there
+            # — this is the case most easily misread as "not enrolled".
+            if "insufficient_evidence" in codes:
+                support = next(
+                    (c for c in reason_codes if c.startswith("support_")), ""
+                )
+                detail = f"（{support.replace('_', ' ')}）" if support else ""
+                return f"已看見人臉，但多幀確認未成立{detail}"
+
+            # D1: frames arrived and every one was rejected. Say which
+            # cause, using the real quality reasons where we have them.
+            if "all_frames_rejected_mixed_causes" in codes:
+                return "未取得可辨識影格：部分無臉、部分品質不合格"
+            if "all_frames_rejected_no_face" in codes:
+                return "未取得可辨識影格：未偵測到人臉"
+            if "all_frames_rejected_quality" in codes:
+                joined = _quality_reason_text(observations)
+                return f"未取得可辨識影格：品質拒絕{joined}"
+
             if not observations:
                 return "未取得可辨識影格：相機無影格"
             faced = [o for o in observations if o.face_count >= 1]
@@ -735,8 +811,16 @@ else:
             if reasons and all(not getattr(o, "quality_pass", False) for o in faced):
                 joined = "、".join(sorted(reasons))
                 return f"未取得可辨識影格：品質拒絕（{joined}）"
-            first = reason_codes[0] if reason_codes else "unknown"
-            return f"未完成辨識：{first}"
+            # A ran-the-whole-window round with nothing special to report
+            # is the genuine "did not find them" answer; saying anything
+            # softer would be a false reassurance.
+            if codes & {
+                "deadline_exceeded",
+                "best_baseline_unknown",
+                "best_baseline_review",
+            }:
+                return "找不到此註冊人員"
+            return "未完成辨識：無法判定原因"
 
         def format_result_for_test(self, kind: str) -> str:
             """Test hook routing one failure kind through _format_result."""

@@ -122,6 +122,9 @@ class LiveController:
         self._last_sequence = 0
         self._terminal: SessionResult | None = None
         self._closed = False
+        # D1: whether the recognition window has been re-armed at the
+        # first frame yet (see _anchor_first_frame).
+        self._first_frame_anchored = False
 
         # E3 fixed-window collector state: B locks once; the collector
         # continues independently until deadline / cap / stop signal.
@@ -142,7 +145,21 @@ class LiveController:
     def start_session(
         self, session_id: str, now_ns: int, device_id: str = "default"
     ) -> None:
-        """Open the source and start engine accumulation for one session."""
+        """Open the source and start engine accumulation for one session.
+
+        D1: the open now happens on its own budget. `now_ns` is the
+        caller's pre-open reading and stays exactly what the engine was
+        always given (the frozen start contract that replay and the
+        fixed-window collector depend on). The OPEN SEGMENT, however, is
+        measured on the controller's own clock at both ends: mixing the
+        caller's anchor with the controller clock would put the two
+        stamps in different time domains and produce a meaningless
+        (even negative) open duration whenever a caller supplies a
+        synthetic or replayed now_ns. The recognition window is
+        re-armed later, at the first valid frame (`_anchor_first_frame`),
+        so the open cost can never be spent out of the 5 s evidence
+        budget.
+        """
         with self._lock:
             if self._closed:
                 raise RuntimeError("controller is closed; cannot start session")
@@ -155,9 +172,16 @@ class LiveController:
                 raise ValueError("session_id must not be empty")
             if now_ns < 0:
                 raise ValueError(f"now_ns must be >= 0, got {now_ns}")
+            # Both ends on the controller clock — the single authority
+            # for wall-clock duration (D1 §D1-1).
+            open_begin_ns = self._controller_now_ns()
             self._source.open(device_id)
+            open_end_ns = self._controller_now_ns()
             self._device_id = device_id
             self._engine.start(session_id, now_ns)
+            self._engine.note_timing(
+                open_begin_ns=open_begin_ns, open_end_ns=open_end_ns
+            )
             self._session_id = session_id
             self._session_start_ns = now_ns
             self._frames_sampled = 0
@@ -172,7 +196,23 @@ class LiveController:
             self._collector_safety_flags = []
             self._collection_cancelled = False
             self._consecutive_dry = 0
+            self._first_frame_anchored = False
             self._pump_stop.clear()
+
+    def _anchor_first_frame(self, captured_ns: int) -> None:
+        """Re-arm the recognition window at the first frame (D1 §D1-1).
+
+        Idempotent, and deliberately anchored on the first frame the
+        camera actually produced rather than on the first *usable* one:
+        a camera delivering no-face frames is a working camera, and it
+        must get the full evidence window to keep sampling. Only the
+        first frame anchors, so a later frame can never slide the
+        deadline forward.
+        """
+        if self._first_frame_anchored:
+            return
+        self._first_frame_anchored = True
+        self._engine.anchor_recognition(captured_ns)
 
     def _require_active(self) -> str:
         if self._session_id is None or self._session_start_ns is None:
@@ -202,6 +242,12 @@ class LiveController:
         packet = self._source.read()
         if packet is None:
             return False
+        # D1: the first frame the camera delivers re-arms the recognition
+        # window, so a slow open is billed to the open wait and not to the
+        # evidence budget. Anchoring here (not in _consume_one) means a
+        # dropped or gated-out frame still anchors: the camera produced
+        # a frame, which is exactly what the wait is for.
+        self._anchor_first_frame(packet.captured_ns)
         self._queue.push(packet)
         return True
 
@@ -405,6 +451,13 @@ class LiveController:
                 if self._fixed_seconds:
                     self._finalize_collection()
                     return self._terminal
+                # D1 §D1-4: a source that dries up before it ever delivered
+                # a frame must end on its OWN bounded budget, not on the
+                # engine's recognition deadline (which is still the
+                # pre-anchor start+timeout and would silently become an
+                # open-wait of the same size). Reason names the wait.
+                if not self._first_frame_anchored:
+                    return self._finish_before_first_frame()
                 return self.finish(self._controller_now_ns())
             self._consecutive_dry = 0
             _consumed, terminal = self._consume_one()
@@ -417,6 +470,18 @@ class LiveController:
         if self._fixed_seconds:
             if self._collection_should_stop():
                 self._finalize_collection()
+        return self._terminal
+
+    def _finish_before_first_frame(self) -> SessionResult:
+        """End a round whose camera never delivered a frame (D1 §D1-4).
+
+        Uses the engine's own no-observation terminal so the result shape,
+        counters and reason contract stay in one place; only the reason
+        string names the bounded first-frame wait.
+        """
+        now_ns = self._controller_now_ns()
+        self._terminal = self._engine.finish(now_ns, reason="first_frame_timeout")
+        self._stop_and_release()
         return self._terminal
 
     def _collection_should_stop(self) -> bool:
@@ -510,14 +575,24 @@ class LiveController:
         return time.monotonic_ns()
 
     def finish(self, now_ns: int) -> SessionResult:
-        """Conclude the session at the controller clock."""
+        """Conclude the session at the controller clock.
+
+        D1: the deadline is read from the engine rather than re-derived
+        from session start. Before the first frame the engine still holds
+        the start-anchored deadline (the frozen contract); once a frame
+        has arrived the engine's deadline is the re-armed recognition
+        window, and deriving start+timeout here would silently cut the
+        round back to the pre-anchor budget.
+        """
         self._require_active()
         if self._terminal is not None:
             return self._terminal
         assert self._session_start_ns is not None
-        deadline = self._session_start_ns + int(
-            self._engine.profile.timeout_ms * 1_000_000
-        )
+        deadline = self._engine.deadline_ns
+        if deadline is None:
+            deadline = self._session_start_ns + int(
+                self._engine.profile.timeout_ms * 1_000_000
+            )
         effective = max(now_ns, self._session_start_ns)
         if effective > deadline:
             effective = now_ns

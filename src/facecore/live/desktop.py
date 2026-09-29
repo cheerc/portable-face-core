@@ -91,6 +91,12 @@ class DesktopSession:
         self._state: DesktopState = "idle"
         self._terminal: SessionResult | None = None
         self._label: str | None = None
+        # D1: the highest countdown value already shown this round. The
+        # recognition anchor re-arms the deadline after the camera open,
+        # which can imply a LARGER remaining time than the pre-anchor
+        # label showed; clamping to this keeps the number from rising
+        # under the operator. Reset on every start.
+        self._anchor_reported_ms: int | None = None
         self._deleted = False
         self._delete_failed = False
         self._label_recorder = label_recorder
@@ -167,6 +173,7 @@ class DesktopSession:
         if not consent.image_consent:
             raise PermissionError("image consent absent; refusing to start")
         self._controller.start_session(self._session_id, now_ns, device_id=device_id)
+        self._anchor_reported_ms = None
         self._state = "running"
         self._recording = True
 
@@ -271,14 +278,39 @@ class DesktopSession:
         return self._terminal.status.value
 
     def countdown_ms_remaining(self, now_ns: int) -> int:
-        """5-second countdown from the controller clock."""
-        start_ns = self._controller._session_start_ns
-        if start_ns is None:
+        """Remaining recognition time, from the same clock as the engine.
+
+        D1: reads the engine's armed deadline rather than re-deriving
+        start+timeout here. Before the first frame the deadline is still
+        the round anchor (the operator pressed Start, camera opening);
+        once a frame lands the engine has re-armed the recognition window,
+        so the UI counts down the time actually left to gather evidence.
+
+        The label is clamped to be non-increasing across the anchor. A
+        camera that takes 2 s to open would otherwise show 3000 draining
+        and then visibly jump back UP to 5000 when the first frame
+        arrives — a number that rises is not a countdown, and the
+        operator has no way to read it correctly. The clamp keeps the
+        pre-anchor drain (so opening still looks like it costs time) and
+        never lets the total appear to grow.
+        """
+        if self._controller._session_start_ns is None:
             return int(self._engine.profile.timeout_ms)
-        remaining_ns = (
-            start_ns + int(self._engine.profile.timeout_ms * 1_000_000) - now_ns
-        )
-        return max(0, remaining_ns // 1_000_000)
+        deadline_ns = self._engine.deadline_ns
+        if deadline_ns is None:
+            deadline_ns = self._controller._session_start_ns + int(
+                self._engine.profile.timeout_ms * 1_000_000
+            )
+        raw_ms = max(0, (deadline_ns - now_ns) // 1_000_000)
+        # Clamp against the highest value already shown this round, on
+        # every read (not just post-anchor): the pre-anchor reads are what
+        # the operator saw before the re-arm, so they are exactly what the
+        # post-anchor value must not exceed.
+        if self._anchor_reported_ms is None:
+            self._anchor_reported_ms = raw_ms
+        else:
+            self._anchor_reported_ms = min(self._anchor_reported_ms, raw_ms)
+        return self._anchor_reported_ms
 
     def configure_label_persistence(
         self,

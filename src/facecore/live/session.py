@@ -17,6 +17,7 @@ Hard boundaries:
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 import math
 
 from facecore.live.contracts import (
@@ -25,6 +26,7 @@ from facecore.live.contracts import (
     ResearchProfile,
     SessionResult,
     SessionStatus,
+    TimingMarks,
 )
 
 DEFAULT_CONTINUITY_MAX_CENTER_DELTA_RATIO = 0.50
@@ -59,12 +61,25 @@ class SessionEngine:
         self._session_id: str | None = None
         self._start_ns: int | None = None
         self._deadline_ns: int | None = None
+        # D1: the deadline above is the frozen contract (start + timeout)
+        # used by replay and the fixed-window collector. `start()` arms it
+        # immediately, as before. `anchor_recognition()` re-arms the SAME
+        # deadline at the first valid frame, so camera-open time never
+        # eats the recognition window. Callers that never re-anchor keep
+        # the pre-D1 behaviour byte-for-byte.
+        self._recognition_anchored: bool = False
+        self._first_frame_ns: int | None = None
+        self._timing_marks: TimingMarks | None = None
 
         # Evidence accumulation state
         self._current_candidate: str | None = None
         self._support_sequences: list[int] = []
         self._last_support_ns: int | None = None
         self._last_box: tuple[float, float, float, float] | None = None
+        # D1: which rejection kinds this round actually saw, so the
+        # terminal can distinguish "camera never produced a usable face"
+        # from "the operator never looked at the lens".
+        self._rejection_reasons: set[str] = set()
 
         # Diagnostic counters
         self._frames_sampled: int = 0
@@ -142,10 +157,73 @@ class SessionEngine:
         self._frames_rejected = 0
         self._frames_dropped = 0
         self._observations = []
+        self._rejection_reasons = set()
 
         self._last_sequence = 0
         self._last_observation_ns = now_ns
         self._terminal_result = None
+        self._recognition_anchored = False
+        self._first_frame_ns = None
+        self._timing_marks = None
+
+    @property
+    def deadline_ns(self) -> int | None:
+        """The armed recognition deadline (session-clock domain)."""
+        return self._deadline_ns
+
+    @property
+    def recognition_anchored(self) -> bool:
+        """True once the window has been re-armed at a first valid frame."""
+        return self._recognition_anchored
+
+    def note_timing(
+        self,
+        *,
+        open_begin_ns: int | None = None,
+        open_end_ns: int | None = None,
+    ) -> None:
+        """Record the D1 open segment; survives until terminal."""
+        previous = self._timing_marks
+        self._timing_marks = TimingMarks(
+            open_begin_ns=open_begin_ns,
+            open_end_ns=open_end_ns,
+            first_frame_ns=previous.first_frame_ns if previous else None,
+            recognition_start_ns=(
+                previous.recognition_start_ns if previous else None
+            ),
+            terminal_ns=previous.terminal_ns if previous else None,
+        )
+
+    def anchor_recognition(self, first_frame_ns: int) -> None:
+        """Re-arm the recognition window at the first valid frame (D1).
+
+        Idempotent: the FIRST valid frame owns the anchor, so a later
+        frame can never slide the window forward. Without this call the
+        engine behaves exactly as before (deadline armed at start()).
+        """
+        if self._recognition_anchored:
+            return
+        if self._start_ns is None or self._deadline_ns is None:
+            raise RuntimeError("SessionEngine must be started before anchoring")
+        if first_frame_ns < 0:
+            raise ValueError(
+                f"first_frame_ns must be >= 0, got {first_frame_ns}"
+            )
+        # The window runs forward from the first valid frame, never
+        # backward: a first frame captured before start() (possible with
+        # a replay clock) must not pull the deadline earlier than start.
+        anchor_ns = max(first_frame_ns, self._start_ns)
+        self._deadline_ns = anchor_ns + int(self.profile.timeout_ms * 1_000_000)
+        self._recognition_anchored = True
+        self._first_frame_ns = first_frame_ns
+        previous = self._timing_marks
+        self._timing_marks = TimingMarks(
+            open_begin_ns=previous.open_begin_ns if previous else None,
+            open_end_ns=previous.open_end_ns if previous else None,
+            first_frame_ns=first_frame_ns,
+            recognition_start_ns=anchor_ns,
+            terminal_ns=previous.terminal_ns if previous else None,
+        )
 
     def _clear_support_window(self) -> None:
         self._current_candidate = None
@@ -243,6 +321,13 @@ class SessionEngine:
                 "no_face_detected"
                 if obs.face_count == 0
                 else f"quality_rejected: {','.join(obs.quality_reasons)}"
+            )
+            # D1: remember WHY frames were dropped so a round that ends
+            # with nothing usable can say "no face was ever seen" rather
+            # than the single lumped zero_usable code, and can still tell
+            # it apart from "frames arrived but all were rejected".
+            self._rejection_reasons.add(
+                "no_face_detected" if obs.face_count == 0 else "quality_rejected"
             )
             self._emit_event(
                 sequence=obs.sequence,
@@ -495,15 +580,73 @@ class SessionEngine:
                 now_ns=now_ns,
             )
 
-        # Baseline check on expired session
+        # D1 §D1-3: a round that ends with no usable evidence must say WHY.
+        # The pre-D1 single code (zero_usable_frames_collected) could not
+        # tell a dead camera from a person who never faced it from a
+        # round that ran out of time before the first frame landed. The
+        # field rounds that motivated D1 all landed here.
         if not self._observations:
-            # No usable frames throughout entire session
+            if self._frames_sampled == 0:
+                # Not one frame ever reached the engine: the camera
+                # never delivered. `reason` names which bounded wait ended
+                # it (first_frame_timeout for a dry source, or the usual
+                # deadline reasons), so a dead camera is never reported as
+                # "the operator was not recognised".
+                codes: tuple[str, ...] = ("no_frames_captured", reason)
+            elif "no_face_detected" in self._rejection_reasons and (
+                "quality_rejected" in self._rejection_reasons
+            ):
+                codes = ("all_frames_rejected_mixed_causes", reason)
+            elif "no_face_detected" in self._rejection_reasons:
+                codes = ("all_frames_rejected_no_face", reason)
+            elif "quality_rejected" in self._rejection_reasons:
+                codes = ("all_frames_rejected_quality", reason)
+            else:
+                codes = ("zero_usable_frames_collected", reason)
             return self._terminate_terminal(
                 status=SessionStatus.invalid_input,
                 identity=None,
-                reason_codes=("zero_usable_frames_collected", reason),
+                reason_codes=codes,
                 now_ns=now_ns,
             )
+
+        # D1: frames qualified but the multi-frame rule never closed.
+        # "A person was visible but the evidence was too thin" is a
+        # different operator-facing outcome than "nobody resembling the
+        # gallery was here" — and only the first must be reported as
+        # insufficient. The gate is the review band: a face whose best
+        # score never reached `review_threshold` is a stranger, and
+        # 「找不到此註冊人員」 is the honest answer for a stranger.
+        # Lumping them together (the pre-rework D1 behaviour) showed
+        # "saw a face, evidence too thin" for people who simply were not
+        # in the gallery — the mirror image of the defect review
+        # ce0a95a7 raised, and it broke the R1 not-found contract.
+        #
+        # The band is not a match gate: reaching `review` is NOT
+        # matched, and a strong single frame is still insufficient under
+        # the 3-frame rule. It only decides which sentence the operator
+        # reads.
+        if self._frames_usable > 0 and (
+            len(self._support_sequences) < self.profile.required_support
+        ):
+            _, baseline_status, _ = compute_baseline_best_quality(
+                self._observations, self.profile
+            )
+            if baseline_status in (
+                SessionStatus.review,
+                SessionStatus.matched,
+            ):
+                return self._terminate_terminal(
+                    status=SessionStatus.timeout,
+                    identity=None,
+                    reason_codes=(
+                        "insufficient_evidence",
+                        f"support_{len(self._support_sequences)}"
+                        f"_of_{self.profile.required_support}",
+                        f"best_baseline_{baseline_status.value}",
+                    ),
+                    now_ns=now_ns,
+                )
 
         # Baseline best-frame evaluation
         best_obs, baseline_status, _ = compute_baseline_best_quality(
@@ -550,6 +693,14 @@ class SessionEngine:
         )
         matched_ident = identity if status == SessionStatus.matched else None
 
+        # D1: seal the terminal timestamp onto the segmented marks so the
+        # record shows where the round's wall clock actually went.
+        marks = self._timing_marks
+        if marks is not None:
+            marks = replace(
+                marks, terminal_ns=now_ns
+            )
+
         result = SessionResult(
             session_id=self._session_id,
             schema_version="v1",
@@ -565,6 +716,7 @@ class SessionEngine:
             profile_digest=self.profile.profile_digest(),
             model_generation=self.model_generation,
             gallery_digest=self.gallery_digest,
+            timing_marks=marks,
         )
         self._terminal_result = result
         return result
