@@ -463,9 +463,11 @@ class TestResultVerificationPanel:
         window.close()
 
     def test_thumbnail_zero_copy_verification(
-        self, qt_app: Any, tmp_path: Path
+        self, qt_app: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """D3 Stop condition check: thumbnail direct read must NOT copy photos."""
+        import shutil
+
         from PySide6.QtCore import Qt
         from PySide6.QtTest import QTest
         from facecore.live.qt_window import QtResearchWindow
@@ -475,8 +477,15 @@ class TestResultVerificationPanel:
         photo_path = enr_dir / "enroll-99.png"
         _write_test_photo(photo_path, shade=180)
 
-        store_dir = tmp_path / "fake_store"
-        store_dir.mkdir()
+        class ZeroCopyViolationError(BaseException):
+            pass
+
+        def _forbidden_copy(*args: Any, **kwargs: Any) -> Any:
+            raise ZeroCopyViolationError("Zero-copy violation: shutil copy was called")
+
+        monkeypatch.setattr(shutil, "copy2", _forbidden_copy)
+        monkeypatch.setattr(shutil, "copy", _forbidden_copy)
+        monkeypatch.setattr(shutil, "copyfile", _forbidden_copy)
 
         def _single_scorer(packet: FramePacket) -> FrameObservation:
             return FrameObservation(
@@ -511,16 +520,25 @@ class TestResultVerificationPanel:
             clock_ns=lambda: 0,
         )
         window.show()
+
+        files_before = set(tmp_path.rglob("*"))
         QTest.mouseClick(window.start_button, Qt.MouseButton.LeftButton)
         window.process_until_terminal()
+        files_after = set(tmp_path.rglob("*"))
 
-        # Verification: store_dir must contain NO copies of enrollment photos
-        store_files = list(store_dir.rglob("*.png")) + list(
-            store_dir.rglob("*.jpg")
+        # Zero-copy verification: no files created or copied during display
+        new_files = files_after - files_before
+        assert len(new_files) == 0, f"Photos copied in tmp_path: {new_files}"
+
+        # Thumbnail successfully loaded from original photo without copy
+        pixmap = window.candidate_thumbnail_label.pixmap()
+        assert pixmap is not None
+        assert not pixmap.isNull()
+
+        # Tooltip points to original source photo
+        assert window.candidate_thumbnail_label.toolTip() == (
+            f"註冊照片：{photo_path.name}"
         )
-        assert len(store_files) == 0, f"Photos were copied to store: {store_files}"
-
-        # Original photo remains intact at source path
         assert photo_path.is_file()
         window.close()
 
