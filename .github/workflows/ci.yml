@@ -81,6 +81,8 @@ jobs:
           # only exist where pyside6 does, for the same reason as above —
           # without this the inference worker would ship unguarded.
           python -m pytest tests/live/test_d2_inference_worker.py -q
+          # D3: result verifiability panel and failure reason visibility
+          python -m pytest tests/live/test_d3_result_verifiability.py -q
       - name: Run G3 Start-gated integration (R1 §2/§5, PR-B)
         run: >-
           python -m pytest

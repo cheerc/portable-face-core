@@ -34,6 +34,7 @@ from facecore.live.contracts import (
     FrameDiagnostics,
     FrameObservation,
     FramePacket,
+    ResearchProfile,
     SessionResult,
     SessionStatus,
 )
@@ -467,6 +468,11 @@ class DesktopSession:
     def has_label_persistence(self) -> bool:
         """True when a verdict key press can persist (G3 W3 fail-closed)."""
         return self._label_recorder is not None and self._label_attempt_id is not None
+
+    @property
+    def profile(self) -> ResearchProfile:
+        """Research profile of this round (read-only)."""
+        return self._engine.profile
 
     @property
     def profile_version(self) -> str:
