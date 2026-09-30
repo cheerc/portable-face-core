@@ -36,7 +36,7 @@
 5. **onnxruntime mobile-usability checker output** — `VERIFIED` (2026-09-30, D6 M)
    - Run against `face_detection_yunet_2023mar.onnx`, sha256 `8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4` (onnxruntime 1.30.0). Verbatim output: [`2026-09-30-d6-m-onnx-mobile-usability.md`](2026-09-30-d6-m-onnx-mobile-usability.md).
    - NNAPI **YES** (1 partition, 106/106 nodes), CoreML NeuralNetwork **YES** (1 partition, 106/106), CoreML MLProgram **YES** (1 partition, 106/106). Unsupported ops: **none** (all three EPs). Fixed input shape `1×3×640×640`, no symbolic axes. 0 of 112 initializers appear in `graph.input`.
-   - Caveats the tool prints as unchecked are `Conv`/`MaxPool`/`Resize` attribute constraints; none is an unsupported op here.
+   - Caveats the tool prints as unchecked are `Conv`/`MaxPool`/`Resize` attribute constraints; none is an unsupported op here. Note the `Resize` caveat (`scales` or `sizes` must be constant) is the *same class* of unchecked-constant property the SFace initializer finding is about; YuNet's measurement (0 of 112 initializers in `graph.input`) is consistent with it not biting here, but this is an inference from the initializer count, not a separate check of the `Resize` attributes.
    - This is a **static** check. It does not establish runtime performance on a device.
 6. **Embedding dims / IO contract** (detector output contract)
    - Output: `N × 15` `CV_32F` rows of `[x, y, w, h, re_x, re_y, le_x, le_y, nose_x, nose_y, rcm_x, rcm_y, lcm_x, lcm_y, score]` — box + 5 landmarks (right eye, left eye, nose tip, right/left mouth corner) + confidence (corroborated by the upstream `demo.py` visualizer parsing `det[0:4]`, `det[4:14]`, `det[-1]`, fetched 2026-09-11).
@@ -80,8 +80,8 @@
 | Licenses allow commercial use + redistribution (text-explicit, locators on file) | CLEAR |
 | Source / version / URL / retrieval date recorded | CLEAR (weight SHA-256 excepted) |
 | Training-data provenance recorded | PROVENANCE_UNRESOLVED (SFace #313 open; YuNet corpus composition unaudited) |
-| Inference under ORT on macOS | UNVERIFIED (no download, no run) |
-| ORT-Mobile checker findings | UNVERIFIED (command staged for pre-Task-6) |
+| Inference under ORT on macOS | CLEAR (D5, 2026-09-30: SFace and YuNet both ran under ORT 1.30.0 on CPU EP; see `2026-09-30-d5-static-baseline.md`) |
+| ORT-Mobile checker findings | PARTIAL — Pair 1 `VERIFIED` 2026-09-30 ([D6 M](2026-09-30-d6-m-onnx-mobile-usability.md)): NNAPI `YES` 87/87, CoreML NeuralNetwork `YES` 87/87, CoreML MLProgram **`NO`** 57/87 = 65.5%; all 174 initializers land in `graph.input`. **Static dispatch only — device performance unverified.** |
 | Preprocessing / output contracts reproducible + versioned | PARTIAL (shapes, dims, thresholds on file; pixel normalization UNVERIFIED) |
 
 Pair 1 **stays in the bake-off** with flags. No gate was weakened to keep it.

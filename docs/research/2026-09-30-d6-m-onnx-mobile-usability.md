@@ -12,14 +12,19 @@ output verbatim; this file is that output, unmodified.
 ## How to reproduce
 
 ```
-cd <repo>            # a checkout whose uv env has onnx + onnxruntime
-uv run --no-sync python -m onnxruntime.tools.check_onnx_model_mobile_usability \
+# `onnx` is NOT a product dependency. Without it the command below fails
+# with `ModuleNotFoundError: No module named 'onnx'`. Install it into a
+# scratch env rather than adding it to pyproject.toml / uv.lock:
+uv venv /tmp/mobile-usability && uv pip install --python /tmp/mobile-usability/bin/python \
+    onnx==1.23.1 onnxruntime==1.30.0
+
+/tmp/mobile-usability/bin/python -m onnxruntime.tools.check_onnx_model_mobile_usability \
     ~/facecore-models/face_recognition_sface_2021dec.onnx
 ```
 
-`onnxruntime` 1.30.0 is the product's pinned version. `onnx` is **not** a
-root dependency, so it was installed into a scratch env rather than added
-to `pyproject.toml` / `uv.lock` (both are on the D6 no-touch list).
+`onnxruntime` 1.30.0 is the product's pinned version. `onnx` 1.23.1 is
+**not** a root dependency — `pyproject.toml` and `uv.lock` are both on the
+D6 no-touch list, so it went into a scratch env and stayed there.
 
 ## Artifacts checked
 
@@ -177,9 +182,11 @@ document does not claim otherwise.
 
 ## What this does and does not settle
 
-Settles: pre-Task-6 item 2 for both shipped artifacts. Both are structurally
-mobile-ready on all three EPs, with SFace degraded on CoreML MLProgram
-(65.5% coverage, `BatchNormalization` + `Flatten` unsupported).
+Settles: pre-Task-6 item 2 for both shipped artifacts. **YuNet is `YES` on
+all three EPs. SFace is `YES` on NNAPI and CoreML NeuralNetwork and `NO` on
+CoreML MLProgram** — not "degraded": the tool's own recommendation there is
+to use the CPU EP instead, because CoreML MLProgram covers only 65.5% of
+the nodes (`BatchNormalization` + `Flatten` unsupported).
 
 Does **not** settle:
 
