@@ -94,11 +94,15 @@ uv run --extra research-ui python -m facecore.research.cli live \
 最簡單的算法（試算表即可）：
 
 ```
-已執行輪次 = COUNTIF(A:A, "demo")        ← 每一列的 mode 都是 demo
-已標註輪次 = COUNTIFS(A:A,"demo", R:R, "<>unlabeled")   ← R 欄是 label_kind
+已執行輪次 = COUNTIF(A:A, "demo")            ← A 欄是 mode，每一列都是 demo
+已標註輪次 = COUNTIFS(A:A,"demo", V:V, "<>unlabeled")   ← V 欄是 label_kind
 ```
 
-（欄位字母依你實際開啟的 CSV 而定；`label_kind` 是第 20 欄。）
+⚠️ **欄位一定要先確認，不要照抄字母。** `label_kind` 是**第 22 欄**（試算表的 **V** 欄），共 23 欄。第 18 欄（**R**）是 `margin` —— 一個浮點數。若公式誤打在 `R:R` 上，條件會恆為真，**「已標註輪次」會等於「已執行輪次」**，兩個數看起來一樣、卻是錯的，而且不會跳任何錯誤。
+
+**填之前請先看標題列**：`label_kind` 這個名稱所在的欄，才是 `V` 欄。若你的試算表因為匯入方式讓它跑到別的欄位，就用該欄自己的字母。
+
+（欄位字母依你實際開啟的 CSV 而定；以標題列的 `label_kind` 為準。）
 
 **回報時請兩個數都寫。** 只報「已標註」會低估你實際做了多少；只報「已執行」會把沒答案的輪次算成有答案。差額就是 `unlabeled` 的列數。
 
