@@ -11,10 +11,16 @@ already gone wrong somewhere in this project's history:
 
 1. **The adapter flips nothing.** The product's crop is RGB
    (`align.py:98` `Image.frombytes("RGB", ...)` -> `:134` `tobytes()`),
-   and DeepFace's `represent()` is channel-*neutral*: `:118` reverses
-   the channels and `cv2.FaceRecognizerSF.feature` reverses them back
-   (`SFace.py:48`), so the array the caller passes is the array the
-   graph sees. Measured, not assumed — the cross-check is
+   and DeepFace's `represent()` is channel-*neutral*: in DeepFace
+   0.0.93 `representation.py:118` reverses the channels and
+   `cv2.FaceRecognizerSF.feature` reverses them back before the graph
+   runs, so the array the caller passes is the array the graph sees.
+   Neither half is cited to a line number, because neither can be:
+   the Python half (`SFace.py`, DeepFace 0.0.93 — 84 lines, the
+   `feature` call on 46) moves with the release, and the C++ half is
+   not in the wheel at all, since `FaceRecognizerSF` ships compiled in
+   `cv2.abi3.so` and the only file in the environment mentioning that
+   name is `SFace.py`. Measured, not assumed — the cross-check is
    `test_the_public_entry_point_is_channel_neutral`, which would fail
    if anyone "fixed" the adapter to flip. Note that
    `image_utils.py:69`'s docstring *declares* the ndarray contract to be
@@ -481,12 +487,8 @@ class TestCrossRuntimeComparison:
         with pytest.raises(AdapterError, match="signal"):
             compare_embeddings(v, v, signal_cosine=0.0)
 
-    @pytest.mark.parametrize(
-        "signal", [1.5, -0.1, float("nan"), float("inf")]
-    )
-    def test_a_signal_that_is_not_a_cosine_is_refused(
-        self, signal: float
-    ) -> None:
+    @pytest.mark.parametrize("signal", [1.5, -0.1, float("nan"), float("inf")])
+    def test_a_signal_that_is_not_a_cosine_is_refused(self, signal: float) -> None:
         v = np.asarray([1.0, 0.0], dtype=np.float64)
         with pytest.raises(AdapterError, match="signal"):
             compare_embeddings(v, v, signal_cosine=signal)
@@ -581,6 +583,243 @@ class TestWorkerProcessIsolatesFailures:
         payload = run_worker(script_path_text(script), timeout_secs=30)
         assert payload == {}
 
+    def test_a_worker_that_prints_a_payload_and_then_crashes_is_still_a_crash(
+        self,
+    ) -> None:
+        """A valid payload on stdout does not buy a crashed worker a pass.
+
+        The failure this guards is the one a real worker actually
+        produces: it embeds the crop, prints a well-formed reply, and
+        *then* dies — in a `finally`, a segfault in the exit path, or an
+        atexit handler that raises. The payload is already in the pipe
+        by then.
+
+        Taking the exit status from the payload instead of from
+        ``returncode`` would hand the caller a half-finished run as a
+        success: every number in it was computed before whatever failed,
+        and nothing in the reply says which part.
+
+        The fixture prints a payload *first* on purpose. The pre-existing
+        crash fixture (``raise SystemExit(3)``) prints nothing, so it can
+        tell you the child died but not that a dying child's output is
+        discarded — which is why this guard survived mutation for as
+        long as it did.
+        """
+        script = 'import sys; print(\'{"embedding": [0.1], "dim": 1}\');sys.exit(3)'
+        with pytest.raises(WorkerCrashed, match="exited 3"):
+            run_worker(script_path_text(script), timeout_secs=30)
+
+    def test_a_worker_that_prints_a_payload_and_dies_on_a_signal_is_still_a_crash(
+        self,
+    ) -> None:
+        """The same refusal when the child is killed rather than exiting.
+
+        ``returncode`` is negative for a signal death. A crash handler
+        that only tested ``> 0`` would let a segfault through with a
+        perfectly good-looking payload on stdout, so the refusal is on
+        "not zero" rather than "positive".
+        """
+        script = (
+            "import os, signal, sys;"
+            'print(\'{"embedding": [0.1], "dim": 1}\');'
+            "os.kill(os.getpid(), signal.SIGKILL)"
+        )
+        with pytest.raises(WorkerCrashed, match="exited"):
+            run_worker(script_path_text(script), timeout_secs=30)
+
+    @pytest.mark.parametrize(
+        "printed",
+        [
+            "[0.1, 0.2]",
+            '"a string is not a payload"',
+            "42",
+            "null",
+        ],
+    )
+    def test_a_worker_that_prints_valid_json_of_the_wrong_type_is_refused(
+        self, printed: str
+    ) -> None:
+        """JSON parses; a payload that is not an object is still a refusal.
+
+        The protocol's reply is an object, so anything else is a worker
+        that answered a different question. Returning the bare list
+        would let a caller do ``payload["embedding"]`` on a list and get
+        a ``TypeError`` far from the subprocess that caused it, or —
+        worse — read ``payload[0]`` and believe it got an embedding.
+
+        ``null`` is the case that proves the check is on the type: it
+        parses without raising, and ``isinstance(None, dict)`` is the
+        only thing between it and a silent return.
+        """
+        script = f"print({printed!r})"
+        with pytest.raises(WorkerCrashed, match="no JSON payload"):
+            run_worker(script_path_text(script), timeout_secs=30)
+
+    def test_a_worker_that_prints_only_an_object_of_the_wrong_shape_still_returns(
+        self,
+    ) -> None:
+        """The dict check is a type check, not a schema check.
+
+        ``{}`` is a well-formed object and the protocol lets the worker
+        answer an error with one, so returning it is correct. This is
+        the counterpart to the test above: the guard must not widen into
+        "reject anything I do not recognise", or a worker that reports
+        a failure in-band could no longer say so.
+        """
+        script = "print('{}')"
+        assert run_worker(script_path_text(script), timeout_secs=30) == {}
+
+
+class TestEmbeddingContractGuardsAreReachableFromAWorkerPayload:
+    """The contract guards, reached the way a caller would reach them.
+
+    These are the checks that turn a bad reply into a refusal instead
+    of a wrong number. Each one existed before it had a test named for
+    it, and each one survived mutation for the same reason: the
+    surviving fixture could not produce the state the guard rejects.
+
+    The shape of the fixture is the point. Every test here builds the
+    array the way a worker reply would hand it over — parsed from JSON,
+    inside a real subprocess, through ``run_worker`` — rather than
+    calling the guard with a literal. A direct call proves the guard
+    works; this proves the guard is still wired into the path a caller
+    actually takes.
+    """
+
+    #: A 1-D unit vector is the only shape every other test varies, so
+    #: the difference between a green and a red run is the one
+    #: property under test and nothing else.
+    GOOD = [0.6, 0.8]
+
+    def _reply(self, embedding: object) -> dict:
+        return {"embedding": embedding, "dim": len(embedding), "model": "SFace"}
+
+    def _run_worker_reply(self, payload: dict) -> object:
+        """Return the reply's embedding exactly as a caller would get it.
+
+        The value is parsed, not constructed: ``run_worker`` returns
+        JSON, so a nested or reshaped array is what the caller sees, and
+        a fixture that pre-builds the numpy array would skip the one
+        step that can change its shape.
+
+        The JSON is serialised *here* and printed as a literal by the
+        child, rather than handing the child a repr of the Python
+        object. The difference is not cosmetic: ``repr(nan)`` is the
+        bare token ``nan``, which is a ``NameError`` in the child, so a
+        repr-based fixture cannot express a non-finite value at all. A
+        real worker uses ``json.dumps``, which emits the ``NaN`` token,
+        and that token is precisely how a non-finite component reaches
+        a caller in production — the round trip this method reproduces
+        is the one the guard exists for.
+        """
+        reply = run_worker(
+            script_path_text(f"print({json.dumps(payload)!r})"),
+            timeout_secs=30,
+        )
+        return np.asarray(reply["embedding"], dtype=np.float64)
+
+    def test_a_1d_unit_vector_passes(self) -> None:
+        arr = self._run_worker_reply(self._reply(self.GOOD))
+        assert_embedding_contract(arr, 2, "SFace")
+
+    def test_a_nested_embedding_from_a_worker_is_refused(self) -> None:
+        """A batch-shaped reply is a different contract, not a bigger one.
+
+        A worker that answers with ``[[0.6, 0.8]]`` has returned one
+        embedding wrapped in a batch axis. Indexing it as a vector
+        would silently produce a length-1 array holding a length-2
+        array, and every downstream cosine would then be computed over
+        object dtype or fail much later.
+        """
+        arr = self._run_worker_reply(self._reply([self.GOOD]))
+        with pytest.raises(EmbedContractError, match="1-D"):
+            assert_embedding_contract(arr, 2, "SFace")
+
+    def test_a_column_vector_from_a_worker_is_refused(self) -> None:
+        """Same defect, other orientation — so the guard cannot be axis-specific."""
+        arr = self._run_worker_reply(self._reply([[0.6], [0.8]]))
+        with pytest.raises(EmbedContractError, match="1-D"):
+            assert_embedding_contract(arr, 2, "SFace")
+
+    def test_a_flattened_reply_is_not_silently_rescued(self) -> None:
+        """`ravel` would fix both nesting cases and hide a real disagreement.
+
+        The tempting repair for the two tests above is to flatten
+        whatever arrives. That is exactly wrong: a 2-D reply means the
+        worker and the caller disagree about what shape a vector is,
+        and flattening converts a loud disagreement into a quiet
+        one that happens to work. This pins the refusal.
+        """
+        arr = self._run_worker_reply(self._reply([self.GOOD]))
+        assert arr.ndim == 2
+        with pytest.raises(EmbedContractError, match="1-D"):
+            assert_embedding_contract(arr, 2, "SFace")
+
+    def test_a_truncated_vector_is_refused_before_the_norm_is_even_read(self) -> None:
+        """Dimension is checked before length, so a short reply names the mismatch.
+
+        A worker that returns 1 of 2 dimensions is not a unit vector
+        that happens to be small — it is the wrong model, and the
+        message has to say so rather than failing on the norm.
+        """
+        arr = self._run_worker_reply(self._reply([1.0]))
+        with pytest.raises(EmbedContractError, match="dimension"):
+            assert_embedding_contract(arr, 2, "SFace")
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_a_non_finite_component_is_refused(self, bad: float) -> None:
+        """A NaN cosine is a comparison that silently returns False.
+
+        Without this check, a NaN reaches ``cosine_score`` and every
+        ``>=`` against it is False, so the photo lands in `unknown`
+        with no explanation — indistinguishable from a genuine
+        non-match. The refusal has to happen while the name of the model
+        is still in scope.
+        """
+        arr = self._run_worker_reply(self._reply([bad, 1.0]))
+        with pytest.raises(EmbedContractError, match="non-finite"):
+            assert_embedding_contract(arr, 2, "SFace")
+
+    def test_a_zero_vector_is_refused(self) -> None:
+        """A zero norm is a dead model, not a maximally distant face.
+
+        ``0 / 0`` in the normalization is where this starts, but a
+        caller that divides without checking gets NaNs and the same
+        silent `unknown` as above.
+        """
+        arr = self._run_worker_reply(self._reply([0.0, 0.0]))
+        with pytest.raises(EmbedContractError, match="nonzero"):
+            assert_embedding_contract(arr, 2, "SFace")
+
+    def test_an_unnormalized_vector_is_refused(self) -> None:
+        """DeepFace's SFace path returns the raw graph output.
+
+        The product divides by the norm (``embed.py:60``); a reply
+        that arrives unnormalized would otherwise be compared as if it
+        were a direction, making magnitudes look like similarity.
+
+        The vector is ``[0.6, 0.8, 0.0]`` scaled to 3 — deliberately
+        *not* ``[0.6, 0.8, 0.0]`` itself, which has norm 1.0 and would
+        sail through this check. A guard test whose fixture happens to
+        satisfy the property it claims to violate is a test that
+        passes for the wrong reason, and this was one of the four RED
+        results in this file's first run.
+        """
+        arr = self._run_worker_reply(self._reply([0.3, 0.4, 0.0]))
+        with pytest.raises(EmbedContractError, match="L2-normalized"):
+            assert_embedding_contract(arr, 3, "SFace")
+
+    def test_the_contract_error_names_the_model(self) -> None:
+        """The message is the only place the offending model is recorded.
+
+        Four candidates run in one comparison; "embedding is not
+        L2-normalized" without a name cannot be attributed to one of
+        them after the fact.
+        """
+        arr = self._run_worker_reply(self._reply([0.0, 0.0]))
+        with pytest.raises(EmbedContractError, match="Facenet512"):
+            assert_embedding_contract(arr, 2, "Facenet512")
+
 
 def script_path_text(body: str) -> str:
     """Write a throwaway script and return its path, for the real subprocess."""
@@ -631,9 +870,7 @@ class TestNoHeavyFrameworkOnCoreImport:
             for ln in src.splitlines()
             if ln.startswith(("import ", "from ")) and "deepface" in ln
         ]
-        assert not module_level, (
-            f"deepface imported at module scope: {module_level}"
-        )
+        assert not module_level, f"deepface imported at module scope: {module_level}"
 
 
 class TestRedactionHoldsForAdapterOutput:

@@ -17,13 +17,43 @@ rather than rounded away.
 **The adapter flips nothing, and that is the measured contract.**
 The product's crop is RGB (`align.py:98` `Image.frombytes("RGB", ...)`
 -> `:134` `tobytes()`) and `embed.py:50-52` transposes without
-reversing. DeepFace's public entry point is channel-neutral:
-`representation.py:118` reverses the channels and
-`cv2.FaceRecognizerSF.feature` (`SFace.py:48`) reverses them back, so
-the array handed to `represent()` is the array the graph sees. Note
-that `image_utils.py:69`'s docstring *declares* the ndarray contract to
-be BGR, which contradicts the measured behaviour of the public entry
-point; the docstring is not the contract, the measurement is.
+reversing. DeepFace's public entry point is channel-neutral: in
+DeepFace 0.0.93, `representation.py:118` reverses the channels of
+whatever array the caller passes, and the reversal is undone inside
+`cv2.FaceRecognizerSF.feature` before the graph runs. Both halves of
+that sentence are deliberately **not** cited to line numbers:
+
+- the Python half is `deepface/models/facial_recognition/SFace.py`
+  (DeepFace 0.0.93), whose `SFaceClient.forward` hands `(img[0] * 255)`
+  to `self.model.model.feature(...)`. That file ships in the wheel and
+  is readable — it is 84 lines in 0.0.93 and the call is on 46 — but
+  the number is a property of the release, not of the fact, so a bare
+  ``SFace.py:48``-style citation rots the moment the pin moves;
+- the C++ half is not in the wheel at all. `FaceRecognizerSF` ships as
+  a compiled class in `cv2.abi3.so`, so **no Python file:line can
+  establish what `feature` does to the channel order.**
+
+To reproduce the second point on a DeepFace environment:
+
+    grep -rl FaceRecognizerSF "$(python -c 'import deepface, os;
+    print(os.path.dirname(os.path.dirname(deepface.__file__)))')" --include='*.py'
+
+which returns `SFace.py` and nothing else. (An earlier note in this
+file claimed the wheel shipped no Python source at all, and attributed
+`SFace.py` to opencv. Both were wrong: the file is deepface's, and the
+wheel does carry it. The error survived several rounds because the
+three parties who checked it grepped **opencv**'s RECORD, where the
+file has never been.)
+
+So this module does not cite one. The neutrality claim rests on a
+measurement instead — `represent()` fed with the product's own bytes
+returns the same vector the product's `Embedder` returns from the
+graph, which is only possible if the two reversals cancel — and the
+test named `test_the_public_entry_point_is_channel_neutral` fails if
+anyone "fixes" the adapter to flip. Note that `image_utils.py:69`'s
+docstring *declares* the ndarray contract to be BGR, which
+contradicts the measured behaviour of the public entry point; the
+docstring is not the contract, the measurement is.
 
 **"Refuses to download" is this module's property, not DeepFace's.**
 `weight_utils.download_weights_if_necessary` tests only

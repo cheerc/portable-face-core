@@ -101,6 +101,7 @@ src/
     │   ├── corpus.py
     │   ├── deepface_adapter.py
     │   ├── fa_matrix.py
+    │   ├── model_comparison.py
     │   ├── nontarget_fa.py
     │   ├── quality_audit.py
     │   ├── real_replay.py
@@ -215,6 +216,7 @@ tests/
 │   ├── test_guard_expected_identity.py
 │   ├── test_mac_live_capture_probe.py
 │   ├── test_mac_live_recorder_probe.py
+│   ├── test_model_comparison.py
 │   ├── test_per_probe_detail.py
 │   ├── test_quality_audit.py
 │   ├── test_real_replay.py
