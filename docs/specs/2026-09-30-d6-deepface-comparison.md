@@ -6,7 +6,11 @@
 - 修訂基準：main `592493968eb5f47bbd37b57d4e1f275330e7a56c`（D5 PR #127）。
 - 內容來源：[D6 計畫](../plans/2026-09-30-d6-deepface-comparison-plan.md) §§1–6。本檔不複述 plan 的
   授權邊界與 stop conditions，兩者關係見 §7。
-- 範圍裁決：`d-20260930132146694094-31`（D6 parent `t-20260930131754483952-84237-116`）。
+- 範圍裁決：`d-20260930132146694094-31`（D6 parent `t-20260930131754483952-84237-116`）；
+  **權重裁決由 `d-20260930132705762549-32`（operator 裁決 B）supersede 第 2 點** —— Facenet512／ArcFace
+  已核准**限本機研究比較**下載與使用（不進 Git、不散布、不商用、不進產品 runtime）。
+- 狀態修訂（2026-09-30，d-32 落地）：本檔首版落地時 d-32 尚未存在，當時記錄的「Facenet512／ArcFace
+  不可用」是當時有效但已被 supersede 的邊界。**本檔描述的是設計與授權現況，不是執行進度**。
 
 ## 1. 目標
 
@@ -155,19 +159,35 @@ request；每 request 30 秒 timeout、init 120 秒 timeout，失敗終止 reap�
 run metadata、逐張 CSV、quality／timing CSV；**同目錄已存在則 fail-clear 不覆寫**。預設不存 crop／embedding。
 migration／auth＝none；rollback＝停 child／停研究入口，App 維持 SFace。
 
-## 6. 候選資格（`d-20260930132146694094-31`）
+## 6. 候選資格
 
-本輪可用候選只有兩個，**兩者都不引入新權重**：
+依 operator 權重裁決 `d-20260930132705762549-32`（裁決 B，supersede `d-20260930132146694094-31` 第 2 點）：
 
 | Candidate | 狀態 |
 |---|---|
 | `ort-sface-control` | 可用 —— 既有凍結 artifact |
 | `deepface-sface-bridge` | 可用 —— 同一份已核 SFace weight bytes；價值在抓色彩／尺度／前處理接錯 |
-| `deepface-facenet512` | **不可用** —— operator 逐一核准 exact weight 的 code license／weight license／provenance 前，不得下載、載入、執行 |
-| `deepface-arcface` | **不可用** —— 同上 |
+| `deepface-facenet512` | **已核准（限本機研究比較）** —— 可下載與使用，授權範圍：不進 Git、不散布、不商用、不進產品 runtime |
+| `deepface-arcface` | **已核准（限本機研究比較）** —— 同上 |
 
-A1／A2／A3／R 全部停在 PR-C 與 E 之後，等 operator 裁決。候選細節（locator、SHA 來源、license、provenance
-狀態）見 [D6 候選 gate](../research/2026-09-30-deepface-candidate-gate.md)。
+**授權邊界（d-32 第 1、2 點）：**
+
+- 兩個 H5 的 **exact license／provenance 仍未證實**。operator 接受此風險並核准使用，**這不是把未解變成已解**；
+  D6 報告必須明確記錄此項仍未證實。
+- repo 為 public，但**只 commit 授權審查文件**（code license、weight license、provenance 記錄、下載 URL、
+  checksum 策略），**不 commit 權重檔本身**，不寫入 license 或來源不明的第三方檔案。
+- **下載前審查（d-32 第 3 點）：downloaded-to-cache-then-hash、no-network-at-inference。** 取得 artifact
+  後才核 actual SHA；推論時不得 auto-download。
+
+時程（d-32 第 3 點）：**lead 可立即推進 A1／A2／A3，不需再等 PR-D／C／E 完成。** 若某候選在 90 分鐘 E
+spike 內無法取得可用 artifact，該候選標 UNVERIFIED 收尾，**不擴時限、不自動換第三個模型**。
+
+另有一項並行工作（d-32 第 4 點）：**找 ONNX 授權明確、無 TensorFlow 依賴的替代模型候選**（例如
+MobileFaceNet ONNX、facenet-torch ONNX 匯出），列入下一輪候選 gate。**該項不阻塞 A 系列**，結果隨 A3
+報告或獨立 PR 提出。
+
+候選細節（locator、SHA 來源、license、provenance 狀態）見
+[D6 候選 gate](../research/2026-09-30-deepface-candidate-gate.md)。
 
 若 bridge 顯示同權重下差異，**先查前處理接線**（BGR、resize 尺度、normalization、float→uint8），不得直接
 歸因模型或 wrapper。
@@ -178,5 +198,7 @@ A1／A2／A3／R 全部停在 PR-C 與 E 之後，等 operator 裁決。候選�
   mutation、stop conditions、完成定義）。衝突時以 plan 為準。
 - plan §11「候選不足交付 shortage」是**最終**完成定義，不是本輪結論。當前的 PR-D／C／E 是 plan §9 設計的
   prep，不是 shortfall 結案。
-- 本檔描述**目前設計狀態**；實作進度看 `docs/PROJECT-STATE.md` 的 pointer，授權與未解事項看
+- 本檔描述**目前設計與授權狀態**；實作進度看 `docs/PROJECT-STATE.md` 的 pointer，授權與未解事項看
   candidate gate，兩者不重複。
+- 授權邊界以 **operator decision 為準，不以本檔為準**。若本檔與較新的 decision 衝突，以 decision 為準並
+  修正本檔 —— **不得以本檔的較舊文字為由拒絕較新的 operator 裁決。**

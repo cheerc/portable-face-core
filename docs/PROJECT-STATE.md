@@ -165,10 +165,14 @@ D6 是「用相同 23／13／30 照片集合、固定 detector 與 alignment，�
 - 協議與計畫：[D6 功能協議](specs/2026-09-30-d6-deepface-comparison.md)、
   [D6 計畫](plans/2026-09-30-d6-deepface-comparison-plan.md)。
 - 候選資格與未解事項：[D6 候選 gate](research/2026-09-30-deepface-candidate-gate.md)。
-- **本輪可用候選只有兩個，兩者都不引入新權重**：`ort-sface-control`（既有凍結 artifact）與
-  `deepface-sface-bridge`（同一份已核 SFace weight bytes，價值在抓色彩／尺度／前處理接錯）。
-- **Facenet512／ArcFace 在 operator 逐一核准 exact weight 的 code license／weight license／provenance
-  前，不得下載、不得載入、不得執行。** 比較 runner（A1／A2）與報告（R）全部停在這之後。
+- **可用候選四個**：`ort-sface-control`（既有凍結 artifact）、`deepface-sface-bridge`（同一份已核 SFace
+  weight bytes，價值在抓色彩／尺度／前處理接錯），以及 **`deepface-facenet512`／`deepface-arcface`** ——
+  operator 於 `d-20260930132705762549-32`（裁決 B）**核准限本機研究比較**下載與使用。
+- **核准的邊界**：限本機研究比較 —— 不進 Git、不散布、不商用、不進產品 runtime；repo 為 public，只
+  commit 授權審查文件，**不 commit 權重檔本身**。**核准使用不等於 license 已證實**：兩個 H5 的 exact
+  license／provenance **仍未證實**，operator 接受此風險，D6 報告必須明確記錄。
+- **下載前審查**：downloaded-to-cache-then-hash、no-network-at-inference；actual SHA 不符 registry 立即
+  fail，不得改 expected 值湊數。
 - 兩份候選 gate（2026-09-10 的產品 bake-off 與本輪的 D6 候選）**並列不合併**；D6 的新 gate 不回頭
   改寫舊檔，理由記在該檔開頭。
 - 目前階段是 plan §9 設計的 prep（文件／品質量測／環境 spike），**不是比較完成**，也還不是
@@ -178,9 +182,10 @@ D6 是「用相同 23／13／30 照片集合、固定 detector 與 alignment，�
 ## Next Session
 
 1. 讀本檔、[D0 基準](mac-demo-baseline-d0.md)、母規格、ADR 0008／0009；查 git／task／inbox 活源。
-2. **現行主線是 Mac Demo 修復與驗收 D0–D4（已完成）＋ D5 靜態 baseline（已交付）＋ D6 prep（進行中）。**
-   D6 已建 board task 並派工（文件／品質量測／環境 spike）；**比較 runner 與報告仍卡在 operator 的
-   individual weight 核准**，不得從文件直接開工，也不得在核准前下載或載入 Facenet512／ArcFace。
+2. **現行主線是 Mac Demo 修復與驗收 D0–D4（已完成）＋ D5 靜態 baseline（已交付）＋ D6（進行中）。**
+   D6 已建 board task 並派工（文件／品質量測／環境 spike），**operator 已核准 Facenet512／ArcFace 限本機
+   研究比較使用**，A 系列（adapter／runner／本機 run）可推進。**授權邊界以 decision board 為準，不以本檔
+   為準** —— 本檔若與較新的 decision 衝突，以 decision 為準並修正本檔。
 3. D0–D5 不得偏離 D0 凍結基準（版本、profile g3-v1 門檻 0.363／0.10、gallery 23 張），不得為得到
    matched 而直接降門檻或移除三幀確認。**D5 未選定新門檻**——sweep 只作呈現。
 4. **不得把 D5 的靜態結果推論到動態**（三幀規則不適用於單張照片），也**不得把 M1／M5／v3 的歷史
