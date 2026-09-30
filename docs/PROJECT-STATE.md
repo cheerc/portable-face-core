@@ -46,7 +46,7 @@ daemon 工作快照。
 | Profile | `g3-v1`：match 0.363／margin 0.10／required_support 3／timeout 5000ms |
 | Gallery | 註冊組 23 張，digest `e3d77c4cfab5b141a8abaecdb908254d7558f747a97395acd138072ded72141f` |
 | 設定 | `~/Downloads/face_sample/_facecore/g3-local.json`（`_facecore` 在此，**不在 repo root**） |
-| 啟動 | `scripts/g3-local-test-app.command`（注意：launcher 啟動會 `git pull --ff-only`，影響 D4 可重現性） |
+| 啟動 | `scripts/g3-local-test-app.command`（**D4 前置 PR 後：launcher 只顯示 commit 與落後狀態，不再 `git pull`** —— 版本由 operator 決定，固定版本驗收因此可重現） |
 | 不開相機重現 | `python -m facecore.research.cli live --device fake --ui fake --store <tmp>/store --key-dir <tmp>/keys --record-consent --image-consent`（**四個旗標皆必填**，已實測 `matched`；完整可執行命令見 D0 §9） |
 
 Baseline 驗證：`pytest tests/ -q` → **867 passed, 8 skipped**（`b92a276`，offscreen）。
