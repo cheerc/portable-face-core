@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from pathlib import Path
 from string import ascii_uppercase
 
@@ -152,17 +153,59 @@ class TestSopFormula:
         )
 
 
-class TestFormulaActuallySeparatesTheTwoCounts:
-    def test_unlabeled_rounds_split_the_counts(self) -> None:
-        """Run the SOP's own arithmetic on a CSV containing unlabeled rows.
+class TestTheSopsOwnFormulaDoesTheWork:
+    """The behavioural guard, pointed at the deliverable.
 
-        This is the behavioural version of the two assertions above. The
-        document checks pin what it *says*; this pins what it *does* —
-        and a spreadsheet evaluating a wrong column would produce 5 = 5.
+    Round 2 review (S1 + N1): the previous version of this guard
+    recomputed the counts from `cols.index("label_kind")` with its own
+    `sum()`, so it tested *this file's* arithmetic rather than the
+    SOP's. Two consequences, both confirmed by the reviewer:
+
+    - It could not name S1's wrong column. All 22 non-`label_kind`
+      columns make `wrong == executed` true, so `assert wrong ==
+      executed` was a tautology: it proves "some column that is not
+      label_kind collapses the counts", not "R is the wrong one".
+    - Restoring the SOP's `R:R` left this guard green, because the
+      two were only ever linked by an assumption nobody checked.
+
+    So this version *parses the column letter out of the SOP's own
+    formula* and evaluates that. If the document points at a column
+    that never holds "unlabeled", the counts collapse here — the
+    failure lands on the artefact the operator will actually use, and
+    no frozen letter is involved on this path at all.
+    """
+
+    @staticmethod
+    def _formula_column() -> str:
+        """The column letter the SOP tells the operator to filter on."""
+        match = re.search(
+            r'COUNTIFS\([^)]*?,\s*([A-Z]{1,2}):\1,\s*"<>unlabeled"\)', _sop_text()
+        )
+        assert match, (
+            "the SOP's 已標註輪次 formula was not found in the expected "
+            "COUNTIFS(<mode column>, \"<label column>:<label column>\", "
+            "\"<>unlabeled\") shape"
+        )
+        return match.group(1)
+
+    def test_the_sops_own_column_separates_the_counts(self) -> None:
+        """Evaluate the SOP's formula against a CSV with unlabeled rows.
+
+        If the formula's column is wrong the two numbers merge, exactly
+        as they would in the operator's spreadsheet — and this fails
+        with the column name, not just a count.
         """
         cols = _columns()
-        label_idx = cols.index("label_kind")
-        executed = 5
+        letter = self._formula_column()
+        idx = ord(letter) - ord("A")
+
+        assert idx < len(cols), f"the SOP references column {letter}, beyond the CSV"
+        assert cols[idx] == "label_kind", (
+            f"the SOP filters on {letter}, which holds {cols[idx]!r} — that "
+            "column never contains 'unlabeled', so 已標註輪次 silently "
+            "equals 已執行輪次 (the S1 bug)"
+        )
+
         rows = _demo_csv(
             [
                 {"mode": "demo", "margin": "0.10", "label_kind": "enrolled"},
@@ -174,19 +217,33 @@ class TestFormulaActuallySeparatesTheTwoCounts:
         )
         body = rows[1:]
 
-        correct = sum(1 for r in body if r[0] == "demo" and r[label_idx] != "unlabeled")
-        wrong = sum(1 for r in body if r[0] == "demo" and r[17] != "unlabeled")
+        executed = len(body)
+        labeled = sum(1 for row in body if row[idx] != "unlabeled")
 
-        assert executed == len(body) == 5
-        assert correct == 3, (
-            f"2 unlabeled rounds must be excluded, got {correct}"
+        assert executed == 5
+        assert labeled == 3, (
+            f"the SOP's formula over column {letter} counted {labeled} of "
+            f"{executed} rounds as labeled; 2 unlabeled rounds must be excluded"
         )
-        assert wrong == executed, (
-            "precondition: filtering column R reproduces S1 — the two "
-            "counts collapse, which is the bug the SOP rewrite fixed"
+        assert labeled != executed, (
+            "the two numbers the decision asks to distinguish have merged"
         )
-        assert correct != executed, (
-            "if these are equal the formula is pointing at a column that "
-            "never contains the string 'unlabeled' — the two numbers the "
-            "decision asks to distinguish have merged"
+
+    def test_the_formula_also_matches_the_prose_column_number(self) -> None:
+        """The formula letter and the prose must name the same column.
+
+        Without this, a future edit could leave `V:V` in the formula
+        while the prose says "第 23 欄" — the document would contradict
+        itself and the operator would have no way to tell which to trust.
+        """
+        letter = self._formula_column()
+        text = _sop_text()
+        position = _columns().index("label_kind") + 1
+        assert f"第 {position} 欄" in text, (
+            f"the SOP prose must state label_kind is column {position} "
+            f"(letter {letter})"
+        )
+        assert _letter(position) == letter, (
+            f"the formula uses {letter} but label_kind is column {position} "
+            f"({_letter(position)}) — the document contradicts itself"
         )
