@@ -129,7 +129,7 @@ uv run --extra research-ui python -m facecore.research.cli live \
 
 **第 4b／4c 現場難以重現時，請填「待驗」並說明原因，不要用合成影格或猜測代替。**
 
-## D0 §11 待確認項目狀態（13 項）
+## D0 §11 待確認項目狀態（16 項）
 
 | # | 問題 | D4 處置 | 狀態 | operator 在 D4 怎麼觀察 |
 |---|---|---|---|---|
@@ -146,6 +146,10 @@ uv run --extra research-ui python -m facecore.research.cli live \
 | 11 | `test_derive_int8bq.py:63` 寫死真實路徑 | **不適用（另案）** | 不適用 | — |
 | 12 | launcher 行為變更影響可重現性 | **本 PR 已解** | **待驗** | 同第 5 項；並確認離線時 Terminal 說的是「無法連線確認」而非「一致」 |
 | 13 | D2b 雙重釋放在真機 `OpenCVCapture` 的冪等性 | 真機量測 | **待驗** | 按 Cancel 後再按 Start，確認相機可正常重開、不報錯 |
+
+| 14 | D4-F1 的 worker `except` 是防禦性 guard | **不適用（無已知實例）** | 不適用 | — |
+| 15 | 兩個 D4-F1 守護檔從未在 CI 執行過 | **本 PR 已解**（`qt-smoke`） | 已落地 | — |
+| 16 | `qt-smoke` 新增對外網路相依（opencv_zoo） | 已落地，待觀察 | **待驗** | 若某次 CI 的 `qt-smoke` 紅在「下載 detector artifact」，那是 opencv_zoo 暫時不可用，**與你的本機無關**，回報團隊即可 |
 
 ## 卡住時
 
