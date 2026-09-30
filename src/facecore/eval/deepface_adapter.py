@@ -170,8 +170,9 @@ def build_worker_request(
     if not normalization:
         raise AdapterError(
             "normalization must be named explicitly: DeepFace does not "
-            "infer it from model_name (preprocessing.py:33-35 returns early "
-            "for 'base', :62 raises for anything unimplemented)"
+            "infer it from model_name. In DeepFace 0.0.93 "
+            "(deepface/modules/preprocessing.py) :33-34 return early for "
+            "'base' and :72 raises for an unimplemented name."
         )
     if contract_version != ALIGN_CONTRACT_VERSION:
         raise CropMismatch(
@@ -355,7 +356,7 @@ def compare_embeddings(
         )
     )
     noise = 1.0 - cosine
-    signal = float(signal_cosine)
+    signal = require_signal(signal_cosine)
     ratio = noise / signal if signal > 0 else float("inf")
     passed = (
         maxabs <= MAX_RUNTIME_MAXABS
@@ -433,10 +434,22 @@ def run_worker(
 
 
 def require_signal(cosine: float) -> float:
-    """Validate a reported between-photo signal before dividing by it."""
-    if not 0.0 <= cosine < 1.0:
+    """Validate a reported between-photo signal before dividing by it.
+
+    A signal outside ``(0, 1]`` is not a cosine: ``0`` would divide by
+    zero (producing a meaningless ``inf`` ratio that a reader could
+    mistake for a measurement), and anything above 1 is not a cosine
+    at all. Both are refused here rather than downstream so the caller
+    learns which number was wrong.
+
+    ``1.0`` is accepted: a between-photo cosine of exactly 1 would mean
+    the two photos produced identical embeddings, which is a real
+    (if alarming) measurement rather than an invalid input.
+    """
+    if not 0.0 < cosine <= 1.0 or not np.isfinite(cosine):
         raise AdapterError(
-            f"between-photo signal cosine {cosine} must be in [0, 1)"
+            f"between-photo signal cosine {cosine} must be in (0, 1]; "
+            "a zero signal cannot produce a meaningful noise ratio"
         )
     return float(cosine)
 

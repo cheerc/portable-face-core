@@ -468,6 +468,36 @@ class TestCrossRuntimeComparison:
     def test_the_expected_ratio_is_the_one_the_ruling_fixed(self) -> None:
         assert EXPECTED_NOISE_SIGNAL_RATIO == MAX_NOISE_SIGNAL_RATIO
 
+    def test_a_zero_signal_is_refused_rather_than_divided_by(self) -> None:
+        """A zero signal must not become an `inf` ratio.
+
+        `1e-9 / 0` is not a measurement; it is a division that did not
+        happen. Reporting `inf` would look like a decisive failure when
+        the real problem is that the *input* was nonsense, and a caller
+        reading `passed=False` would draw the wrong conclusion about the
+        embeddings.
+        """
+        v = np.asarray([1.0, 0.0], dtype=np.float64)
+        with pytest.raises(AdapterError, match="signal"):
+            compare_embeddings(v, v, signal_cosine=0.0)
+
+    @pytest.mark.parametrize(
+        "signal", [1.5, -0.1, float("nan"), float("inf")]
+    )
+    def test_a_signal_that_is_not_a_cosine_is_refused(
+        self, signal: float
+    ) -> None:
+        v = np.asarray([1.0, 0.0], dtype=np.float64)
+        with pytest.raises(AdapterError, match="signal"):
+            compare_embeddings(v, v, signal_cosine=signal)
+
+    def test_a_unit_signal_is_accepted_as_a_real_measurement(self) -> None:
+        """1.0 means "these two photos are indistinguishable", not "invalid"."""
+        v = np.asarray([1.0, 0.0], dtype=np.float64)
+        r = compare_embeddings(v, v, signal_cosine=1.0)
+        assert r.signal == 1.0
+        assert r.passed
+
 
 class TestWorkerProcessIsolatesFailures:
     """The worker is a child process; these are the ways that goes wrong."""
