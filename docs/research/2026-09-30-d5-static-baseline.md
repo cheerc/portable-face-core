@@ -27,8 +27,11 @@
 ### 為什麼 ORT 版本是可查的事實，而不是 Unknown
 
 D5 產出時並未記錄當時的 ORT 版本，這是產出端的遺漏，不是當時無法得知。`onnxruntime==1.30.0`
-這個 pin 在 D5 產出 commit（`5924939`，D5 PR #127）的 `pyproject.toml:16` **就已經存在**，
-且 `git log 5924939..main -- pyproject.toml` 為空——pin 自那次產出到現在沒有被改動過。
+這個 pin 在 D5 **harness commit**（`cf1d6dd0`，PR #126）與**報告 commit**（`5924939`，PR #127）
+的 `pyproject.toml:16` 都是同一個值，且 `git log cf1d6dd0..main -- pyproject.toml` 為空。
+（`cf1d6dd0` 是 `5924939` 的祖先，不是相反——報告 commit 較晚。兩個 commit 都要查，是因為
+本報告 §1 自己記錄的「程式 HEAD」是 harness commit `cf1d6dd0`，而「產出這份報告」發生在
+`5924939`；只寫後者會讓讀者照字面追一個比報告本身更晚的祖先。）
 因此「該次 run 用的是 1.30.0」是 repo 事實，不需要用今天的環境去回推。
 
 ### 為什麼 execution provider 寫「硬寫」而不是「有 CoreML 可用」

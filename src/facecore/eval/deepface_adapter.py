@@ -41,26 +41,45 @@ To reproduce the second point on a DeepFace environment:
 which returns `SFace.py` and nothing else. (An earlier note in this
 file claimed the wheel shipped no Python source at all, and attributed
 `SFace.py` to opencv. Both were wrong: the file is deepface's, and the
-wheel does carry it. The error survived several rounds because the
-three parties who checked it grepped **opencv**'s RECORD, where the
-file has never been.)
+wheel does carry it. The misleading path is worth keeping in mind —
+grepping **opencv**'s RECORD for it cannot succeed, because it has never
+been there.)
 
-So this module does not cite one. The neutrality claim rests on a
-measurement instead — `represent()` fed with the product's own bytes
-returns the same vector the product's `Embedder` returns from the
-graph, which is only possible if the two reversals cancel — and the
-test named `test_the_public_entry_point_is_channel_neutral` fails if
-anyone "fixes" the adapter to flip. Note that `image_utils.py:69`'s
-docstring *declares* the ndarray contract to be BGR, which
-contradicts the measured behaviour of the public entry point; the
-docstring is not the contract, the measurement is.
+**What is still UNVERIFIED, and what is not.** Two things are
+established above and one is not, and keeping them apart is the point:
+
+- *Established:* the Python half performs exactly one channel reversal,
+  at `representation.py:118`, in DeepFace 0.0.93.
+- *Established:* the reversal inside `feature` cannot be cited, because
+  it is not in Python.
+- **UNVERIFIED until A3:** that the two cancel, i.e. that
+  `represent()` is channel-neutral. This module does not claim it.
+
+The neutrality question is not answerable from a single feed of the
+product's own bytes: a degenerate crop whose three channel planes are
+identical comes back unchanged under *any* channel handling, so one arm
+cannot separate "two reversals cancel" from "no reversal happened" or
+from "the graph is channel-insensitive". The discriminating measurement
+is two-armed — feed the same crop as RGB and as BGR and show the two
+results differ — and it needs DeepFace, which CI does not install and
+which the root lock must not acquire. A3 owns it, with the comparison
+runner's two-armed result carrying the weight hash that says which
+weights were loaded.
+
+Note that `image_utils.py:69`'s docstring *declares* the ndarray
+contract to be BGR. A docstring is a claim, not a measurement, and it
+does not settle a question the implementation does not expose.
 
 **"Refuses to download" is this module's property, not DeepFace's.**
-`weight_utils.download_weights_if_necessary` tests only
-`os.path.isfile` — no checksum, no offline switch — and otherwise calls
-`gdown.download`. So an isolated `DEEPFACE_HOME` set *before* import
-plus an explicit socket block are both required; remove either and a
-missing cache silently reaches the network.
+In DeepFace 0.0.93 the SFace loader resolves its weight path from
+`DEEPFACE_HOME` and, when that file is absent, calls `gdown.download`
+with no checksum and no offline switch (`SFace.py`'s `load_model`;
+`commons/file_utils.py:13 download_external_file` is the same shape for
+the H5-backed models). **There is no `weight_utils` module in 0.0.93** —
+an earlier note in this file cited one, and the citation was as wrong
+as the `SFace.py:48` it replaced. So an isolated `DEEPFACE_HOME` set
+*before* import plus an explicit socket block are both required; remove
+either and a missing cache silently reaches the network.
 
 Nothing here imports DeepFace. The worker runs in a separate
 interpreter with its own lock, so the product core stays importable on

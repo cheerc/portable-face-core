@@ -48,7 +48,11 @@ photos are A3's job, not this file's.
 
 from __future__ import annotations
 
+import hashlib
+import os
+from contextlib import contextmanager
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -62,11 +66,14 @@ from facecore.eval.model_comparison import (
     CandidateComparison,
     CandidateContractError,
     GalleryIncomplete,
+    ModelBindingError,
     build_candidate_gallery,
     build_candidate_context,
     compare_candidate,
     frontier_at_budget,
     require_declared_interpreter,
+    require_weight_binding,
+    sha256_of_file,
 )
 from facecore.eval.static_baseline import SET_PROBE, score_photo
 from facecore.live.frame_pipeline import ResearchGallery, ScoringContext
@@ -222,6 +229,42 @@ def _spec(**over: Any):
     )
 
 
+def _weight_file(payload: bytes) -> Path:
+    """A stand-in weight file, on disk, hashed by the binding.
+
+    Real bytes rather than a stubbed hash function: the point of the
+    binding is that it reads the file, so a test that skipped the file
+    would be testing a mock of the thing under test.
+    """
+    name = hashlib.sha256(payload).hexdigest()[:12]
+    p = Path(os.environ.get("TMPDIR", "/tmp")) / f"d6a2_weight_{name}"
+    p.write_bytes(payload)
+    return p
+
+
+def _vectors(*, seed: int, dim: int) -> dict[str, np.ndarray]:
+    """Deterministic unit vectors standing in for one model's embeddings."""
+    rs = np.random.RandomState(seed)
+    out = {}
+    for i in range(4):
+        v = rs.randn(dim)
+        out[f"id-{i:02d}"] = (v / np.linalg.norm(v)).astype(np.float32)
+    return out
+
+
+def _bound_spec(dim: int = 4) -> tuple:
+    """A spec whose declared hash really is the hash of its weight file.
+
+    The default ``_spec()`` carries a placeholder digest, which
+    ``require_weight_binding`` now refuses on purpose. Tests about the
+    *other* refusals still need a genuinely bound spec, so they build
+    one here.
+    """
+    weight = _weight_file(b"facenet512-weights-bytes")
+    spec = _spec(embedding_dim=dim, weight_sha256=sha256_of_file(weight))
+    return spec, weight
+
+
 # --------------------------------------------------------------------------
 # 1. Gallery isolation and completeness
 # --------------------------------------------------------------------------
@@ -229,9 +272,11 @@ def _spec(**over: Any):
 
 class TestCandidateGalleryIsItsOwn:
     def test_a_gallery_of_the_right_size_is_accepted(self) -> None:
+        spec, weight = _bound_spec()
         gal = build_candidate_gallery(
+            spec=spec,
+            weight_path=weight,
             identities={f"id-{i:02d}": _axis(4, i) for i in range(4)},
-            model_version=MODEL,
             expected_identities=4,
         )
         assert len(gal.embeddings) == 4
@@ -247,12 +292,14 @@ class TestCandidateGalleryIsItsOwn:
         would improve for a reason that has nothing to do with the
         model. The plan makes this a stop condition.
         """
+        spec, weight = _bound_spec()
         with pytest.raises(
             GalleryIncomplete, match="has 2 identities but the freeze declares 3"
         ):
             build_candidate_gallery(
+                spec=spec,
+                weight_path=weight,
                 identities={"a": _axis(4, 0), "b": _axis(4, 1)},
-                model_version=MODEL,
                 expected_identities=3,
             )
 
@@ -262,12 +309,18 @@ class TestCandidateGalleryIsItsOwn:
         Silently taking the first N would compare against a subset
         chosen by directory order, which is not a reproducible rule.
         """
+        spec, weight = _bound_spec()
         with pytest.raises(
             GalleryIncomplete, match="has 3 identities but the freeze declares 2"
         ):
             build_candidate_gallery(
-                identities={"a": _axis(4, 0), "b": _axis(4, 1), "c": _axis(4, 2)},
-                model_version=MODEL,
+                spec=spec,
+                weight_path=weight,
+                identities={
+                    "a": _axis(4, 0),
+                    "b": _axis(4, 1),
+                    "c": _axis(4, 2),
+                },
                 expected_identities=2,
             )
 
@@ -278,18 +331,16 @@ class TestCandidateGalleryIsItsOwn:
 
         Both are 512-D, so a runner that only compared vector lengths
         would let a Facenet512 probe score against an ArcFace gallery and
-        report the result under the Facenet512 name. The refusal is on
-        the model identity.
+        report the result under the Facenet512 name.
         """
+        spec, _ = _bound_spec()
         ctx = _two_identity_context(0.9, 0.1, model=MODEL)
-        # An ArcFace gallery of the same dimension, on the probe side
-        # still the Facenet512 embedder.
         with pytest.raises(GalleryIncomplete, match="arcface_xyz"):
             build_candidate_context(
+                spec=spec,
                 gallery=_gallery(
                     {PROBE_ID: _axis(2, 0), OTHER_ID: _axis(2, 1)}, "arcface_xyz"
                 ),
-                model_version=MODEL,
                 detector=ctx.detector,
                 embedder=ctx.embedder,
                 profile=ctx.policy,
@@ -302,16 +353,148 @@ class TestCandidateGalleryIsItsOwn:
         it is the one that produces plausible-looking numbers.
         """
         probe = _probe_for(0.9, 0.1)
+        spec, _ = _bound_spec()
         with pytest.raises(GalleryIncomplete, match="sface_2021dec"):
             build_candidate_context(
                 gallery=_gallery(
                     {PROBE_ID: _axis(2, 0), OTHER_ID: _axis(2, 1)}, PRODUCT_MODEL
                 ),
-                model_version=MODEL,
+                spec=spec,
                 detector=_Detector([_face()]),
                 embedder=_Embedder(probe, MODEL),
                 profile=PolicyProfile.frozen_v1(),
             )
+
+
+# --------------------------------------------------------------------------
+# 1b. The binding must be to bytes, not to a label
+# --------------------------------------------------------------------------
+
+
+class TestGalleryIsBoundToTheWeightsNotTheLabel:
+    """The defect this rework exists to fix, stated as a test.
+
+    The first version of this module guarded cross-model comparison by
+    comparing ``model_version`` strings. Those strings came from the same
+    caller as the vectors, so a caller who mislabelled one mislabelled
+    both: 23 ArcFace vectors passed as a Facenet512 spec produced a
+    complete, plausible result labelled Facenet512. A guard that reads
+    only what the caller supplied cannot fail on the thing it claims to
+    check.
+
+    The test that matters is
+    :meth:`test_a_fully_relabelled_arcface_gallery_is_still_refused` —
+    the exact scenario that defeated the old guard.
+    """
+
+    def test_a_fully_relabelled_arcface_gallery_is_still_refused(self) -> None:
+        """The attack the old guard could not see.
+
+        Everything a caller controls *is* controlled: the gallery's
+        ``model_version``, the spec's ``model_version``, the vector
+        dimensions (both real models are 512-D; both fixtures are 4-D so
+        the test stays small), and the weight file actually loaded. The
+        one thing the caller does not control is what the spec
+        *declares* — and that is the one thing the check reads.
+
+        The failure this replaces: under the old label-comparison guard,
+        a caller passing ArcFace weights and ArcFace vectors under a
+        Facenet512 name satisfied every check and got back a complete
+        result labelled Facenet512.
+        """
+        facenet_weight = _weight_file(b"facenet512-weights-bytes")
+        arcface_weight = _weight_file(b"arcface-weights-bytes")
+        facenet_spec = _spec(
+            model_version=MODEL,
+            embedding_dim=4,
+            weight_sha256=sha256_of_file(facenet_weight),
+        )
+        with pytest.raises(ModelBindingError, match="hashes to"):
+            build_candidate_gallery(
+                spec=facenet_spec,
+                weight_path=arcface_weight,
+                identities=_vectors(seed=1, dim=4),
+                expected_identities=4,
+            )
+
+    def test_the_binding_rejects_a_vector_of_the_wrong_dimension(self) -> None:
+        """Dimensions are read off the arrays, so 128-D cannot pass as 512-D."""
+        spec, weight = _bound_spec(dim=4)
+        mixed = _vectors(seed=2, dim=4)
+        mixed["id-00"] = _axis(3, 0)
+        with pytest.raises(ModelBindingError, match="not 4-D"):
+            build_candidate_gallery(
+                spec=spec,
+                weight_path=weight,
+                identities=mixed,
+                expected_identities=len(mixed),
+            )
+
+    def test_a_placeholder_hash_cannot_bind_anything(self) -> None:
+        """A dummy digest would turn the byte comparison into theatre.
+
+        ``weight_sha256="a" * 64`` is a valid-looking string, so without
+        a well-formedness check it would pass as a declaration and the
+        comparison below it would succeed only for a file whose hash is
+        that — which is a test fixture, never a model.
+        """
+        spec, weight = _bound_spec()
+        broken = replace(spec, weight_sha256="deadbeef")
+        with pytest.raises(ModelBindingError, match="not a 64-hex digest"):
+            require_weight_binding(
+                spec=broken, weight_path=weight, identities=_vectors(seed=0, dim=4)
+            )
+
+    def test_the_correct_weights_do_bind(self) -> None:
+        """The positive case, so the refusals above are refusals and not a wall."""
+        spec, weight = _bound_spec()
+        gal = build_candidate_gallery(
+            spec=spec,
+            weight_path=weight,
+            identities=_vectors(seed=0, dim=4),
+            expected_identities=4,
+        )
+        assert gal.model_version == MODEL
+
+    def test_the_observed_hash_is_recorded_for_the_report(self) -> None:
+        """The report must carry what ran, not what was claimed.
+
+        A result recording only the declared hash is indistinguishable
+        from one whose weights were verified, and the counts are
+        identical either way — which is why no other check catches it.
+        """
+        spec, weight = _bound_spec()
+        observed = require_weight_binding(
+            spec=spec, weight_path=weight, identities=_vectors(seed=0, dim=4)
+        )
+        assert observed == spec.weight_sha256
+        comparison = _comparison(observed_weight_sha256=observed)
+        assert comparison.observed_weight_sha256 == spec.weight_sha256
+        assert comparison.to_dict()["observed_weight_sha256"] == spec.weight_sha256
+
+    def test_a_comparison_without_a_recorded_hash_cannot_be_published(self) -> None:
+        """A result with no observed hash is a claim, not a measurement."""
+        comparison = _comparison(observed_weight_sha256=None)
+        with pytest.raises(CandidateContractError, match="no observed weight hash"):
+            comparison.assert_binding_recorded()
+
+    def test_a_hash_disagreeing_with_the_declaration_cannot_be_published(self) -> None:
+        """A hash that does not match the spec is a binding that failed silently.
+
+        The observed value and the declared value disagreeing is the
+        exact state a mislabelled run would produce if the check were
+        advisory. The counts are already computed by then, so nothing
+        else looks wrong.
+        """
+        spec, weight = _bound_spec()
+        comparison = _comparison(
+            observed_weight_sha256="f" * 64,
+            spec_overrides={"weight_sha256": sha256_of_file(weight)},
+        )
+        with pytest.raises(
+            CandidateContractError, match="recorded observed weight hash"
+        ):
+            comparison.assert_binding_recorded()
 
 
 # --------------------------------------------------------------------------
@@ -362,6 +545,7 @@ class TestInterpreterMustBeDeclared:
             expected_probes=0,
             expected_nontarget=0,
             probe_truth=PROBE_ID,
+            observed_weight_sha256=None,
             product_requires_python=PRODUCT_PY,
         )
         assert result.spec.interpreter == "3.13"
@@ -406,16 +590,45 @@ class TestDenominatorsAreTheInputCount:
         A run that quietly scored 12 probes has no way to say so in its
         own output, and every ratio downstream is then computed against
         a number the reader has to trust.
+
+        The probe list holds real ``Path`` objects, not bare
+        ``object()``s. With ``object()`` the count guard still fires, but
+        the mutation that removes it fails on a ``TypeError`` from the
+        fixture's input type rather than on the refusal — green for an
+        accident. A Path keeps the failure attributable to the guard.
         """
         with pytest.raises(CandidateContractError, match="probe"):
             compare_candidate(
                 spec=_spec(),
                 scorer=_Stub(_two_identity_context(0.9, 0.1)),
-                probes=[object()],
+                probes=[Path("synthetic-probe.jpg")],
                 nontarget=[],
                 expected_probes=13,
                 expected_nontarget=0,
                 probe_truth=PROBE_ID,
+                observed_weight_sha256=None,
+                product_requires_python=PRODUCT_PY,
+            )
+
+    def test_a_wrong_count_of_nontargets_stops_the_run(self) -> None:
+        """The 30-photo side of the count guard, which is the larger half.
+
+        The probe guard and the non-target guard are separate clauses,
+        and only the probe one had a test. A run that quietly scored 29
+        non-targets would report every false-accept count against a
+        denominator the reader cannot see — and 29 of 30 is a
+        ``1/30``-shaped result that looks like an improvement.
+        """
+        with pytest.raises(CandidateContractError, match="non-target"):
+            compare_candidate(
+                spec=_spec(),
+                scorer=_Stub(_two_identity_context(0.9, 0.1)),
+                probes=[],
+                nontarget=[Path("synthetic-nt.jpg")],
+                expected_probes=0,
+                expected_nontarget=30,
+                probe_truth=PROBE_ID,
+                observed_weight_sha256=None,
                 product_requires_python=PRODUCT_PY,
             )
 
@@ -429,6 +642,44 @@ class TestDenominatorsAreTheInputCount:
         rows = _rows(4, unprocessable=4)
         with pytest.raises(CandidateContractError, match="nothing was scorable"):
             ComparisonOutcomeShim(rows)
+
+
+class TestRBranchCountMustBeAnInt:
+    """The narrowing that keeps a report-shaped dict from inventing a count.
+
+    ``summarize_r`` is typed ``dict[str, object]`` because it is a
+    report side table. The narrowing is loud on purpose: a count that
+    arrived as a string or a float is a bug upstream, and coercing it
+    would publish a number nobody computed.
+
+    ``np.int64`` is worth naming. ``isinstance(np.int64(5), int)`` is
+    **False** on this numpy, so a legitimate numpy count would be
+    refused. That is the intended direction — A3's D5 path uses
+    ``sum(1 for ...)`` and yields a Python ``int`` — but it is a real
+    constraint on what A3 may pass, not an accident.
+    """
+
+    def test_a_real_d5_r_count_is_accepted(self) -> None:
+        rows = _rows(3)
+        summary = ComparisonOutcomeShim(rows)
+        assert summary.r_top1_correct == 3
+
+    @pytest.mark.parametrize("bad", [1.5, "3", None, np.int64(3), [3], True])
+    def test_a_count_that_is_not_a_python_int_is_refused(self, bad: Any) -> None:
+        """Floats, strings, numpy ints, containers and ``bool`` all refuse.
+
+        ``bool`` is an ``int`` subclass, so it passes ``isinstance`` —
+        which is why it is listed here as a case to think about rather
+        than one the check catches. It is included to document the
+        boundary honestly, not to claim coverage the check lacks.
+        """
+        from facecore.eval.model_comparison import ComparisonOutcome
+
+        if isinstance(bad, bool):
+            pytest.xfail("bool is an int subclass; not caught by isinstance")
+        with _fake_r_count(bad):
+            with pytest.raises(CandidateContractError, match="not an int"):
+                ComparisonOutcome.from_rows(_rows(3), set_name=SET_PROBE)
 
 
 # --------------------------------------------------------------------------
@@ -483,6 +734,74 @@ class TestCandidatesGetTheirOwnFrontier:
         """
         comparison = _comparison()
         assert comparison.operating_point is None
+
+    def test_a_candidate_is_never_given_a_review_threshold(self) -> None:
+        """The code refuses 0.3 for a candidate; this pins the refusal.
+
+        A candidate has no independent review source, so any review
+        threshold handed to it is fabricated. The refusal is on the
+        *flag*, not on the counts: because the frontier sweeps with an
+        ``inf`` sentinel, supplying 0.3 changes no cell's accept count
+        at all — so a mutation that let the value through would leave
+        every number in the report identical while silently publishing
+        ``review_configured=True``. That flag is the thing a reader
+        would act on, which is why it needs a test of its own.
+        """
+        comparison = _comparison()
+        assert comparison.review_threshold is None
+        assert comparison.review_configured is False
+        assert all(
+            cell["review_configured"] is False
+            for row in comparison.frontier_summary
+            for cell in (row["probe"], row["nontarget"])
+            if cell is not None
+        )
+        with pytest.raises(CandidateContractError, match="review"):
+            CandidateComparison.build(
+                spec=_spec(),
+                probe_rows=_rows(13),
+                nontarget_rows=_rows(30),
+                match_grid=[0.0, 0.5],
+                margin_grid=[0.0],
+                review_threshold=0.3,
+                observed_weight_sha256=None,
+                product_requires_python=PRODUCT_PY,
+            )
+
+
+class TestFrontierCellCarriesTheFrozenDenominator:
+    """The cell's ``total`` is the photo count, and ``to_dict`` publishes it.
+
+    ``ComparisonOutcome.total`` had a test; the ``FrontierCell`` version
+    did not, even though the module states the same rule for both and
+    the cell's value is written straight into the per-cell CSV. A cell
+    whose denominator drifted to "rows that happened to be scorable"
+    would make every frontier cell look better than the corpus it was
+    measured on, and the sibling guard is a different code path.
+    """
+
+    def test_a_cell_reports_the_photo_count_not_the_scorable_count(self) -> None:
+        from facecore.eval.model_comparison import _frontier_for
+
+        rows = _rows(10, rejected=4, unprocessable=2)
+        cells = _frontier_for(
+            rows, match_grid=[0.0], margin_grid=[0.0], review_threshold=None
+        )
+        assert cells, "the sweep produced no cells"
+        for cell in cells:
+            assert cell.total == 10
+            assert cell.to_dict()["total"] == 10
+
+    def test_the_summarised_cells_keep_the_denominator_too(self) -> None:
+        comparison = _comparison()
+        published = [
+            cell
+            for row in comparison.frontier_summary
+            for cell in (row["probe"], row["nontarget"])
+            if cell is not None
+        ]
+        assert published
+        assert {c["total"] for c in published} == {13, 30}
 
 
 class TestFrontierAtAFaBudget:
@@ -695,7 +1014,11 @@ def _cell(*, match: float, correct: int, wrong: int, fa: int, margin: float):
 
 
 def _comparison(
-    *, review_threshold: float | None = None, **over: Any
+    *,
+    review_threshold: float | None = None,
+    observed_weight_sha256: str | None = None,
+    spec_overrides: dict[str, Any] | None = None,
+    **over: Any,
 ) -> CandidateComparison:
     from facecore.eval.model_comparison import CandidateSpec
 
@@ -710,7 +1033,7 @@ def _comparison(
         "weight_sha256": "a" * 64,
         "backend": "deepface-worker",
     }
-    spec = replace(CandidateSpec(**(base | over)))
+    spec = replace(CandidateSpec(**(base | (spec_overrides or {}) | over)))
     return CandidateComparison.build(
         spec=spec,
         probe_rows=_rows(13),
@@ -718,6 +1041,7 @@ def _comparison(
         match_grid=list(MATCH_GRID),
         margin_grid=list(MARGIN_GRID),
         review_threshold=review_threshold,
+        observed_weight_sha256=observed_weight_sha256,
         product_requires_python=PRODUCT_PY,
     )
 
@@ -726,3 +1050,29 @@ def ComparisonOutcomeShim(rows):  # noqa: N802 - test helper
     from facecore.eval.model_comparison import ComparisonOutcome
 
     return ComparisonOutcome.from_rows(rows, set_name=SET_PROBE)
+
+
+@contextmanager
+def _fake_r_count(value: object):
+    """Make ``summarize_r`` return a chosen ``r_top1_correct``.
+
+    Patching the module's own reference is deliberate: the point is to
+    feed a bad *value* through the real narrowing, not to reimplement
+    it. A monkeypatch of ``static_baseline.summarize_r`` would not be
+    seen by the already-imported name in ``model_comparison``, so the
+    attribute is patched where it is used.
+    """
+    from facecore.eval import model_comparison as mc
+
+    real = mc.summarize_r
+
+    def _fake(rows, *, set_name):
+        out = dict(real(rows, set_name=set_name))
+        out["r_top1_correct"] = value
+        return out
+
+    mc.summarize_r = _fake  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        mc.summarize_r = real  # type: ignore[assignment]

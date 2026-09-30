@@ -9,30 +9,36 @@ answer fails loudly instead of quietly.
 Three things this file treats as load-bearing, each because it has
 already gone wrong somewhere in this project's history:
 
-1. **The adapter flips nothing.** The product's crop is RGB
-   (`align.py:98` `Image.frombytes("RGB", ...)` -> `:134` `tobytes()`),
-   and DeepFace's `represent()` is channel-*neutral*: in DeepFace
-   0.0.93 `representation.py:118` reverses the channels and
-   `cv2.FaceRecognizerSF.feature` reverses them back before the graph
-   runs, so the array the caller passes is the array the graph sees.
-   Neither half is cited to a line number, because neither can be:
-   the Python half (`SFace.py`, DeepFace 0.0.93 — 84 lines, the
-   `feature` call on 46) moves with the release, and the C++ half is
-   not in the wheel at all, since `FaceRecognizerSF` ships compiled in
-   `cv2.abi3.so` and the only file in the environment mentioning that
-   name is `SFace.py`. Measured, not assumed — the cross-check is
-   `test_the_public_entry_point_is_channel_neutral`, which would fail
-   if anyone "fixed" the adapter to flip. Note that
-   `image_utils.py:69`'s docstring *declares* the ndarray contract to be
-   BGR, which contradicts the measured behaviour of the public entry
-   point; the docstring is not the contract here, the measurement is.
+1. **The adapter flips nothing — and that is the *adapter's* property,
+   not a verified property of DeepFace.** The product's crop is RGB
+   (`align.py:98` `Image.frombytes("RGB", ...)` -> `:134` `tobytes()`)
+   and this module hands those bytes over unreversed. Whether that is
+   *correct* is **UNVERIFIED until A3**: DeepFace 0.0.93's
+   `representation.py:118` reverses the caller's channels and
+   `cv2.FaceRecognizerSF.feature` is said to reverse them back, but the
+   second half is C++ and is not in the wheel at all
+   (`FaceRecognizerSF` ships compiled in `cv2.abi3.so`; the only
+   environment file naming it is `SFace.py`, whose `feature` call sits
+   on line 46 of that release's 84-line file — a line number that moves
+   with the pin, so it is quoted but never relied on). A one-armed
+   check cannot settle it: a crop with identical channel planes returns
+   the same vector under any handling. The two-armed measurement is
+   A3's, and it needs DeepFace installed, which CI does not do.
+
+   What *is* tested here is narrower and real: this module performs no
+   channel operation, and
+   `test_a_channel_flip_would_be_visible_to_this_fixture` keeps the
+   fixtures from being degenerate so a future flip could not hide.
 
 2. **"Empty cache refuses" is the adapter's property, not DeepFace's.**
-   `weight_utils.download_weights_if_necessary` only tests
-   `os.path.isfile` — no checksum, no offline switch — and otherwise
-   calls `gdown.download`. Without an isolated `DEEPFACE_HOME` set
-   before import and an explicit network block, a missing cache
-   silently reaches the network. `test_a_missing_cache_refuses_rather
+   In DeepFace 0.0.93 the SFace loader takes its path from
+   `DEEPFACE_HOME` and calls `gdown.download` when the file is absent —
+   no checksum, no offline switch — and `commons/file_utils.py:13
+   download_external_file` does the same for the H5-backed models.
+   (There is no `weight_utils` module in that release; an earlier note
+   here cited one.) Without an isolated `DEEPFACE_HOME` set before
+   import and an explicit network block, a missing cache silently
+   reaches the network. `test_a_missing_cache_refuses_rather
    _than_downloading` is the test that would catch its removal.
 
 3. **Importing the adapter must not drag in TensorFlow.** The product
@@ -618,14 +624,49 @@ class TestWorkerProcessIsolatesFailures:
         that only tested ``> 0`` would let a segfault through with a
         perfectly good-looking payload on stdout, so the refusal is on
         "not zero" rather than "positive".
+
+        ``flush=True`` is load-bearing and was missing here. Without it
+        the payload sits in the child's block-buffered stdout when
+        ``SIGKILL`` lands, the buffer is discarded with the process, and
+        the pipe is empty — the child dies having printed nothing, which
+        is the *old* fixture's situation and proves nothing about a
+        dying child's output being discarded. Verified: without the
+        flush the child's stdout is ``''``; with it, the payload is
+        there and the guard still refuses.
         """
         script = (
             "import os, signal, sys;"
-            'print(\'{"embedding": [0.1], "dim": 1}\');'
+            'print(\'{"embedding": [0.1], "dim": 1}\', flush=True);'
             "os.kill(os.getpid(), signal.SIGKILL)"
         )
         with pytest.raises(WorkerCrashed, match="exited"):
             run_worker(script_path_text(script), timeout_secs=30)
+
+    def test_the_signal_fixture_really_does_put_a_payload_in_the_pipe(self) -> None:
+        """Guard the guard: the fixture must be able to print at all.
+
+        A crash fixture whose payload never reaches stdout cannot
+        distinguish "refuses a dying worker's output" from "refuses
+        because the child said nothing". This runs the same script
+        directly and asserts the payload was really written, so the
+        test above cannot quietly regress into the empty-pipe case.
+        """
+        import subprocess as _sp
+
+        script_path = script_path_text(
+            "import os, signal, sys;"
+            'print(\'{"embedding": [0.1], "dim": 1}\', flush=True);'
+            "os.kill(os.getpid(), signal.SIGKILL)"
+        )
+        proc = _sp.run(  # noqa: S603 - fixed argv, no shell
+            [sys.executable, script_path], capture_output=True, text=True
+        )
+        assert proc.returncode < 0, "the child must die by signal, not exit"
+        assert json.loads(proc.stdout.strip()), (
+            "the SIGKILL fixture must leave a payload in the pipe; without "
+            "a flush the buffer dies with the child and this whole "
+            "scenario collapses to 'the child said nothing'"
+        )
 
     @pytest.mark.parametrize(
         "printed",

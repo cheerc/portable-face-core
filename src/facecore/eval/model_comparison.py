@@ -8,8 +8,13 @@ about refusing rather than computing.
 What it will not let happen:
 
 - **Two models in one cosine.** Facenet512 and ArcFace are both 512-D,
-  so a dimension check waves them through; the guard is on
-  `model_version`, on both the gallery side and the probe side.
+  so a dimension check waves them through — and so would a
+  `model_version` check, because the label came from the same caller as
+  the vectors, so relabelling the vectors relabels the label with them.
+  This module previously guarded exactly that way and the guard could
+  not fail. The binding that replaced it reads the weight file off disk
+  and the dimensions off the vectors, so at most one of two same-shaped
+  models can match a given spec. See :func:`require_weight_binding`.
 - **A smaller comparison called a comparison.** A gallery short of its
   declared identity count stops the run. Dropping the missing identity
   also drops the runner-up it was most likely to beat, so every
@@ -80,9 +85,13 @@ MARGIN_GRID: tuple[float, ...] = (
 #: rather than at equal threshold.
 FA_BUDGETS: tuple[int, ...] = (0, 1, 2)
 
-#: The product's own interpreter, from `requires-python`. A DeepFace
-#: candidate cannot claim it: DeepFace 0.0.93 needs TensorFlow, which
-#: does not support 3.14 in the pinned lock.
+#: The product's own interpreter, fixed by `requires-python` in the root
+#: `pyproject.toml` (`==3.14.*`). A DeepFace candidate cannot claim it:
+#: DeepFace 0.0.93 requires TensorFlow, and the TensorFlow releases that
+#: support Keras 3 do not ship a 3.14 wheel. The floor is quoted from the
+#: file rather than from a lock because `uv.lock` is gitignored
+#: (`.gitignore`), so citing it would cite something a clone does not
+#: have.
 PRODUCT_REQUIRES_PYTHON = "3.14"
 
 
@@ -116,6 +125,14 @@ class CandidateSpec:
     weight hash, input size, normalization and interpreter are not all
     on the page cannot be reproduced, and two of them (input size and
     normalization) change the numbers by construction.
+
+    ``weight_sha256`` is the field this module leans on hardest, and it
+    is the only one that can be **checked against a fact**. The others
+    are declarations: a caller that writes ``model_version="Facenet512"``
+    writes a string, and a string proves nothing about which weights ran.
+    ``weight_sha256`` can be compared against the bytes actually loaded,
+    so it is what makes a mislabelled gallery detectable rather than
+    merely improbable.
     """
 
     candidate_id: str
@@ -145,6 +162,89 @@ class CandidateSpec:
             "weight_sha256": self.weight_sha256,
             "backend": self.backend,
         }
+
+
+class ModelBindingError(CandidateContractError):
+    """The gallery cannot have come from the weights the spec declares.
+
+    Distinct from :class:`GalleryIncomplete`, which is about *how many*
+    identities are present. This is about *whose* they are, and it is
+    the refusal a caller cannot satisfy by relabelling a string.
+    """
+
+
+def sha256_of_file(path: Path) -> str:
+    """Hash a weight file, in chunks so a 130 MB model stays off the heap.
+
+    Read from disk rather than taken as an argument on purpose: the
+    point of this module's binding is that the hash describes bytes
+    someone actually loaded, not a value the caller remembered to pass.
+    """
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(c in "0123456789abcdef" for c in value.lower())
+
+
+def require_weight_binding(
+    *,
+    spec: CandidateSpec,
+    weight_path: Path,
+    identities: dict[str, np.ndarray],
+) -> str:
+    """Bind a gallery to a spec using facts, not labels.
+
+    Three checks, each reading something the caller cannot simply
+    assert:
+
+    1. **The declared digest is well-formed.** A placeholder would
+       otherwise turn check 2 into a comparison that is only meaningful
+       when it fails.
+    2. **The loaded weight file hashes to the declared SHA-256.** Read
+       off disk. This is the check that survives a fully relabelled
+       gallery: Facenet512 and ArcFace are both 512-D, so dimensions
+       agree, and a caller that writes the labels *and* the vector
+       length consistently still cannot forge the bytes. Their weights
+       are different files, so at most one of two same-shaped models
+       can match.
+    3. **Every vector is the declared dimension.** Read off the arrays,
+       so a 128-D model cannot pass as a 512-D one.
+
+    Returns the observed hash so callers record what actually ran
+    rather than what was claimed.
+    """
+    if not _is_sha256(spec.weight_sha256):
+        raise ModelBindingError(
+            f"candidate {spec.candidate_id!r} declares weight_sha256="
+            f"{spec.weight_sha256!r}, which is not a 64-hex digest; a "
+            "placeholder cannot be compared against bytes, so the "
+            "binding below would be theatre"
+        )
+    observed = sha256_of_file(weight_path)
+    if observed != spec.weight_sha256:
+        raise ModelBindingError(
+            f"candidate {spec.candidate_id!r} declares weights hashing to "
+            f"{spec.weight_sha256[:12]}… but the file it was given hashes "
+            f"to {observed[:12]}…; the gallery would be vectors from one "
+            "model reported under another model's name"
+        )
+    wrong = sorted(
+        ident
+        for ident, vec in identities.items()
+        if len(np.asarray(vec)) != spec.embedding_dim
+    )
+    if wrong:
+        raise ModelBindingError(
+            f"{len(wrong)} of {len(identities)} candidate vectors are not "
+            f"{spec.embedding_dim}-D, the dimension {spec.candidate_id!r} "
+            "declares (count only, no identity is named)"
+        )
+    return observed
 
 
 def require_declared_interpreter(
@@ -182,8 +282,9 @@ def require_declared_interpreter(
 
 def build_candidate_gallery(
     *,
+    spec: CandidateSpec,
+    weight_path: Path,
     identities: dict[str, np.ndarray],
-    model_version: str,
     expected_identities: int,
     generation: str = "gen-d6",
 ) -> ResearchGallery:
@@ -193,6 +294,15 @@ def build_candidate_gallery(
     is not the frozen one; too many means the directory holds more than
     the freeze, and taking a subset by sort order would be a rule nobody
     could re-derive.
+
+    ``spec`` and ``weight_path`` replace the old ``model_version``
+    string. That string was never a binding: it came from the same
+    caller as the vectors, so labelling ArcFace vectors "Facenet512"
+    satisfied the old check exactly as well as labelling them correctly
+    — the defect a reviewer demonstrated end to end, with a complete
+    13/13 result reported under the wrong model's name. The binding now
+    runs through :func:`require_weight_binding`, which reads the weight
+    file off disk and the dimensions off the vectors.
     """
     actual = len(identities)
     if actual != expected_identities:
@@ -202,6 +312,7 @@ def build_candidate_gallery(
             "identities as the control, since a missing one is also the "
             "runner-up most likely to be beaten"
         )
+    require_weight_binding(spec=spec, weight_path=weight_path, identities=identities)
     # The digest is computed with `build_gallery_from_folder`'s own
     # recipe (sorted identity name, then vector bytes) rather than by
     # calling `ResearchGallery.compute_digest`, which hashes the
@@ -216,7 +327,7 @@ def build_candidate_gallery(
         hasher.update(np.asarray(identities[ident], dtype=np.float32).tobytes())
     return ResearchGallery(
         embeddings={k: np.asarray(v, dtype=np.float32) for k, v in identities.items()},
-        model_version=model_version,
+        model_version=spec.model_version,
         generation=generation,
         digest=hasher.hexdigest(),
     )
@@ -224,31 +335,41 @@ def build_candidate_gallery(
 
 def build_candidate_context(
     *,
+    spec: CandidateSpec,
     gallery: ResearchGallery,
-    model_version: str,
     detector: Any,
     embedder: Any,
     profile: PolicyProfile,
 ) -> ScoringContext:
     """Assemble the candidate's scoring context, refusing a model mismatch.
 
-    ``ScoringContext.__post_init__`` already compares the context's
-    version against the gallery's and the embedder's, and raising here
-    rather than catching means the refusal is the same one the product
-    path uses. The explicit check is here so the *reason* names the
-    comparison, which is the case that actually occurs: a new probe
-    scored against the control's gallery.
+    Two refusals, and the first is the one that matters. The
+    ``model_version`` comparison below still runs, but on its own it is
+    the defect this rework exists to fix: the gallery's label and the
+    context's label were both set by the caller, so a caller who
+    mislabelled one mislabelled both. What makes the mismatch visible is
+    that :func:`require_weight_binding` already established these
+    vectors came from the bytes ``spec.weight_sha256`` names, by the time
+    :class:`ScoringContext` is constructed.
+
+    ``ScoringContext.__post_init__`` re-checks the labels anyway. That
+    redundancy is deliberate and is **not** counted as evidence that the
+    labels are trustworthy — a guard that reads the same caller-supplied
+    field as another guard is masked by it, not corroborated by it. A
+    mutation that deletes the check below still goes red here, which
+    proves the check is reached and proves nothing about whether it
+    works.
     """
-    if gallery.model_version != model_version:
+    if gallery.model_version != spec.model_version:
         raise GalleryIncomplete(
             f"gallery model {gallery.model_version!r} does not match "
-            f"candidate model {model_version!r}; vectors from two models "
+            f"candidate model {spec.model_version!r}; vectors from two models "
             "must never be compared, and equal dimension is not evidence "
             "that they are the same model"
         )
     return ScoringContext(
         gallery=gallery,
-        model_version=model_version,
+        model_version=spec.model_version,
         policy=profile,
         detector=detector,
         embedder=embedder,
@@ -469,10 +590,39 @@ class CandidateComparison:
     frontier_summary: list[dict[str, Any]]
     review_threshold: float | None
     operating_point: dict[str, float] | None
+    #: The hash of the weight file that was actually loaded, as
+    #: :func:`require_weight_binding` read it off disk. It equals
+    #: ``spec.weight_sha256`` — that equality is the binding, and
+    #: recording the observed value separately is what lets a reader
+    #: check the claim instead of trusting it. ``None`` when the caller
+    #: built a comparison straight from rows, which is the synthetic
+    #: path the counting tests use; such a result cannot be published.
+    observed_weight_sha256: str | None = None
 
     @property
     def review_configured(self) -> bool:
         return self.review_threshold is not None
+
+    def assert_binding_recorded(self) -> None:
+        """Refuse to publish a comparison that never recorded what ran.
+
+        Without this, a result could be serialized carrying only the
+        *declared* provenance, and a reader would have no way to tell it
+        from one whose weights were verified. The counts are identical
+        either way, which is exactly why nothing else catches it.
+        """
+        if self.observed_weight_sha256 is None:
+            raise CandidateContractError(
+                f"candidate {self.spec.candidate_id!r} has no observed weight "
+                "hash; a result that does not record which bytes ran is not "
+                "publishable, because its provenance is only a claim"
+            )
+        if self.observed_weight_sha256 != self.spec.weight_sha256:
+            raise CandidateContractError(
+                f"candidate {self.spec.candidate_id!r} recorded observed "
+                f"weight hash {self.observed_weight_sha256[:12]}… against a "
+                f"declared {self.spec.weight_sha256[:12]}…"
+            )
 
     @classmethod
     def build(
@@ -484,11 +634,27 @@ class CandidateComparison:
         match_grid: Sequence[float],
         margin_grid: Sequence[float],
         review_threshold: float | None,
+        observed_weight_sha256: str | None = None,
         product_requires_python: str = PRODUCT_REQUIRES_PYTHON,
     ) -> CandidateComparison:
         require_declared_interpreter(
             spec, product_requires_python=product_requires_python
         )
+        if not spec.is_control and review_threshold is not None:
+            # A candidate has no independent review source, so a review
+            # threshold handed to one is fabricated. The refusal lives
+            # here rather than at the call site because, as the sweep
+            # shows, the value would change no count — the frontier uses
+            # an `inf` sentinel regardless — so a fabricated threshold
+            # would travel all the way into a published
+            # `review_configured=True` without a single number moving.
+            raise CandidateContractError(
+                f"candidate {spec.candidate_id!r} was given a review "
+                f"threshold of {review_threshold}, but no candidate has an "
+                "independent review source; a candidate's review count is "
+                "reported as 'not configured' rather than borrowed from the "
+                "control's calibration"
+            )
         probe = ComparisonOutcome.from_rows(probe_rows, set_name=SET_PROBE)
         nontarget = ComparisonOutcome.from_rows(nontarget_rows, set_name=SET_NONTARGET)
 
@@ -505,6 +671,7 @@ class CandidateComparison:
                 frontier_summary=[],
                 review_threshold=review_threshold,
                 operating_point=None,
+                observed_weight_sha256=observed_weight_sha256,
             )
 
         cells = _frontier_for(
@@ -544,6 +711,7 @@ class CandidateComparison:
             frontier_summary=summary_rows,
             review_threshold=review_threshold,
             operating_point=None,
+            observed_weight_sha256=observed_weight_sha256,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -556,6 +724,7 @@ class CandidateComparison:
             "operating_point": self.operating_point,
             "frontier_summary": self.frontier_summary,
             "frontier_cells": len(self.frontier),
+            "observed_weight_sha256": self.observed_weight_sha256,
         }
 
 
@@ -571,6 +740,7 @@ def compare_candidate(
     match_grid: Sequence[float] = MATCH_GRID,
     margin_grid: Sequence[float] = MARGIN_GRID,
     review_threshold: float | None = None,
+    observed_weight_sha256: str | None = None,
     product_requires_python: str = PRODUCT_REQUIRES_PYTHON,
 ) -> CandidateComparison:
     """Score one candidate over the frozen corpus and assemble its result.
@@ -578,6 +748,13 @@ def compare_candidate(
     The input counts are checked *before* anything is scored, so a wrong
     corpus is a refusal rather than a comparison whose ratios are all
     quietly computed against the wrong denominator.
+
+    ``observed_weight_sha256`` is what :func:`require_weight_binding`
+    read off disk. Passing it through keeps the recorded provenance
+    tied to the binding that was actually performed; a caller that
+    never bound weights has nothing to record, and
+    :meth:`CandidateComparison.assert_binding_recorded` is what stops
+    such a result being published.
     """
     require_declared_interpreter(spec, product_requires_python=product_requires_python)
     if len(probes) != expected_probes:
@@ -606,6 +783,7 @@ def compare_candidate(
         match_grid=match_grid,
         margin_grid=margin_grid,
         review_threshold=review_threshold,
+        observed_weight_sha256=observed_weight_sha256,
         product_requires_python=product_requires_python,
     )
 
