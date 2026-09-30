@@ -80,7 +80,7 @@
 | Licenses allow commercial use + redistribution (text-explicit, locators on file) | CLEAR |
 | Source / version / URL / retrieval date recorded | CLEAR (weight SHA-256 excepted) |
 | Training-data provenance recorded | PROVENANCE_UNRESOLVED (SFace #313 open; YuNet corpus composition unaudited) |
-| Inference under ORT on macOS | CLEAR (D5, 2026-09-30: SFace and YuNet both ran inference successfully against the frozen artifacts under onnxruntime `1.30.0` — the product pin at `pyproject.toml:16` — with the embedder hard-wired to `CPUExecutionProvider` at `src/facecore/pipeline/embed.py:42`. Note: the onnxruntime version that run actually loaded is **not** recorded in any document; `1.30.0` is the pin, not a recorded observation of that run.) |
+| Inference under ORT on macOS | CLEAR (D5, 2026-09-30: SFace and YuNet both ran inference successfully under the product's `CPUExecutionProvider` — hard-coded at `src/facecore/pipeline/embed.py:42` — against the frozen artifacts; see `2026-09-30-d5-static-baseline.md` for the run and its per-photo results. The ORT version that run used is **not** recorded in that report; `onnxruntime==1.30.0` is the product pin in `pyproject.toml:16`, which is not the same claim.) |
 | ORT-Mobile checker findings | PARTIAL — Pair 1 `VERIFIED` 2026-09-30 ([D6 M](2026-09-30-d6-m-onnx-mobile-usability.md)): NNAPI `YES` 87/87, CoreML NeuralNetwork `YES` 87/87, CoreML MLProgram **`NO`** 57/87 = 65.5%; all 174 initializers land in `graph.input`. **Static dispatch only — device performance unverified.** |
 | Preprocessing / output contracts reproducible + versioned | PARTIAL (shapes, dims, thresholds on file; pixel normalization UNVERIFIED) |
 
