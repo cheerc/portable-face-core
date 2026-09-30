@@ -98,6 +98,7 @@ src/
     │   ├── benchmark_1b.py
     │   ├── capacity.py
     │   ├── corpus.py
+    │   ├── deepface_adapter.py
     │   ├── fa_matrix.py
     │   ├── nontarget_fa.py
     │   ├── quality_audit.py
@@ -207,6 +208,7 @@ tests/
 │   ├── test_benchmark_1b.py
 │   ├── test_capacity.py
 │   ├── test_corpus.py
+│   ├── test_deepface_adapter.py
 │   ├── test_fa_matrix.py
 │   ├── test_guard_expected_identity.py
 │   ├── test_mac_live_capture_probe.py
