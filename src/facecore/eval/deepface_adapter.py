@@ -356,8 +356,12 @@ def compare_embeddings(
         )
     )
     noise = 1.0 - cosine
+    # `require_signal` guarantees 0 < signal <= 1, so the divisor is
+    # always positive. The old `else float("inf")` branch is gone: it
+    # could no longer execute, and a branch that cannot run is a claim
+    # about the contract that nothing verifies.
     signal = require_signal(signal_cosine)
-    ratio = noise / signal if signal > 0 else float("inf")
+    ratio = noise / signal
     passed = (
         maxabs <= MAX_RUNTIME_MAXABS
         and ratio <= MAX_NOISE_SIGNAL_RATIO
@@ -445,8 +449,13 @@ def require_signal(cosine: float) -> float:
     ``1.0`` is accepted: a between-photo cosine of exactly 1 would mean
     the two photos produced identical embeddings, which is a real
     (if alarming) measurement rather than an invalid input.
+    ``nan`` and ``inf`` need no separate clause: every comparison against
+    ``nan`` is False, so ``0.0 < nan <= 1.0`` already fails, and ``inf``
+    fails ``inf <= 1.0``. An explicit ``isfinite`` test was tried here and
+    removed — deleting it left the suite fully green, which is what
+    proved it held nothing.
     """
-    if not 0.0 < cosine <= 1.0 or not np.isfinite(cosine):
+    if not 0.0 < cosine <= 1.0:
         raise AdapterError(
             f"between-photo signal cosine {cosine} must be in (0, 1]; "
             "a zero signal cannot produce a meaningful noise ratio"
