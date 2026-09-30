@@ -663,6 +663,27 @@ class SessionEngine:
             now_ns=now_ns,
         )
 
+    def terminate_with_error(
+        self, now_ns: int, *, reason_codes: tuple[str, ...]
+    ) -> SessionResult:
+        """D4-F1: conclude as a visible error terminal.
+
+        Public counterpart of `_terminate_with_error`: the controller's
+        inference worker owns the failure, but the engine owns the
+        terminal, and the window only ever reads a terminal. Without this
+        an unexpected worker failure left the round "running" forever
+        and the window kept painting a stale result.
+
+        Idempotent: an already concluded session returns its existing
+        terminal, so a failure arriving after a real result can never
+        overwrite it. `_terminate_terminal` itself has no such guard —
+        `finish()` carries its own — so the check lives here, mirroring
+        `finish()` rather than assuming the private path provides it.
+        """
+        if self._terminal_result is not None:
+            return self._terminal_result
+        return self._terminate_with_error(now_ns, reason_codes)
+
     def _terminate_with_error(
         self, now_ns: int, reason_codes: tuple[str, ...]
     ) -> SessionResult:

@@ -65,6 +65,47 @@ jobs:
           sudo apt-get install -y libegl1
       - name: Install package with research UI extra
         run: pip install -e .[dev,research-ui]
+      - name: Fetch the frozen detector artifact
+        # D4-F1 (issue #123): the demo-mode trace-wiring guard drives the
+        # real checkpoint presence path, and that path builds the true
+        # YuNet detector — so it needs the artifact, not just the extra.
+        # Without this step those guards are collected by `verify` and
+        # silently SKIPPED there (no pyside6), which is how they shipped
+        # once already: present, mutation-proven, and never run by any
+        # job. Downloaded here and verified against the same frozen
+        # constant the product code enforces at load time
+        # (research/cli.py TRUE_DETECTOR_SHA256), so a substituted or
+        # truncated file fails the job instead of reaching the tests.
+        #
+        # The URL is the one already recorded in this repo
+        # (docs/research/2026-09-10-model-candidate-gate.md §1A) with its
+        # media-URL fallback, git blob identity and MIT licence text.
+        # Measured 2026-09-30: the fetched file is byte-identical to the
+        # local ~/facecore-models artifact.
+        #
+        # Model WEIGHTS, not faces: this does not cross the G3 boundary.
+        # It lands in the runner's $HOME, outside the checkout, and
+        # /models/ is gitignored — weights never enter Git.
+        run: |
+          set -eu
+          DEST="${HOME}/facecore-models"
+          URL="https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+          MEDIA="https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+          mkdir -p "$DEST"
+          curl -sSL --fail -o "$DEST/face_detection_yunet_2023mar.onnx" "$URL" \
+            || curl -sSL --fail -o "$DEST/face_detection_yunet_2023mar.onnx" "$MEDIA"
+          python - <<'PY'
+          import hashlib, pathlib, sys
+
+          EXPECTED = "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
+          path = pathlib.Path.home() / "facecore-models" / "face_detection_yunet_2023mar.onnx"
+          digest = hashlib.sha256(path.read_bytes()).hexdigest()
+          if digest != EXPECTED:
+              sys.exit(
+                  f"detector artifact hash mismatch: {digest} != {EXPECTED}"
+              )
+          print(f"detector artifact verified: {digest}")
+          PY
       - name: Run offscreen synthetic Qt smoke
         # D1: the operator-visible result classification (B1/S1) is
         # skipped when pyside6 is absent, so the `verify` job — which
@@ -93,6 +134,15 @@ jobs:
           # open_calls/close_calls assertions in this file are the guard
           # for the continuous-preview decision.
           python -m pytest tests/live/test_d2b_continuous_preview.py -q
+          # D4-F1: demo mode must not hand a no-op recorder to the trace
+          # channel (issue #123), and an inference worker that dies must
+          # produce a VISIBLE terminal. Only this job runs them: the
+          # wiring guard needs research-ui AND the detector artifact
+          # fetched above, the worker guard needs research-ui only. In
+          # `verify` (.[dev]) all eight are collected and skipped — which
+          # is exactly how they shipped once without any job running them.
+          python -m pytest tests/live/test_d4f1_demo_trace_wiring.py -q
+          python -m pytest tests/live/test_d4f1_worker_failure_visibility.py -q
       - name: Run G3 Start-gated integration (R1 §2/§5, PR-B)
         run: >-
           python -m pytest
