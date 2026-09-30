@@ -28,7 +28,7 @@ D4 真機第一輪的觀察與 D5 的靜態結果分屬不同協議（見 D0 §1
   照片偏暗與量測誤判無法從這批資料分辨。
 - **門檻未被選定**：sweep grid 以 live 語意呈現 28 格，`selected` 全部為 False。
   **這批照片沒有 holdout，事後挑門檻等於用測試集調參。**
-- **D6（換模型後端）尚未派工**，由 operator 另外決定換哪些模型。
+- **D6（換模型後端）已由 operator 授權並建 board task，落在 prep 階段** —— 見下方「D6 現況」。
 
 ## 現場紀錄（此前本檔誤述為「尚無任何真實 session」）
 
@@ -157,12 +157,30 @@ Baseline/adaptive 有不同規則；2/13 對 0/13 不是純粹同 operating poin
 - R4 缺檔 seq/rank 對位、各臂 refused 計數／雜檔處理、ORT teardown crash、continuity 位移界線初值（0.50 仍為初值）、ORT 端到端 5fps 餘量。
 - **E8-B fixed-window 契約（decision `d-20260920132145277296-1`，Issue #84 open）：** 正式 profile 改為 5 秒／相鄰樣本至少 200ms／至多 26 張（含 t=0 與 t=5000 兩端點），跨欄位必要條件 `max_frames >= ceil(timeout_ms / sample_interval_ms) + 1`；保留 t=0 立即取樣、5000ms deadline、deadline_reached 與 paired full 語意。#84 為 E8-B 重跑前 blocker。**此為 spec landing，不等於 production implementation go**——production follow-up 須另提 implementation plan 並再次取得 operator go。
 
+## D6 現況（2026-09-30）
+
+D6 是「用相同 23／13／30 照片集合、固定 detector 與 alignment，只換辨識 backend」的模型比較，
+**不改現有 App，不是產品模型替換、不是門檻選定、不是部署授權。**
+
+- 協議與計畫：[D6 功能協議](specs/2026-09-30-d6-deepface-comparison.md)、
+  [D6 計畫](plans/2026-09-30-d6-deepface-comparison-plan.md)。
+- 候選資格與未解事項：[D6 候選 gate](research/2026-09-30-deepface-candidate-gate.md)。
+- **本輪可用候選只有兩個，兩者都不引入新權重**：`ort-sface-control`（既有凍結 artifact）與
+  `deepface-sface-bridge`（同一份已核 SFace weight bytes，價值在抓色彩／尺度／前處理接錯）。
+- **Facenet512／ArcFace 在 operator 逐一核准 exact weight 的 code license／weight license／provenance
+  前，不得下載、不得載入、不得執行。** 比較 runner（A1／A2）與報告（R）全部停在這之後。
+- 兩份候選 gate（2026-09-10 的產品 bake-off 與本輪的 D6 候選）**並列不合併**；D6 的新 gate 不回頭
+  改寫舊檔，理由記在該檔開頭。
+- 目前階段是 plan §9 設計的 prep（文件／品質量測／環境 spike），**不是比較完成**，也還不是
+  shortage 結案 —— plan §11 的「候選不足交付 shortage」是最終完成定義。
+- 所有 `selected=False`；D6 不選產品門檻。
+
 ## Next Session
 
 1. 讀本檔、[D0 基準](mac-demo-baseline-d0.md)、母規格、ADR 0008／0009；查 git／task／inbox 活源。
-2. **現行主線是 Mac Demo 修復與驗收 D0–D4（已完成）＋ D5 靜態 baseline（PR-A／PR-B 已交付）。**
-   D5 之後的下一步是 **D6：換模型後端後的對照**，需由 operator 另外決定換哪些模型，
-   須由 lead 建 board task 後才派工，**不從文件直接開工**。
+2. **現行主線是 Mac Demo 修復與驗收 D0–D4（已完成）＋ D5 靜態 baseline（已交付）＋ D6 prep（進行中）。**
+   D6 已建 board task 並派工（文件／品質量測／環境 spike）；**比較 runner 與報告仍卡在 operator 的
+   individual weight 核准**，不得從文件直接開工，也不得在核准前下載或載入 Facenet512／ArcFace。
 3. D0–D5 不得偏離 D0 凍結基準（版本、profile g3-v1 門檻 0.363／0.10、gallery 23 張），不得為得到
    matched 而直接降門檻或移除三幀確認。**D5 未選定新門檻**——sweep 只作呈現。
 4. **不得把 D5 的靜態結果推論到動態**（三幀規則不適用於單張照片），也**不得把 M1／M5／v3 的歷史
