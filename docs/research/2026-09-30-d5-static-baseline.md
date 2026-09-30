@@ -119,8 +119,12 @@ grid 為既有 `REAL_MATCH_GRID`（0.30–0.60）× `REAL_MARGIN_GRID`（0.05–
 D5 沒有 holdout，這批照片**就是**評估集，事後從 grid 挑門檻等於用測試集調參。
 實測 `selected` 欄位全部為 False（`any(selected) = False`）。
 
-**22/30 的品質拒絕不會因任何門檻組合而改變** —— 品質篩選在門檻之前，不是門檻的函數。
-因此 sweep 的 FA 欄只會在剩下的 8 張品質通過的 non-target 上變動。
+**22/30 的品質拒絕不會因任何門檻組合而改變。** 機制上要注意措辭的精確性：那 22 列在
+`sweep_live_semantics` 裡是因為 `l_top1_score is None` 而 **`continue` 跳過**（`static_baseline.py:574`），
+**它們從未進入 sweep 的計數**，而不是被 sweep 判定為「與門檻無關」。兩者結論相同
+（這 22 列在任何門檻組合下都不會出現在 FA 欄），但機制不同：若日後有人把跳過改成
+「計為 unknown」，本段這句話就需要更新。因此 sweep 的 FA 欄只會在剩下的 8 張
+品質通過的 non-target 上變動。
 
 ## 8. 限制
 
