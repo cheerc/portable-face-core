@@ -100,6 +100,7 @@ src/
     │   ├── corpus.py
     │   ├── fa_matrix.py
     │   ├── nontarget_fa.py
+    │   ├── quality_audit.py
     │   ├── real_replay.py
     │   ├── replay.py
     │   ├── replay_report.py
@@ -211,6 +212,7 @@ tests/
 │   ├── test_mac_live_capture_probe.py
 │   ├── test_mac_live_recorder_probe.py
 │   ├── test_per_probe_detail.py
+│   ├── test_quality_audit.py
 │   ├── test_real_replay.py
 │   ├── test_replay.py
 │   ├── test_replay_report.py
