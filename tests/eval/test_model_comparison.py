@@ -57,6 +57,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from PIL import Image
 
 from facecore.contracts.policy import PolicyProfile
 from facecore.eval.model_comparison import (
@@ -473,10 +474,34 @@ class TestGalleryIsBoundToTheWeightsNotTheLabel:
         assert comparison.to_dict()["observed_weight_sha256"] == spec.weight_sha256
 
     def test_a_comparison_without_a_recorded_hash_cannot_be_published(self) -> None:
-        """A result with no observed hash is a claim, not a measurement."""
+        """A result with no observed hash is a claim, not a measurement.
+
+        The observed hash is a plain string field, so deleting the
+        first clause lets execution fall into the second one, which
+        slices ``None`` and raises ``TypeError``. That failure is real
+        but it belongs to the line *below* — and a mutation reporting it
+        looks exactly like a working guard, which is the shape of false
+        evidence this rework exists to remove.
+
+        So the call is made inside a ``try`` that catches *any*
+        exception, and the assertions then demand this guard's own
+        refusal. Catching only ``CandidateContractError`` would let the
+        ``TypeError`` escape as an error naming the line it came from —
+        red, but not attributable to the clause that was deleted.
+        """
         comparison = _comparison(observed_weight_sha256=None)
-        with pytest.raises(CandidateContractError, match="no observed weight hash"):
+        refusal: Exception | None = None
+        try:
             comparison.assert_binding_recorded()
+        except Exception as exc:  # noqa: BLE001 - the point is to name whatever came
+            refusal = exc
+        assert refusal is not None, "the guard did not refuse an unbound result"
+        assert isinstance(refusal, CandidateContractError), (
+            f"raised {type(refusal).__name__} rather than this guard's "
+            f"refusal; a deleted clause falling through to the next line "
+            f"gives {refusal}"
+        )
+        assert "no observed weight hash" in str(refusal)
 
     def test_a_hash_disagreeing_with_the_declaration_cannot_be_published(self) -> None:
         """A hash that does not match the spec is a binding that failed silently.
@@ -610,7 +635,7 @@ class TestDenominatorsAreTheInputCount:
                 product_requires_python=PRODUCT_PY,
             )
 
-    def test_a_wrong_count_of_nontargets_stops_the_run(self) -> None:
+    def test_a_wrong_count_of_nontargets_stops_the_run(self, tmp_path: Path) -> None:
         """The 30-photo side of the count guard, which is the larger half.
 
         The probe guard and the non-target guard are separate clauses,
@@ -618,19 +643,33 @@ class TestDenominatorsAreTheInputCount:
         non-targets would report every false-accept count against a
         denominator the reader cannot see — and 29 of 30 is a
         ``1/30``-shaped result that looks like an improvement.
+
+        ``tmp_path`` supplies a real, *decodable* image on purpose. The
+        guard fires before anything is read, so the file is never
+        opened when the guard works; a path that does not exist, or a
+        file that is not an image, would instead make a *deleted* guard
+        fail inside the scorer — a different refusal than the one under
+        test, and one that a mutation could be scored as a pass.
         """
-        with pytest.raises(CandidateContractError, match="non-target"):
+        nt = tmp_path / "synthetic-nt.jpg"
+        Image.new("RGB", (16, 16), (120, 120, 120)).save(nt)
+        refusal: Exception | None = None
+        try:
             compare_candidate(
                 spec=_spec(),
                 scorer=_Stub(_two_identity_context(0.9, 0.1)),
                 probes=[],
-                nontarget=[Path("synthetic-nt.jpg")],
+                nontarget=[nt],
                 expected_probes=0,
                 expected_nontarget=30,
                 probe_truth=PROBE_ID,
                 observed_weight_sha256=None,
                 product_requires_python=PRODUCT_PY,
             )
+        except CandidateContractError as exc:
+            refusal = exc
+        assert refusal is not None, "the count guard did not refuse a short cohort"
+        assert "non-target" in str(refusal)
 
     def test_a_fully_rejected_cohort_stops_the_run(self) -> None:
         """Every row unprocessable is a broken setup, not a result.
