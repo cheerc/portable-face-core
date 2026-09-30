@@ -118,16 +118,24 @@ INFO:  As NNAPI or CoreML may provide benefits with this model it is recommended
 ## Initializer position — the finding that changes the gate
 
 The candidate-gate document's commander note said SFace "有兩個 initializer
-被放進圖輸入端". Measured with `onnx` 1.23.1:
+被放進圖輸入端". Measured with `onnx` 1.23.1 against the product artifact:
 
 ```
-SFace:  n_initializers = 174, of which 173 are also graph.input
-YuNet:  n_initializers = 112, of which   0 are also graph.input
+SFace:  n_initializer = 174   n_graph.input = 175   intersection = 174
+        init NOT in graph.input = set()          <- empty, no exceptions
+        graph.input NOT in init = ['data']       <- 'data' is not an initializer
+YuNet:  n_initializer = 112   n_graph.input = 1     intersection = 0
+        init NOT in graph.input = 112
 ```
 
-**173, not two.** The `data` initializer is the only one absent from
-`graph.input`. And onnxruntime prints one warning line per such initializer
-at session construction — **174 warning lines**, not two:
+**All 174, not two** — the intersection is the full initializer set, with
+zero exceptions. `graph.input` carries a 175th entry, `data`, which is the
+image input and is *not* an initializer; the reverse set
+(`graph.input NOT in init`) is exactly `['data']`.
+
+onnxruntime prints one warning line per initializer that lands in
+`graph.input` at session construction — measured **174 warning lines**,
+which agrees with the intersection above:
 
 ```
 [W:onnxruntime:, graph.cc:1430 Graph] Initializer <name> appears in graph inputs
@@ -135,13 +143,13 @@ and will not be treated as constant value/weight. This may prevent some of
 the graph optimizations, like const folding. ...
 ```
 
-This is the same warning pair I had been filtering out of the D5/D6 console
+This is the same warning I had been filtering out of the D5/D6 console
 output as noise. This is what it was hiding.
 
 This matters because the checker's own NNAPI and CoreML caveats require
 `Weights and bias should be constant` for `Conv`, `Gemm` and `PRelu` — the
 three op families this model is built from. **The caveat the tool prints as
-"not checked" is precisely the property this artifact violates in 173
+"not checked" is precisely the property this artifact violates in 174
 places.**
 
 The tool still answers YES for NNAPI and CoreML NeuralNetwork, because it
@@ -175,7 +183,7 @@ mobile-ready on all three EPs, with SFace degraded on CoreML MLProgram
 
 Does **not** settle:
 
-- Whether the 173 overridable initializers measurably cost anything at
+- Whether the 174 overridable initializers measurably cost anything at
   runtime. That needs a device measurement on Android/iOS, not a static
   checker. **Unverified.**
 - Facenet512 / ArcFace mobile usability. **Unassessed** (wrong format).
