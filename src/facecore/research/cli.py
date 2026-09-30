@@ -1232,8 +1232,17 @@ def cmd_live(
         frame_sink=_stage_frame if (is_true_path or ui == "qt") else None,
         frame_transform=_square_capture_transform if ui == "qt" else None,
         fixed_seconds=fixed_seconds,
-        trace_recorder=recorder if is_true_path else None,
-        trace_attempt_id=resolved_attempt_id if is_true_path else None,
+        # D4-F1 (issue #123): gate the trace channel on `recording`, not on
+        # the recorder's IDENTITY. `is_true_path` answers "is this the real
+        # camera path", which is still true in demo mode — so it handed
+        # NULL_RECORDER to the trace writer, the controller's None-guard
+        # let it through, and `_NullRecorder.__getattr__` raised on the
+        # append_trace probe. Demo mode now receives no trace writer at
+        # all, which is also what `_stage_frame` and `record_crop_mapping`
+        # below already do. `trace_attempt_id` moves with it: the guard is
+        # an `or`, so leaving the id behind would re-open the same hole.
+        trace_recorder=recorder if recording else None,
+        trace_attempt_id=resolved_attempt_id if recording else None,
         # D3b: the plaintext demo sink for the initial desktop. The rounds
         # built by next_session_factory below get the same value.
         demo_label_sink=demo_csv_path if not recording else None,
@@ -1433,8 +1442,11 @@ def cmd_live(
                     # initial desktop, or the operator verdict is refused
                     # with 「標註未綁定」 from the second round onward.
                     demo_label_sink=None if recording else demo_csv_path,
-                    trace_recorder=recorder if is_true_path else None,
-                    trace_attempt_id=round_attempt_id if is_true_path else None,
+                    # D4-F1: same gate as the initial desktop above, and
+                    # for the same reason — the round's trace writer must
+                    # follow `recording`, not the recorder's identity.
+                    trace_recorder=recorder if recording else None,
+                    trace_attempt_id=round_attempt_id if recording else None,
                 )
                 if is_true_path:
                     # G3 W5: the new round owns the trace writer now.

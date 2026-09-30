@@ -163,6 +163,11 @@ class LiveController:
         # inference worker mid-round.
         self._research_sink_errors: list[str] = []
 
+        # D4-F1: unexpected exceptions raised inside the inference worker.
+        # Recorded rather than propagated — see the worker's `except` for
+        # why a dead worker must not look like a running round.
+        self._inference_failures: list[str] = []
+
         # E3 fixed-window collector state: B locks once; the collector
         # continues independently until deadline / cap / stop signal.
         self._inference_terminal: SessionResult | None = None
@@ -861,6 +866,41 @@ class LiveController:
                     except RuntimeError:
                         pass
                 self._inference_terminal_seen.set()
+            except Exception as exc:  # noqa: BLE001 - see below
+                # D4-F1: an unexpected failure inside the worker must not
+                # leave the round "running" forever. Before this, a raise
+                # from anywhere in the loop escaped the thread, the state
+                # stayed "running", and the window kept painting a stale
+                # result with no indication that inference had already
+                # died — the operator read a wrong answer as a real one.
+                #
+                # This is NOT a fix for issue #123 (its root cause is the
+                # demo-mode trace wiring in cmd_live). It is the separate
+                # robustness gap that bug exposed: ANY unexpected worker
+                # exception must become a visible terminal, in the same
+                # spirit as the research-sink containment above — a side
+                # effect failing may not end the round, but a failure in
+                # the round's own core may not hide either.
+                #
+                # The reason code is namespaced per type so a report can
+                # tell an inference crash from a capture read failure, and
+                # the exception text is kept so the cause is not lost.
+                self._inference_failures.append(f"{type(exc).__name__}: {exc}")
+                try:
+                    if self._terminal is None:
+                        self._terminal = self._engine.terminate_with_error(
+                            self._controller_now_ns(),
+                            reason_codes=(
+                                "inference_worker_failed",
+                                f"{type(exc).__name__}",
+                            ),
+                        )
+                except (RuntimeError, ValueError):
+                    # The engine already terminated or was never started;
+                    # there is nothing further to conclude. The failure
+                    # is recorded above, which is what the window reads.
+                    pass
+                self._inference_terminal_seen.set()
             finally:
                 # B1: the D1 pump closes the source on its way out; this
                 # worker does the same. close() may have SKIPPED its own
@@ -922,6 +962,26 @@ class LiveController:
     def state_is_running(self) -> bool:
         """D2: UI-thread view of "the round is still going"."""
         return self._terminal is None and not self._closed
+
+    def inference_failures(self) -> list[str]:
+        """D4-F1: unexpected exceptions caught inside the inference worker.
+
+        Empty means the worker ran to a terminal without an unexpected
+        failure. A non-empty list means the round ended early and the
+        terminal's reason codes say why — this is the detail behind
+        those codes, kept for the operator report.
+        """
+        return list(self._inference_failures)
+
+    def terminate_with_error(
+        self, now_ns: int, reason_codes: tuple[str, ...]
+    ) -> SessionResult:
+        """D4-F1: conclude the round as a visible error terminal.
+
+        Public because the worker owns the failure but the engine owns
+        the terminal, and the window reads the terminal, not the thread.
+        """
+        return self._engine.terminate_with_error(now_ns, reason_codes=reason_codes)
 
     @property
     def recognition_anchored(self) -> bool:
