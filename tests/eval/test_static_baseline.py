@@ -55,6 +55,7 @@ from facecore.eval.static_baseline import (
     render_report_body,
     score_photo,
     summarize,
+    summarize_r,
     sweep_live_semantics,
 )
 from facecore.live.contracts import FramePacket, ResearchProfile
@@ -641,6 +642,177 @@ class TestScoreRangesAreLabelledByTheirOwnSet:
         )
         assert probe.score_ranges["l_top1_score"]["min"] == pytest.approx(0.75)
         assert probe.score_ranges["l_margin"]["min"] == pytest.approx(0.65)
+
+
+class TestRBranchCountsAreRealMeasurements:
+    """The plan asks the report for R-branch counts; these pin them.
+
+    Every assertion here reaches `score_photo`, so `summarize_r` is
+    exercised over rows the real pipeline produced — the L/R difference
+    comes from the band each branch computed, not from a hand-built
+    `PhotoResult` whose `r_band` a test author chose.
+
+    The distinction these lock down: on the R branch a zero
+    `quality_rejected` is a **measurement** (the gate is not applied),
+    not a missing value. A report that read it as "we did not measure"
+    would misstate the whole point of the second arm.
+    """
+
+    def test_a_quality_rejected_photo_still_counts_on_the_r_branch(
+        self, tmp_path: Path
+    ) -> None:
+        """The headline property: R ranks what L threw away.
+
+        This frame is flat, so `score_frame` rejects it on quality. L
+        has nothing; R must still place it. Asserting the precondition
+        first means the test cannot pass for the wrong reason.
+        """
+        photo = _write_photo(tmp_path / "flat.jpg", _flat_frame())
+        ctx = _two_identity_context(0.80, 0.20)
+        assert (
+            score_frame(
+                FramePacket(sequence=1, captured_ns=0, rgb=_flat_frame()), ctx
+            ).quality_pass
+            is False
+        ), "fixture was meant to be quality-rejected"
+
+        row = score_photo(
+            photo,
+            ctx,
+            _profile(),
+            set_name="nontarget",
+            truth_identity=None,
+            sequence=1,
+        )
+        l_summary = summarize([row], set_name="nontarget")
+        r_summary = summarize_r([row], set_name="nontarget")
+
+        assert l_summary.quality_rejected == 1
+        assert l_summary.false_accepts == 0
+        assert r_summary["quality_rejected"] == 0, (
+            "the R branch does not apply the quality gate, so a rejected "
+            "photo must not land in its quality-rejected bucket"
+        )
+        assert r_summary["total"] == 1, "the denominator stays the photo count"
+        assert r_summary["false_accepts"] == 1, (
+            "on R this photo's 0.80 score with a 0.60 margin is a match, "
+            "which is exactly the optimism the R arm exists to show"
+        )
+
+    def test_r_counts_never_report_a_quality_rejection_for_a_real_photo(
+        self, tmp_path: Path
+    ) -> None:
+        photo = _write_photo(tmp_path / "p.jpg", _good_frame())
+        row = score_photo(
+            photo,
+            _two_identity_context(0.55, 0.30),
+            _profile(),
+            set_name="nontarget",
+            truth_identity=None,
+            sequence=1,
+        )
+        assert row.quality_pass is True
+        r_summary = summarize_r([row], set_name="nontarget")
+        assert r_summary["quality_rejected"] == 0
+        assert r_summary["unprocessable"] == 0
+
+    def test_a_probe_that_r_matches_is_a_correct_accept_on_r(
+        self, tmp_path: Path
+    ) -> None:
+        photo = _write_photo(tmp_path / "p.jpg", _good_frame())
+        row = score_photo(
+            photo,
+            _two_identity_context(0.70, 0.20),
+            _profile(),
+            set_name="probe",
+            truth_identity=PROBE_ID,
+            sequence=1,
+        )
+        assert row.r_top1 == PROBE_ID
+        r_summary = summarize_r([row], set_name="probe")
+        assert r_summary["correct_accepts"] == 1
+        assert r_summary["wrong_identities"] == 0
+        assert r_summary["r_top1_correct"] == 1, (
+            "ranking correctness on R is reported separately, the same way "
+            "summarize reports it for L"
+        )
+
+    def test_r_and_l_differ_on_exactly_the_rejected_photos(
+        self, tmp_path: Path
+    ) -> None:
+        """The two arms must disagree, and disagree only there.
+
+        On a set with one rejected and one clean photo, L drops the first
+        and R keeps it. If they ever agreed exactly, the second arm would
+        be measuring nothing.
+        """
+        flat = score_photo(
+            _write_photo(tmp_path / "flat.jpg", _flat_frame()),
+            _two_identity_context(0.80, 0.20),
+            _profile(),
+            set_name="nontarget",
+            truth_identity=None,
+            sequence=1,
+        )
+        clean = score_photo(
+            _write_photo(tmp_path / "clean.jpg", _good_frame()),
+            _two_identity_context(0.45, 0.30),
+            _profile(),
+            set_name="nontarget",
+            truth_identity=None,
+            sequence=2,
+        )
+        l_summary = summarize([flat, clean], set_name="nontarget")
+        r_summary = summarize_r([flat, clean], set_name="nontarget")
+
+        assert l_summary.quality_rejected == 1
+        assert r_summary["quality_rejected"] == 0
+        assert l_summary.false_accepts + l_summary.review == 1
+        assert r_summary["false_accepts"] + r_summary["review"] == 2, (
+            "R ranks both photos, so both must land in a band"
+        )
+
+    def test_a_quality_rejected_probe_is_a_correct_accept_on_r(
+        self, tmp_path: Path
+    ) -> None:
+        """R must read R's top1, not L's — and L's is empty here.
+
+        This is the row that makes the branch mixing observable. The
+        photo is quality-rejected, so `l_top1 is None` while `r_top1` is
+        a real identity. Comparing the R branch's match against the *L*
+        identity would score a correctly-identified probe as
+        `wrong_identity` — a baseline reporting "we misidentified
+        someone" when the model got every probe right.
+        """
+        photo = _write_photo(tmp_path / "flat.jpg", _flat_frame())
+        row = score_photo(
+            photo,
+            _two_identity_context(0.75, 0.20),
+            _profile(),
+            set_name="probe",
+            truth_identity=PROBE_ID,
+            sequence=1,
+        )
+        assert row.quality_pass is False, "fixture was meant to be rejected"
+        assert row.l_top1 is None, "L has no identity for a rejected photo"
+        assert row.r_top1 == PROBE_ID, "R ranks it despite the gate"
+        assert row.r_band == "matched"
+
+        r_summary = summarize_r([row], set_name="probe")
+        assert r_summary["correct_accepts"] == 1, (
+            "a rejected probe that R matches correctly must count as a "
+            "correct accept; counting it as wrong_identity would report the "
+            "opposite of what happened"
+        )
+        assert r_summary["wrong_identities"] == 0
+        assert r_summary["r_top1_correct"] == 1
+
+        # And the L branch must not move: this photo is still rejected.
+        assert summarize([row], set_name="probe").quality_rejected == 1
+
+    def test_an_unknown_set_name_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="unknown set_name"):
+            summarize_r([_matched_nontarget("nt-01.jpg")], set_name="probe-set")
 
 
 class TestSweepPresentsButDoesNotChoose:

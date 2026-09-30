@@ -362,6 +362,48 @@ def score_photo(
     )
 
 
+def _classify(result: PhotoResult, *, branch: str) -> str:
+    """Bucket one row using one branch's band **and** that branch's top1.
+
+    ``branch="l"`` reads ``l_band``/``l_top1`` (what the App decides);
+    ``branch="r"`` reads ``r_band``/``r_top1`` (model ranking with the
+    quality gate skipped). Both go through this one function so the two
+    branches cannot drift into two different definitions — the R-branch
+    counts a report quotes must be the *same* rules applied to a
+    different arm, not a second classifier.
+
+    Reading the band's identity from the matching branch is not
+    cosmetic. A photo the quality gate rejected has ``l_top1 is None``
+    but a populated ``r_top1``; comparing the R branch's match against
+    the *L* identity would score a correctly-identified probe as
+    ``wrong_identity``, which is the one thing a baseline must never
+    get backwards.
+    """
+    if result.unprocessable_reason is not None:
+        return CLASS_UNPROCESSABLE
+    band = result.l_band if branch == "l" else result.r_band
+    top1 = result.l_top1 if branch == "l" else result.r_top1
+    if band == BAND_REJECTED or band is None:
+        return CLASS_QUALITY_REJECT
+    if band == BAND_MATCHED:
+        if result.truth_identity is None:
+            return CLASS_FALSE_ACCEPT
+        return (
+            CLASS_CORRECT_ACCEPT
+            if top1 == result.truth_identity
+            else CLASS_WRONG_IDENTITY
+        )
+    if band == BAND_REVIEW:
+        return CLASS_REVIEW
+    if result.truth_identity is None:
+        # A non-target the model declined to name is a correct reject.
+        # For a probe it is an unknown reject — the same `unknown` band
+        # means opposite things per set, which is exactly why this
+        # mapping is keyed off `truth_identity` rather than band alone.
+        return CLASS_CORRECT_REJECT
+    return CLASS_UNKNOWN_REJECT
+
+
 def classify_nontarget(result: PhotoResult) -> str:
     """Bucket one non-target row using live's definition.
 
@@ -369,32 +411,52 @@ def classify_nontarget(result: PhotoResult) -> str:
     margin. This is where ``sweep.py``'s score-only rule would differ,
     and the plan requires live's rule.
     """
-    if result.unprocessable_reason is not None:
-        return CLASS_UNPROCESSABLE
-    if result.l_band == BAND_REJECTED:
-        return CLASS_QUALITY_REJECT
-    if result.l_band == BAND_MATCHED:
-        return CLASS_FALSE_ACCEPT
-    if result.l_band == BAND_REVIEW:
-        return CLASS_REVIEW
-    return CLASS_CORRECT_REJECT
+    return _classify(result, branch="l")
 
 
 def classify_probe(result: PhotoResult) -> str:
     """Bucket one probe row (truth is ``result.truth_identity``)."""
-    if result.unprocessable_reason is not None:
-        return CLASS_UNPROCESSABLE
-    if result.l_band == BAND_REJECTED:
-        return CLASS_QUALITY_REJECT
-    if result.l_band == BAND_MATCHED:
-        return (
-            CLASS_CORRECT_ACCEPT
-            if result.l_top1 == result.truth_identity
-            else CLASS_WRONG_IDENTITY
-        )
-    if result.l_band == BAND_REVIEW:
-        return CLASS_REVIEW
-    return CLASS_UNKNOWN_REJECT
+    return _classify(result, branch="l")
+
+
+def summarize_r(results: list[PhotoResult], *, set_name: str) -> dict[str, object]:
+    """Count one photo set on the **R** branch.
+
+    The R branch skips the quality gate, so it has no ``quality_rejected``
+    bucket to fill and no ``unprocessable`` row unless no single face was
+    found. The plan asks the report for R-branch counts, and the counts
+    must come from this module rather than being recomputed from the CSV
+    by hand — a hand-recomputed number is one nobody can re-derive later.
+
+    Kept separate from ``summarize`` because its denominator semantics
+    differ: an R-branch "quality rejected" of 0 is a real measurement
+    (the gate is not applied), not a missing one. Returns a plain dict
+    rather than a dataclass — it is a report-shaped side table, and the
+    ``set_name`` key keeps it from being mistaken for a score range.
+    """
+    if set_name not in (SET_PROBE, SET_NONTARGET):
+        raise ValueError(f"unknown set_name {set_name!r}")
+    counts = [_classify(r, branch="r") for r in results]
+    top1_correct = sum(
+        1
+        for r in results
+        if set_name == SET_PROBE
+        and r.r_top1 is not None
+        and r.truth_identity is not None
+        and r.r_top1 == r.truth_identity
+    )
+    return {
+        "set_name": set_name,
+        "total": len(results),
+        "correct_accepts": counts.count(CLASS_CORRECT_ACCEPT),
+        "wrong_identities": counts.count(CLASS_WRONG_IDENTITY),
+        "review": counts.count(CLASS_REVIEW),
+        "unknown_rejects": counts.count(CLASS_UNKNOWN_REJECT),
+        "quality_rejected": counts.count(CLASS_QUALITY_REJECT),
+        "false_accepts": counts.count(CLASS_FALSE_ACCEPT),
+        "unprocessable": counts.count(CLASS_UNPROCESSABLE),
+        "r_top1_correct": top1_correct,
+    }
 
 
 def _range(values: Sequence[float]) -> dict[str, float | None]:
