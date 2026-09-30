@@ -105,6 +105,7 @@ src/
     │   ├── replay_report.py
     │   ├── report.py
     │   ├── session.py
+    │   ├── static_baseline.py
     │   └── sweep.py
     ├── governance/
     │   ├── __init__.py
@@ -215,6 +216,7 @@ tests/
 │   ├── test_replay_report.py
 │   ├── test_report.py
 │   ├── test_session.py
+│   ├── test_static_baseline.py
 │   ├── test_sweep.py
 │   ├── test_temporal_leakage.py
 │   └── test_verify_grade_detail.py
