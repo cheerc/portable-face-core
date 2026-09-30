@@ -155,9 +155,9 @@ embedding 位元組**做 SHA-256，**不是**對檔名或檔案位元組。換�
 5. **操作**：依 `docs/g3-local-test-sop.md`：選相機（不開鏡頭）→ 勾兩個 consent → 按 **Start** → 辨識 5 秒 → 按「正確／錯誤」。
 6. **結果**：`~/Downloads/face_sample/_facecore/store/results.csv`（逐輪摘要）＋同層加密診斷。
 
-**可重現性警告**：launcher 啟動時會 `git pull --ff-only origin main`，**版本會被更新**。
-D4 要求驗收可重現，因此真機驗收時必須記錄當下 HEAD，且**在受控 checkout 上執行**，
-或在驗收前暫停該 auto-pull。詳見 §11 待確認清單第 5 項。
+**可重現性警告**（D4 前置 PR 後已解除）：launcher 原會在啟動時 `git pull --ff-only origin main`，
+版本會被更新。現已改為**只顯示**目前 commit 與落後狀態、**不修改 repo**（decision `-14`），
+真機驗收時把 Terminal 印出的 commit 記入記錄即可。詳見 §11 待確認清單第 5、12 項。
 
 操作細節（相機權限、卡住時對照表、資料保存 30 天規則）以
 [`g3-local-test-sop.md`](g3-local-test-sop.md) 為準，本檔不重複。
@@ -231,14 +231,14 @@ D0 僅變更文件，故 regression 以上述 repo baseline 為準。
 | 2 | **UI 卡頓**實際程度 | Qt timer callback（`qt_window.py:276` 接線、`:598` 同步 `run_until_terminal`）走在主執行緒，本次未量測真機延遲 | D2（worker 化後實測 preview FPS／最大停頓） |
 | 3 | **曝光拒絕是場景問題還是量測／門檻問題** | 9/24 r4 trace 多張 `quality_exposure`，但尚無畫面條件對照，不能斷言門檻設錯 | D1 量測後由 D3 呈現區分 |
 | 4 | 現有模型在**代表性人群的準確率** | 29 輪為單人工程診斷樣本，標註不可信；13 辨識組／30 non-target 尚未以現版本重跑 | D5（D4 之後） |
-| 5 | **launcher auto-`git pull`** 對驗收可重現性的影響 | D4 要求固定版本驗收，但 `.command` 啟動即快轉 main | D4 驗收前必須處理（受控 checkout 或暫停 pull） |
+| 5 | **launcher auto-`git pull`** 對驗收可重現性的影響 | D4 要求固定版本驗收，但 `.command` 啟動即快轉 main | **D4 前置 PR 已解**（decision `-14`）：launcher 改為顯示目前 commit 與落後狀態、不再 pull。仍需真機確認顯示正確 |
 | 6 | 分段時間量測（open 開始／完成、首幀、推論開始／完成、結果完成） | 尚未實作 | D1 |
 | 7 | 首幀 open／read 分攤的**真機**數值 | 合成重現無法回答真機相機行為 | D1 量測＋D4 實測 |
 | 8 | `ruff check .`（全 repo）有 1 個 E501 | `experiments/mac_live_capture_probe.py:521`；CI 只跑 `ruff check src tests` 故綠。非本 PR 引入，**本次不併入 D0 修正**（保持 source 零變更的可審計形態） | 之後的 lint 清理 |
 | 9 | `close()` 的 **join 逾時路徑**真機行為 | D2 讓真機 GUI 有 worker 停在原生 read 內；read 若活得比 5s join 預算久，`close()` 會帶著**仍開啟的相機**返回（刻意的取捨，見 `controller.close()` docstring 與 `_stop_and_release()` 既有判定）。合成環境只能證明「不釋放、不崩潰、有界」，**證明不了真機 AVFoundation 的 read 是否可能逾時 5s、逾時後相機是否確實釋放、使用者是否看得見燈號殘留** | D4 實測 |
 | 10 | **UI 與下游報表統計語意不一致（known divergence）** | `report.py:147`／`:175` 與 `analysis.py:627` 以 `status==timeout` 歸類，把 `insufficient_evidence` 計入 timeouts；UI 以 reason codes 區分「已看見人臉，但多幀確認未成立」與一般超時（找不到人員）。commander 裁定新舊分母刻意並存、不重新詮釋既有報表分類，D3 只保證新紀錄帶可區分的 reason code、模式與版本供日後分析分流 | D3（紀錄保留 reason code，分類維持現狀） |
 | 11 | `tests/cli/test_derive_int8bq.py:63` 寫死本機真實照片路徑 | commander 於 D3b 裁定（`d-20260929193128013174-12` item 5）不併入 D3b：該檔有 skipif 與存在檢查、唯讀，且不在 D0–D4 範圍內 | 另案處理 |
-| 12 | **launcher 行為變更會影響 D4 驗收可重現性** | D3b 已把 `scripts/g3-local-test-app.command` 由 record 模式改為 `--mode demo`（decision `d-20260929193651396921-13` item 4），而本表第 5 項已記錄 launcher 啟動時會自動 `git pull --ff-only` 快轉 main。D4 若要求固定版本驗收，launcher 本身已是會變動的因子 | **D4 驗收前必須處理**（受控 checkout 或暫停 pull，並同步更新 `docs/g3-local-test-sop.md`） |
+| 12 | **launcher 行為變更會影響 D4 驗收可重現性** | D3b 已把 `scripts/g3-local-test-app.command` 由 record 模式改為 `--mode demo`（decision `d-20260929193651396921-13` item 4），而本表第 5 項已記錄 launcher 啟動時會自動 `git pull --ff-only` 快轉 main。D4 若要求固定版本驗收，launcher 本身已是會變動的因子 | **D4 前置 PR 已解**：launcher 不再 pull，改為顯示 commit 與落後狀態（decision `-14`），SOP 已同步。仍需真機確認顯示正確 |
 
 | 13 | **D2b 引入的雙重釋放路徑在真機 `OpenCVCapture` 上未實測** | `cancel_clicked` 仍呼叫 `release_source()`，接著 `enter_ready` 現在也呼叫 `close()` —— 這條路徑在 D2b 之前不存在（當時 `enter_ready` 是 detach-only）。合成環境實測安全（`close()` 抽象契約明寫 `Idempotent`，`OpenCVCapture.close()` 以 `handle, self._handle = self._handle, None` 守衛使二次呼叫跳過；FakeCapture 實測 Cancel 後 `is_closed=True`、thread 數 `1 → 1` 不增長、相機可重新 Start），**但真機 AVFoundation 的 handle 釋放冪等性未經實測** | D4 實測 |
 
