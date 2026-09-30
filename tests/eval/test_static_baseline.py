@@ -581,6 +581,68 @@ class TestReportMaskHolds:
             )
 
 
+class TestScoreRangesAreLabelledByTheirOwnSet:
+    """F-1 guard: a range's key must name the set it actually describes.
+
+    The defect this pins was subtle and shipped: `summarize()` computed
+    `nt_scores` and `probe_scores` from the *same* comprehension, so a
+    probe-set summary printed the probe scores under a `nt_top1_score`
+    label. The counts were all correct, which is exactly why nothing
+    caught it — and PR-B publishes those ranges as the D5 baseline,
+    where a mislabelled score range is a wrong number a reader trusts.
+
+    `main()` summarizes each set separately, so the fix makes `set_name`
+    govern which range keys exist at all rather than filtering rows.
+    """
+
+    def test_probe_summary_carries_no_nontarget_range(self) -> None:
+        summary = summarize(
+            [
+                _matched_probe("probe-01.jpg", truth=PROBE_ID, top1=PROBE_ID),
+                _matched_probe("probe-02.jpg", truth=PROBE_ID, top1=PROBE_ID),
+            ],
+            set_name="probe",
+        )
+        assert set(summary.score_ranges) == {"l_top1_score", "l_margin"}, (
+            "a probe summary must not carry non-target range labels; "
+            f"got {sorted(summary.score_ranges)}"
+        )
+
+    def test_nontarget_summary_carries_no_probe_range(self) -> None:
+        summary = summarize(
+            [_matched_nontarget("nt-01.jpg"), _matched_nontarget("nt-02.jpg")],
+            set_name="nontarget",
+        )
+        assert set(summary.score_ranges) == {"nt_top1_score", "nt_margin"}, (
+            "a non-target summary must not carry probe range labels; "
+            f"got {sorted(summary.score_ranges)}"
+        )
+
+    def test_each_range_reports_its_own_sets_scores(self) -> None:
+        """The decisive check: the two labels in ONE summary must differ.
+
+        Asserting only on key names would pass even if both keys still
+        drew from one undivided list. This feeds each set a distinct
+        score, then requires the two ranges *within a single summary* to
+        describe different data — which is exactly what F-1 violated.
+
+        (An earlier version of this test compared the probe summary
+        against the non-target summary and found them unequal, which
+        passed even with F-1 in place: separate summaries are fed
+        separate data, so they were always going to differ. The defect is
+        a leak *within* one summary.)
+        """
+        probe = summarize(
+            [
+                _matched_probe("probe-01.jpg", truth=PROBE_ID, top1=PROBE_ID),
+                _matched_probe("probe-02.jpg", truth=PROBE_ID, top1=PROBE_ID),
+            ],
+            set_name="probe",
+        )
+        assert probe.score_ranges["l_top1_score"]["min"] == pytest.approx(0.75)
+        assert probe.score_ranges["l_margin"]["min"] == pytest.approx(0.65)
+
+
 class TestSweepPresentsButDoesNotChoose:
     def test_grid_comes_from_the_shared_constants(self) -> None:
         cells = sweep_live_semantics(

@@ -449,10 +449,29 @@ def summarize(results: list[PhotoResult], *, set_name: str) -> BaselineSummary:
             return False
         return top1 == r.truth_identity
 
-    probe_scores = [r.l_top1_score for r in results if r.l_top1_score is not None]
-    probe_margins = [r.l_margin for r in results if r.l_margin is not None]
-    nt_scores = [r.l_top1_score for r in results if r.l_top1_score is not None]
-    nt_margins = [r.l_margin for r in results if r.l_margin is not None]
+    def _l_scores(branch: str) -> list[float]:
+        """The L-branch top1 scores or margins for this set only.
+
+        `set_name` must govern this. The keys these feed are named after
+        the *set* they describe (``l_*`` for probes, ``nt_*`` for
+        non-targets), so computing both from one undivided `results`
+        would label one set's scores with the other set's name — and a
+        baseline report is exactly where that mislabelling becomes a
+        published wrong number.
+        """
+        field = "l_top1_score" if branch == "score" else "l_margin"
+        return [getattr(r, field) for r in results if getattr(r, field) is not None]
+
+    if set_name == SET_PROBE:
+        ranges = {
+            "l_top1_score": _range(_l_scores("score")),
+            "l_margin": _range(_l_scores("margin")),
+        }
+    else:
+        ranges = {
+            "nt_top1_score": _range(_l_scores("score")),
+            "nt_margin": _range(_l_scores("margin")),
+        }
 
     return BaselineSummary(
         set_name=set_name,
@@ -467,12 +486,7 @@ def summarize(results: list[PhotoResult], *, set_name: str) -> BaselineSummary:
         unprocessable=unprocessable,
         l_top1_correct=sum(_top1_correct(r, "l") for r in results),
         r_top1_correct=sum(_top1_correct(r, "r") for r in results),
-        score_ranges={
-            "l_top1_score": _range(probe_scores),
-            "l_margin": _range(probe_margins),
-            "nt_top1_score": _range(nt_scores),
-            "nt_margin": _range(nt_margins),
-        },
+        score_ranges=ranges,
     )
 
 
@@ -540,6 +554,8 @@ def render_report_body(summary: BaselineSummary) -> str:
     lines = [
         f"## {summary.set_name}",
         "",
+        "All counts below are the L branch — what the App itself decides.",
+        "",
         f"- photos: {summary.total}",
         f"- correct accepts: {summary.correct_accepts}/{summary.total}",
         f"- wrong identity: {summary.wrong_identities}/{summary.total}",
@@ -554,7 +570,8 @@ def render_report_body(summary: BaselineSummary) -> str:
         if stats["min"] is None:
             continue
         lines.append(
-            f"- {key}: min {stats['min']}, median {stats['median']}, max {stats['max']}"
+            f"- {key} (L branch, this set only): "
+            f"min {stats['min']}, median {stats['median']}, max {stats['max']}"
         )
     return "\n".join(lines) + "\n"
 
