@@ -198,7 +198,7 @@ MobileFaceNet ONNX、facenet-torch ONNX 匯出），列入下一輪候選 gate�
 
 1. **operator decision** —— 授權邊界、scope、資料邊界、候選資格。spec 與 plan 均不得以自身較舊文字
    拒絕較新的 operator 裁決。**授權邊界以 operator decision 為準，不以本檔為準**；若本檔與較新的
-   decision 衝突，以 decision 為準並修正本檔 —— **不得以本檔的較舊文字為由拒絕較新的 operator 裁決。**
+   decision 衝突，以 decision 為準**並修正本檔**。
 2. **plan** —— 執行方式：PR 切分、test-first、mutation、stop conditions、完成定義。**對本檔的技術內容
    有優先權**，但不凌駕第 1 層：plan 內的授權敘述若與較新的 operator decision 衝突，依第 1 層讓位。
 3. **spec（本檔）** —— 功能協議：做什麼、怎麼算公平、介面契約。
