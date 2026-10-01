@@ -97,6 +97,7 @@ src/
     │   ├── bakeoff.py
     │   ├── benchmark_1b.py
     │   ├── capacity.py
+    │   ├── candidate_registry.py
     │   ├── corpus.py
     │   ├── deepface_adapter.py
     │   ├── fa_matrix.py
@@ -207,6 +208,7 @@ tests/
 │   ├── test_bakeoff.py
 │   ├── test_benchmark_1b.py
 │   ├── test_capacity.py
+│   ├── test_candidate_registry.py
 │   ├── test_corpus.py
 │   ├── test_deepface_adapter.py
 │   ├── test_fa_matrix.py
