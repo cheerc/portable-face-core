@@ -9,6 +9,9 @@
 | 項目 | 值 |
 | --- | --- |
 | 程式 HEAD | `cf1d6dd0b3f4238ce333f961b74efa24c9e5b820` |
+| interpreter | CPython **3.14**（`requires-python = "==3.14.*"`，`pyproject.toml`）——產品自己的直譯器，control 與 App 同環境 |
+| onnxruntime | **1.30.0**（pin 自 D5 產出 commit 起未變，見下） |
+| execution provider | **`CPUExecutionProvider`，原因是產品 embedder 硬寫**，不是觀測值（見下） |
 | `ALIGN_CONTRACT_VERSION` | 3（`pipeline/align.py:25`） |
 | detector | YuNet 2023mar，gate = `PolicyProfile.frozen_v1()` 的 `detector_confidence_min` 0.90 |
 | profile | `g3-v1`：match 0.363／review 0.3／margin 0.10 |
@@ -20,6 +23,31 @@
 
 **gallery digest 與 D0 凍結值逐字相符**，代表本報告的評分對象與 App 現場看到的是同一個
 註冊組。這是 plan 的 H1，本報告成立的先決條件。
+
+### 為什麼 ORT 版本是可查的事實，而不是 Unknown
+
+D5 產出時並未記錄當時的 ORT 版本，這是產出端的遺漏，不是當時無法得知。`onnxruntime==1.30.0`
+這個 pin 在 D5 **harness commit**（`cf1d6dd0`，PR #126）與**報告 commit**（`5924939`，PR #127）
+的 `pyproject.toml:16` 都是同一個值，且 `git log cf1d6dd0..main -- pyproject.toml` 為空。
+（`cf1d6dd0` 是 `5924939` 的祖先，不是相反——報告 commit 較晚。兩個 commit 都要查，是因為
+本報告 §1 自己記錄的「程式 HEAD」是 harness commit `cf1d6dd0`，而「產出這份報告」發生在
+`5924939`；只寫後者會讓讀者照字面追一個比報告本身更晚的祖先。）
+因此「該次 run 用的是 1.30.0」是 repo 事實，不需要用今天的環境去回推。
+
+### 為什麼 execution provider 寫「硬寫」而不是「有 CoreML 可用」
+
+venv 裡 **三個 EP 都可用**：實測 `ort.get_available_providers()` 回
+`['CoreMLExecutionProvider', 'AzureExecutionProvider', 'CPUExecutionProvider']`。
+但「venv 有 CoreML」與「這次 run 用了 CoreML」是兩件事。實際選擇由程式碼決定：
+D5 走 `static_baseline.py` → `_build_true_context`（`research/cli.py:623`）→ 產品 `Embedder`
+→ **`pipeline/embed.py:42` 寫死 `providers=["CPUExecutionProvider"]`**；detector 同理，
+`pipeline/yunet.py:159` 也是寫死 CPU。
+
+**所以這一欄是硬寫碼決定的結果，不是執行期觀測。** 記成「venv 有 CoreML 所以可能用 CoreML」
+會讓未來讀者以為 D5 的數字來自 CoreML 路徑，事實上它來自 CPU 路徑——而 M 的
+ORT-Mobile 結果（[`2026-09-30-d6-m-onnx-mobile-usability.md`](2026-09-30-d6-m-onnx-mobile-usability.md)）
+證明同一份權重在 NNAPI 與 CoreML NeuralNetwork 上是 100% 覆蓋的，也就是說
+**D5 的數字不能被外推成「在 NNAPI／CoreML 上也一樣」**：那是另一條 EP 路徑，尚未在 23／13／30 上量過。
 
 ## 2. 辨識組（truth = enroll-23，13 張）
 

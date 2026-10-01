@@ -17,20 +17,69 @@ rather than rounded away.
 **The adapter flips nothing, and that is the measured contract.**
 The product's crop is RGB (`align.py:98` `Image.frombytes("RGB", ...)`
 -> `:134` `tobytes()`) and `embed.py:50-52` transposes without
-reversing. DeepFace's public entry point is channel-neutral:
-`representation.py:118` reverses the channels and
-`cv2.FaceRecognizerSF.feature` (`SFace.py:48`) reverses them back, so
-the array handed to `represent()` is the array the graph sees. Note
-that `image_utils.py:69`'s docstring *declares* the ndarray contract to
-be BGR, which contradicts the measured behaviour of the public entry
-point; the docstring is not the contract, the measurement is.
+reversing. DeepFace's public entry point is channel-neutral: in
+DeepFace 0.0.93, `representation.py:118` reverses the channels of
+whatever array the caller passes, and the reversal is undone inside
+`cv2.FaceRecognizerSF.feature` before the graph runs. Both halves of
+that sentence are deliberately **not** cited to line numbers:
+
+- the Python half is `deepface/models/facial_recognition/SFace.py`
+  (DeepFace 0.0.93), whose `SFaceClient.forward` hands `(img[0] * 255)`
+  to `self.model.model.feature(...)`. That file ships in the wheel and
+  is readable — it is 84 lines in 0.0.93 and the call is on 46 — but
+  the number is a property of the release, not of the fact, so a bare
+  ``SFace.py:48``-style citation rots the moment the pin moves;
+- the C++ half is not in the wheel at all. `FaceRecognizerSF` ships as
+  a compiled class in `cv2.abi3.so`, so **no Python file:line can
+  establish what `feature` does to the channel order.**
+
+To reproduce the second point on a DeepFace environment:
+
+    grep -rl FaceRecognizerSF "$(python -c 'import deepface, os;
+    print(os.path.dirname(os.path.dirname(deepface.__file__)))')" --include='*.py'
+
+which returns `SFace.py` and nothing else. (An earlier note in this
+file claimed the wheel shipped no Python source at all, and attributed
+`SFace.py` to opencv. Both were wrong: the file is deepface's, and the
+wheel does carry it. The misleading path is worth keeping in mind —
+grepping **opencv**'s RECORD for it cannot succeed, because it has never
+been there.)
+
+**What is still UNVERIFIED, and what is not.** Two things are
+established above and one is not, and keeping them apart is the point:
+
+- *Established:* the Python half performs exactly one channel reversal,
+  at `representation.py:118`, in DeepFace 0.0.93.
+- *Established:* the reversal inside `feature` cannot be cited, because
+  it is not in Python.
+- **UNVERIFIED until A3:** that the two cancel, i.e. that
+  `represent()` is channel-neutral. This module does not claim it.
+
+The neutrality question is not answerable from a single feed of the
+product's own bytes: a degenerate crop whose three channel planes are
+identical comes back unchanged under *any* channel handling, so one arm
+cannot separate "two reversals cancel" from "no reversal happened" or
+from "the graph is channel-insensitive". The discriminating measurement
+is two-armed — feed the same crop as RGB and as BGR and show the two
+results differ — and it needs DeepFace, which CI does not install and
+which the root lock must not acquire. A3 owns it, with the comparison
+runner's two-armed result carrying the weight hash that says which
+weights were loaded.
+
+Note that `image_utils.py:69`'s docstring *declares* the ndarray
+contract to be BGR. A docstring is a claim, not a measurement, and it
+does not settle a question the implementation does not expose.
 
 **"Refuses to download" is this module's property, not DeepFace's.**
-`weight_utils.download_weights_if_necessary` tests only
-`os.path.isfile` — no checksum, no offline switch — and otherwise calls
-`gdown.download`. So an isolated `DEEPFACE_HOME` set *before* import
-plus an explicit socket block are both required; remove either and a
-missing cache silently reaches the network.
+In DeepFace 0.0.93 the SFace loader resolves its weight path from
+`DEEPFACE_HOME` and, when that file is absent, calls `gdown.download`
+with no checksum and no offline switch (`SFace.py`'s `load_model`;
+`commons/file_utils.py:13 download_external_file` is the same shape for
+the H5-backed models). **There is no `weight_utils` module in 0.0.93** —
+an earlier note in this file cited one, and the citation was as wrong
+as the `SFace.py:48` it replaced. So an isolated `DEEPFACE_HOME` set
+*before* import plus an explicit socket block are both required; remove
+either and a missing cache silently reaches the network.
 
 Nothing here imports DeepFace. The worker runs in a separate
 interpreter with its own lock, so the product core stays importable on
