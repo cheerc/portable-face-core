@@ -27,7 +27,7 @@ Hard boundaries:
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 import json
 import os
@@ -398,6 +398,40 @@ G3_DEMO_RESULTS_CSV_COLUMNS = (
     # operator verdict (label_terminal semantics, unchanged)
     "label_kind",
     "label_identity",
+    # D7-A W3. Everything below is data a live round ALREADY computes; none
+    # of it is a new measurement. See plan v8 §3.3 and §4.
+    #
+    # Time actually spent gathering recognition evidence. This is the
+    # `TimingMarks.recognition_duration_ms` property (contracts.py:302),
+    # NOT `open_duration_ms` / `open_to_first_frame_ms`: controller.py:235
+    # deliberately never fills the open segment on the demo path, so those
+    # two would be permanently blank here — plan v8 §8.
+    "recognition_duration_ms",
+    # Frames the quality gate rejected (session.py:293/:317). With
+    # frames_sampled/frames_usable this gives the usable rate directly.
+    # `frames_dropped` is deliberately NOT recorded: no `+= 1` exists, so
+    # it would be a column that is always 0 — plan v8 §8.
+    "frames_rejected",
+    # D4 §11 item 18b: how many times the support window was cleared
+    # because a frame scored below a gate, versus skipped because it
+    # arrived inside min_support_interval_ms. Those are the two
+    # indistinguishable paths behind `support_0_of_3`.
+    "score_reset_count",
+    "interval_skip_count",
+    # W0 ground truth. Empty means "not recorded", never a guess: an
+    # invented 'target' would silently corrupt the cross-identity counts.
+    "probe_kind",
+    "presenting_identity",
+    # Threshold snapshot. Plan v8 §4 admits only parameters proven to be
+    # read on the live control flow. `sample_interval_ms` and `max_frames`
+    # are excluded on purpose — the first is a false knob (hardcoded
+    # 200 ms at controller.py:57), the second is unreachable in the
+    # launcher's --continuous path.
+    "match_threshold",
+    "review_threshold",
+    "margin_threshold",
+    "min_support_interval_ms",
+    "timeout_ms",
 )
 
 
@@ -417,6 +451,10 @@ def g3_demo_round_row(
     required_support: int,
     labeled_at_utc: str,
     app_version: str | None = None,
+    event_counts: Mapping[str, int] | None = None,
+    profile: ResearchProfile | None = None,
+    probe_kind: str = "",
+    presenting_identity: str = "",
 ) -> dict[str, object]:
     """Reduce one labeled round to its demo row (D3b decision -11 item 2).
 
@@ -424,12 +462,40 @@ def g3_demo_round_row(
     demo file cannot drift from the research ledger's semantics. Only the
     D1 reason codes, the frame counts, and the mode/version provenance are
     added here.
+
+    D7-A W3 adds the fields a live round already computed but never wrote
+    out. Three of them are optional arguments on purpose:
+
+    - `event_counts` — the caller owns the engine that produced the round,
+      so it is the only place the per-round event tally can be read. When
+      omitted the counts are 0, which is a true reading for a round that
+      emitted nothing; the column is always present either way, so a
+      reader never has to guess whether 0 means "none happened" or
+      "nobody looked".
+    - `profile` — supplies the §4 threshold snapshot. Recorded only for
+      parameters proven to be read on the live control flow.
+    - `probe_kind` / `presenting_identity` — the W0 runbook's ground
+      truth. Default to empty, never to a guess.
     """
     from facecore.live.qt_window import RoundComplete as _RC
 
     assert isinstance(round_, _RC), f"expected RoundComplete, got {type(round_)}"
     terminal = round_.terminal
     base = g3_round_row(round_)
+    counts = event_counts or {}
+
+    # `recognition_duration_ms` is a derived property, so it is None when
+    # the round never anchored. Render None as empty rather than 0: a zero
+    # would claim "the round took no time to recognise", which is a
+    # measurement; empty says the marks were never set.
+    marks = terminal.timing_marks
+    recognition_ms = (
+        marks.recognition_duration_ms if marks is not None else None
+    )
+
+    def _thr(name: str) -> str:
+        return "" if profile is None else str(getattr(profile, name))
+
     return {
         "mode": "demo-no-recording",
         "app_version": app_version or _app_version(),
@@ -451,9 +517,22 @@ def g3_demo_round_row(
         "margin": base["margin"],
         "frames_sampled": base["frames_sampled"],
         "frames_usable": str(terminal.frames_usable),
-        "required_support": str(required_support),
         "label_kind": base["label_kind"],
         "label_identity": base["label_identity"],
+        "recognition_duration_ms": (
+            "" if recognition_ms is None else f"{recognition_ms}"
+        ),
+        "frames_rejected": str(terminal.frames_rejected),
+        "score_reset_count": str(counts.get("score_reset", 0)),
+        "interval_skip_count": str(counts.get("interval_skip", 0)),
+        "probe_kind": probe_kind,
+        "presenting_identity": presenting_identity,
+        "match_threshold": _thr("match_threshold"),
+        "review_threshold": _thr("review_threshold"),
+        "margin_threshold": _thr("margin_threshold"),
+        "required_support": str(required_support),
+        "min_support_interval_ms": _thr("min_support_interval_ms"),
+        "timeout_ms": _thr("timeout_ms"),
     }
 
 
@@ -463,11 +542,19 @@ def append_g3_demo_results_csv(
     *,
     required_support: int,
     labeled_at_utc: str,
+    event_counts: Mapping[str, int] | None = None,
+    profile: ResearchProfile | None = None,
+    probe_kind: str = "",
+    presenting_identity: str = "",
 ) -> None:
     """Append one non-recording round to the plaintext demo result file.
 
     The header is written once, exactly like append_g3_results_csv, and the
     row is derived from g3_round_row so the two ledgers agree on scores.
+
+    D7-A W3: the caller forwards the per-round engine tallies and the
+    round's profile so the row can carry data the live round already
+    computed. See `g3_demo_round_row` for why each is optional.
     """
     import csv as _csv
 
@@ -475,6 +562,10 @@ def append_g3_demo_results_csv(
         round_,
         required_support=required_support,
         labeled_at_utc=labeled_at_utc,
+        event_counts=event_counts,
+        profile=profile,
+        probe_kind=probe_kind,
+        presenting_identity=presenting_identity,
     )
     write_header = not demo_csv.is_file()
     demo_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -949,10 +1040,32 @@ def cmd_live(
     window_label = "early-stop"
     source: CaptureSource
     context: Any = None
+    # E3 wiring (2): live trace + diagnostic/event sinks on the true path.
+    trace_diags: list[Any] = []
+    trace_events: list[Any] = []
+    # G3 W5: the live desktops (first round + continuous rounds) that
+    # currently own the trace writer. The scorer closures below are
+    # defined before the desktops exist; late binding routes each
+    # emitted diag to the live desktop's pending store.
+    diag_desktops: list[DesktopSession] = []
+
+    def _diagnostic_sink(diag: Any) -> None:
+        trace_diags.append(diag)
+        for live_desktop in diag_desktops:
+            live_desktop.note_diagnostics(diag)
+
+    def _event_sink(event: Any) -> None:
+        trace_events.append(event)
+
     if device == "fake":
         model_generation = "cli-fake-gen-1"
         gallery_digest = "cli-fake-gallery"
-        engine = SessionEngine(profile, gallery_digest, model_generation)
+        engine = SessionEngine(
+            profile,
+            gallery_digest,
+            model_generation,
+            event_sink=_event_sink,
+        )
         if capture_factory is not None:
             source = capture_factory(device)
         else:
@@ -1082,34 +1195,20 @@ def cmd_live(
             assert context is not None
             model_generation = context.gallery.generation
             gallery_digest = context.gallery.digest
-        engine = SessionEngine(profile, gallery_digest, model_generation)
-
-        from facecore.live.frame_pipeline import (  # noqa: PLC0415 (device-gated)
-            score_frame,
-        )
-
-        # E3 wiring (2): live trace + diagnostic/event sinks on the true path.
-        trace_diags: list[Any] = []
-        trace_events: list[Any] = []
-        # G3 W5: the live desktops (first round + continuous rounds) that
-        # currently own the trace writer. The scorer closures below are
-        # defined before the desktops exist; late binding routes each
-        # emitted diag to the live desktop's pending store.
-        diag_desktops: list[DesktopSession] = []
-
-        def _diagnostic_sink(diag: Any) -> None:
-            trace_diags.append(diag)
-            for live_desktop in diag_desktops:
-                live_desktop.note_diagnostics(diag)
-
-        def _event_sink(event: Any) -> None:
-            trace_events.append(event)
-
+        # D7-A W3: the sinks are defined ABOVE the `device == "fake"`
+        # branch so every engine on this path can share one definition.
+        # Previously this rebuilt the engine a second time purely to attach
+        # the sink, which also discarded the fake-device engine built at the
+        # branch above.
         engine = SessionEngine(
             profile,
             gallery_digest,
             model_generation,
             event_sink=_event_sink,
+        )
+
+        from facecore.live.frame_pipeline import (  # noqa: PLC0415 (device-gated)
+            score_frame,
         )
 
         if presence_mode == "checkpoint":
@@ -1133,7 +1232,16 @@ def cmd_live(
                 return 2
             model_generation = "checkpoint-presence-gen-1"
             gallery_digest = "checkpoint-presence-gallery"
-            engine = SessionEngine(profile, gallery_digest, model_generation)
+            # D7-A W3: same sink as every other engine, so a checkpoint
+            # round's events are not the one path that silently discards
+            # them. This branch re-assigns `engine` (it did so before W3
+            # too); the sink rides along rather than being left behind.
+            engine = SessionEngine(
+                profile,
+                gallery_digest,
+                model_generation,
+                event_sink=_event_sink,
+            )
             _hybrid = presence_scorer(
                 checkpoint_detector,
                 model_generation,
@@ -1424,7 +1532,20 @@ def cmd_live(
                             staged_errors.append(f"crop:{type(exc).__name__}")
 
                 round_desktop = DesktopSession(
-                    engine=SessionEngine(profile, gallery_digest, model_generation),
+                    # D7-A W3: this per-round engine is built inline, so it
+                    # is the one place the live loop's rounds were getting an
+                    # engine with no `event_sink` — the first round's engine
+                    # (built above) has had one all along. Counting no longer
+                    # depends on the sink (SessionEngine tallies every event
+                    # before the sink guard), but wiring it keeps the two
+                    # rounds' event behaviour identical instead of leaving a
+                    # difference that only the first round can see.
+                    engine=SessionEngine(
+                        profile,
+                        gallery_digest,
+                        model_generation,
+                        event_sink=_event_sink,
+                    ),
                     source=source,
                     scorer=scorer,
                     session_id=round_session_id,

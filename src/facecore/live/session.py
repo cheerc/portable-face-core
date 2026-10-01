@@ -16,7 +16,8 @@ Hard boundaries:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections import Counter
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 import math
 
@@ -81,6 +82,20 @@ class SessionEngine:
         # from "the operator never looked at the lens".
         self._rejection_reasons: set[str] = set()
 
+        # D7-A W3: per-round event tallies, kept regardless of whether an
+        # `event_sink` is wired. `_emit_event` returns early when the sink
+        # is None, so on the live path — which passes no sink — every event
+        # was previously discarded at the source and the demo log could not
+        # tell 「support 窗被清空」 from 「support 窗從未累積」 (D4 §11 item
+        # 18b). Counting here makes the tally independent of the sink, so a
+        # caller that only wants the counts needs no wiring.
+        #
+        # Initialised in `__init__` as well as `start()` on purpose: a
+        # caller may read the tally before a round is ever started, and an
+        # attribute that only exists after `start()` would turn that read
+        # into an AttributeError rather than a truthful zero.
+        self._event_counts: Counter[str] = Counter()
+
         # Diagnostic counters
         self._frames_sampled: int = 0
         self._frames_usable: int = 0
@@ -110,6 +125,11 @@ class SessionEngine:
         terminal_identity: str | None,
         now_ns: int,
     ) -> None:
+        # D7-A W3: tally before the sink guard so the counts survive the
+        # no-sink live path. Placed here (not after the guard) because a
+        # caller reading `event_counts()` must be able to tell "this round
+        # emitted no score_reset" from "nobody was listening".
+        self._event_counts[event_type] += 1
         if self._event_sink is None:
             return
         remaining_ms = (
@@ -165,6 +185,11 @@ class SessionEngine:
         self._recognition_anchored = False
         self._first_frame_ns = None
         self._timing_marks = None
+        # D7-A W3: per-round event tally, cleared here with the rest of the
+        # per-round state. A reused engine must report this round's events,
+        # never the previous round's. No re-annotation: the attribute is
+        # declared in `__init__` and mypy (strict) rejects a second one.
+        self._event_counts = Counter()
 
     @property
     def deadline_ns(self) -> int | None:
@@ -175,6 +200,20 @@ class SessionEngine:
     def recognition_anchored(self) -> bool:
         """True once the window has been re-armed at a first valid frame."""
         return self._recognition_anchored
+
+    def event_count(self, event_type: str) -> int:
+        """How many times `event_type` fired in this round (D7-A W3).
+
+        Read-only and sink-independent: a round that emitted nothing
+        returns 0, which is a real measurement, not a missing value. The
+        caller distinguishes that from "field absent" by the column always
+        being present in the demo CSV.
+        """
+        return self._event_counts[event_type]
+
+    def event_counts(self) -> Mapping[str, int]:
+        """A copy of this round's per-event-type tallies (D7-A W3)."""
+        return dict(self._event_counts)
 
     def note_timing(
         self,
