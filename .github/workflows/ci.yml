@@ -143,6 +143,17 @@ jobs:
           # is exactly how they shipped once without any job running them.
           python -m pytest tests/live/test_d4f1_demo_trace_wiring.py -q
           python -m pytest tests/live/test_d4f1_worker_failure_visibility.py -q
+          # D7-A W3: the demo log's diagnostic columns are only proven on
+          # a REAL round — `recognition_duration_ms` and `frames_rejected`
+          # must be non-empty when a round actually reaches a terminal, not
+          # merely present in the header. The file lives in tests/cli/ but
+          # the guarantee it carries is the Qt demo path, and it is skipped
+          # whenever pyside6 is absent, so the `verify` job (.[dev] only)
+          # collects it and skips it. Listed here explicitly for the same
+          # reason as the D4-F1 pair above: without a job running it, the
+          # primary evidence for the new columns exists only on a
+          # contributor's machine.
+          python -m pytest tests/cli/test_d7_w3_diagnostic_log_fields.py -q
       - name: Run G3 Start-gated integration (R1 §2/§5, PR-B)
         run: >-
           python -m pytest
