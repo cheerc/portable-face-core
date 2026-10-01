@@ -54,7 +54,12 @@ the crops the vectors came from, which the candidate interface does not
 carry, so it is A3's work and it is **UNVERIFIED until then** — see
 ``ModelBindingError`` in ``model_comparison`` for the same boundary.
 
-**Two residual gaps, stated rather than implied.**
+**Residual gaps, stated rather than implied.** An earlier version of
+this section listed exactly two, and both were true — but the list was
+not the boundary. Rewriting a function *object* is the route that makes
+the other two moot, so it is stated here too and the count is left open
+on purpose: a reader should not conclude that an unlisted route is
+closed.
 
 1. :func:`_resolve_from` is a module-level symbol, so a caller that
    imports it can supply its own records. It is internal by
@@ -63,21 +68,51 @@ carry, so it is A3's work and it is **UNVERIFIED until then** — see
    closure shape only means no bypass is *advertised* by the public
    signature any more.
 
-2. A caller that writes into the closure's cells (via
+2. A caller that writes into a function's closure cells (via
    ``resolve_candidate_model.__closure__``) is still patching
-   internals. The records themselves are captured, so rebinding
+   internals. The records are captured, so rebinding
    ``_CANDIDATE_RECORDS`` or ``CANDIDATE_MODELS`` does not reach them,
    and the resolver *function* is captured too, so rebinding
    ``_resolve_from`` does not either — the first version of this
    closure read that name as a global and was caught by measurement.
-   Reaching past a closure cell is a different act, and no
-   module-level arrangement prevents it.
+
+3. **Replacing ``__code__`` invalidates the premise the other two rest
+   on.** A code object with a matching number of free variables can be
+   assigned to either public function here, and the replacement need
+   not read the cells at all — it can read a global the caller put in
+   this module's namespace. Because the records then come from
+   somewhere the closure never governed, *rebinding a module attribute
+   also stops mattering*: routes that items 1 and 2 describe as closed
+   become open in that state. Measured for both functions:
+   ``resolve_candidate_model`` (two cells) and ``known_ids`` (one).
+
+   How it was measured, and how to reproduce or refute it:
+
+   - record the function's ``__code__`` object first;
+   - assign the substitute, then assert ``f.__code__ is not <that
+     object>`` — **that identity check is the only reliable signal.**
+     ``co_freevars`` is not: CPython raises ``ValueError`` on an arity
+     mismatch without swapping anything, and on success it reports
+     whatever names the substitute happened to use, which may match
+     the original exactly. In this module's own measurements a
+     successful swap read back an identical ``('records', 'resolve')``.
+     Checking freevars would have reported "nothing changed" about a
+     swap that had worked;
+   - then ask for an id that **the repo actually records** — e.g.
+     ``deepface_arcface`` — not a newly invented one. An invented id is
+     refused by the unknown-id check whether or not the substitution
+     took, so it cannot distinguish the two states. Asking for a real
+     id is what makes the hijack visible;
+   - observe whether the returned manifest is the caller's.
 
 So the accurate statement is: **the registry is closed against a caller
 that uses the module as documented or reaches for its attributes by
 name, and it is not established against one that imports an underscore
-symbol deliberately or writes into a function's closure cells.**
-Neither gap is closed here.
+symbol deliberately, writes into a function's closure cells, or
+replaces a function's ``__code__`` (or its ``__globals__``).** None of
+these is closed here, and a module-level arrangement cannot close them
+— a caller able to rewrite a function object can also rewrite the
+module object it lives in.
 """
 
 from __future__ import annotations
