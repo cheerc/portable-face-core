@@ -446,37 +446,127 @@ class TestRebindingTheModuleNameChangesNothing:
         assert known_ids() == RECORDED_IDS
 
 
-def test_the_residual_gap_is_stated_in_the_repo():
-    """Every gap that is *not* closed must be written where a reader meets it.
+class TestTheResidualGapsAreStatedWithTheirOwnRefutation:
+    """Every gap that is *not* closed must be written where a reader meets it,
+    and the statement must carry the method that would refute it.
 
-    The assertions below were deliberately made narrow, and twice had to
-    be corrected. A first version checked only that the strings
-    ``__defaults__`` and ``A3`` appeared somewhere in the file, and a
-    mutation that deleted the whole residual-gap paragraph left both
-    strings present elsewhere — the test stayed green on the exact edit
-    it was written to catch. A second version pinned the sentences of
-    *one* gap, which passed just as silently when the closure rewrite
-    replaced that gap with a differently-worded one. Pinning prose
-    means pinning it against the prose that is actually there, so each
-    assertion names a gap the current module docstring states.
+    **This class does not assert that any bypass works.** That would turn
+    a documentation statement into a specification requiring a defence
+    against an attack this project has decided not to defend. What it
+    pins is that the boundary is *stated*, and that a reader handed the
+    module can reproduce or refute it without re-deriving the method.
+
+    The assertions were deliberately narrow, and twice had to be
+    corrected. A first version checked only that ``__defaults__`` and
+    ``A3`` appeared somewhere in the file, and a mutation deleting the
+    whole paragraph left both present elsewhere — green on the exact
+    edit it was written to catch. A second version pinned the sentences
+    of *one* gap, which passed just as silently when the closure
+    rewrite replaced that gap with a differently-worded one. A third
+    pinned "Two residual gaps", which made the count itself a thing
+    that breaks whenever a gap is added — the opposite of what a
+    boundary statement should do.
+
+    Anchoring is whitespace-insensitive throughout: an earlier version
+    pinned a line break inside a sentence, so re-wrapping the
+    docstring turned it red for a formatting reason.
     """
-    source = Path(candidate_registry.__file__).read_text(encoding="utf-8")
-    flat = " ".join(source.split())
-    assert "**Two residual gaps, stated rather than implied.**" in flat, (
-        "the residual gaps are no longer named as a section in the module"
-    )
-    assert "is a module-level symbol, so a caller that" in flat, (
-        "the docstring no longer states that _resolve_from is importable"
-    )
-    assert "a naming practice, not access control" in flat, (
-        "the docstring no longer says the underscore is a convention, not enforcement"
-    )
-    assert "writes into the closure's cells" in flat, (
-        "the docstring no longer states the closure-cell route"
-    )
-    assert "is not established against one that imports an underscore" in flat, (
-        "the docstring no longer bounds what the closure closes"
-    )
+
+    @staticmethod
+    def _docstring() -> str:
+        source = Path(candidate_registry.__file__).read_text(encoding="utf-8")
+        return " ".join(source.split())
+
+    def test_the_gaps_are_not_enumerated_by_count(self) -> None:
+        """A count makes adding a gap look like breaking a promise.
+
+        The statement now says the list is not the boundary, and a
+        reader should not conclude an unlisted route is closed.
+        """
+        flat = self._docstring()
+        assert "Two residual gaps" not in flat, (
+            "the gaps are counted again; the count itself has to be "
+            "maintained and breaks whenever a gap is added"
+        )
+        assert "the count is left open" in flat, (
+            "the docstring no longer says the count is deliberately unbound"
+        )
+
+    def test_the_three_routes_are_each_named(self) -> None:
+        """Import an underscore symbol, write a cell, or swap ``__code__``."""
+        flat = self._docstring()
+        for phrase, what in [
+            ("is a module-level symbol, so a caller that", "the importable helper"),
+            ("writes into a function's closure cells", "the closure-cell route"),
+            ("invalidates the premise the other two rest on", "the __code__ route"),
+        ]:
+            assert phrase in flat, f"the docstring no longer states {what}"
+
+    def test_the_code_swap_invalidation_is_spelled_out(self) -> None:
+        """The part that is not merely "another route".
+
+        A ``__code__`` swap is not one more bypass alongside the others;
+        it removes the premise that makes the others closed. Two
+        reviewers signed off on "rebinding a module attribute does not
+        reach the records" — true, and untrue in that state. A reader who
+        finds only "another route" would keep that conclusion.
+        """
+        flat = self._docstring()
+        assert "rebinding a module attribute also stops mattering" in flat, (
+            "the docstring no longer says a __code__ swap invalidates the "
+            "capture premise the other routes rest on"
+        )
+        assert "Measured for both functions:" in flat, (
+            "the measurement covered only one of the two public functions"
+        )
+        for name in ("resolve_candidate_model", "known_ids"):
+            assert name in flat, f"the measurement omits {name}"
+
+    def test_the_refutation_method_names_the_identity_check(self) -> None:
+        """``co_freevars`` is not a reliable signal, and that is a trap.
+
+        CPython raises on an arity mismatch without swapping anything,
+        and on success reports whatever names the substitute used — which
+        may match the original exactly. In this module's measurements a
+        *successful* swap read back an identical ``('records', 'resolve')``,
+        so a freevar check would have reported "nothing changed" about a
+        swap that worked.
+        """
+        flat = self._docstring()
+        assert "f.__code__ is not <that object>" in flat, (
+            "the refutation method no longer names the identity check"
+        )
+        assert "co_freevars is not" in flat or "``co_freevars`` is not" in flat, (
+            "the docstring no longer warns that co_freevars is unreliable"
+        )
+
+    def test_the_refutation_method_says_to_ask_for_a_real_id(self) -> None:
+        """An invented id is refused either way, so it cannot discriminate.
+
+        Both this project and a reviewer probed with a newly invented id
+        and could not see that a *closed* route had reopened. Only asking
+        for an id the repo actually records makes the substitution
+        visible.
+        """
+        flat = self._docstring()
+        assert "the repo actually records" in flat, (
+            "the refutation method no longer says to ask for a recorded id"
+        )
+        assert "not a newly invented one" in flat, (
+            "the refutation method no longer warns off an invented id"
+        )
+
+    def test_the_closing_statement_bounds_what_is_established(self) -> None:
+        flat = self._docstring()
+        assert "is not established against one that imports an underscore" in flat, (
+            "the docstring no longer bounds what the closure closes"
+        )
+        assert "replaces a function's ``__code__``" in flat, (
+            "the closing statement omits the __code__ route"
+        )
+        assert "a module-level arrangement cannot close them" in flat, (
+            "the docstring no longer says why these cannot be closed here"
+        )
 
 
 class TestTheResearchOnlyEntriesCarryTheirUnresolvedLicense:
