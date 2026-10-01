@@ -127,6 +127,7 @@ Baseline 驗證：`pytest tests/ -q` → **867 passed, 8 skipped**（`b92a276`�
 | M1 real FA | PR #36 | Pair1、detector 0.8、23 gallery、30 non-target；match 0.45/margin 0.10 時觀察 FA 4/30 |
 | M5 二維表 | PR #37 | 7×4 cells；margin 0.15、match 0.30–0.55 時 target 3/13、FA 0/30；match 0.60 時 target 2/13。僅此資料集觀察，不是新產品預設 |
 | M3 real replay | PR #38 | 13 個 person-23 探針；baseline matched/review/unknown=2/10/1，adaptive=0/13/0；creation/corroboration/promotion=0，rejections=13 |
+| D6 A3 候選比較 | R 報告 | 兩臂各 43 列、gallery 23/23、同 SFace bytes bridge 成立；**probe 身分為單一 `enroll-23`：M3 的 13 個探針（`d5-static-baseline-plan.md:39`：`person-23` ＝ live gallery 的 `enroll-23`）與本輪 13 張皆同；歷史 29 輪現場 session（**同一 stream，非獨立 probe 量測**）中 11 輪有 top1 亦全為 `enroll-23`。不支撐跨身分判別力**；Facenet512 分數上偏致 SFace 門檻不可沿用。**未選門檻。** |
 
 M3 的 6 個 correct-supervision 事件最高 score 約 0.6785，均低於 candidate update 0.88；其餘 7 個為 not_me。這證明本串流沒有建立 candidate，**不證明學習增益或長期不污染**。M1 的 30 non-target 未包含在這 13 事件中；不能把 4/30 FA 說成那 7 個 not_me 的子集。Replay 的 retirements/rollbacks 固定 close-out 段須與真實輸入觸發分開，不計為現場生命週期成功證據。
 
@@ -175,8 +176,20 @@ D6 是「用相同 23／13／30 照片集合、固定 detector 與 alignment，�
   fail，不得改 expected 值湊數。
 - 兩份候選 gate（2026-09-10 的產品 bake-off 與本輪的 D6 候選）**並列不合併**；D6 的新 gate 不回頭
   改寫舊檔，理由記在該檔開頭。
-- 目前階段是 plan §9 設計的 prep（文件／品質量測／環境 spike），**不是比較完成**，也還不是
-  shortage 結案 —— plan §11 的「候選不足交付 shortage」是最終完成定義。
+- **A3 本機 run 已完成（2026-10-01）**，結果與限制見
+  [D6 比較報告](research/2026-09-30-d6-deepface-comparison.md)。指標摘要：
+  同 SFace bytes bridge 成立（cosine median 1.0、maxdiff median 2.4e-07）；
+  兩臂各 43 列、unprocessable 0、gallery 23/23；**top1 正確 k／13 在 SFace control
+  與 Facenet512 都是 13/13**。
+  **這兩列不可當模型等價的證據 —— probe 13 張全部是單一身分 `enroll-23`。**
+  Facenet512 的 probe 與 non-target 分數同步偏高（non-target 有 9/30 高於最低
+  probe 分數，control 為 2/30），**故不可套用 SFace 門檻**。
+  **未選門檻、未做 frontier、未做獨立校準。**
+  ArcFace 已核准且 artifact 已核，但架構建構階段與該 Keras 組合不相容，
+  **環境本身可行**（Facenet512 在同一環境完成量測），依 plan `:86` 屬
+  不預設必跑的第二候選，**交付不受影響**。
+- 目前階段是 A 系列已交付、**R 彙總報告已產出**；**這不是 shortage 結案，也不是
+  產品門檻選定或部署授權** —— plan §11 的完成定義另需獨立校準與新資料驗證。
 - 所有 `selected=False`；D6 不選產品門檻。
 
 ## Next Session
