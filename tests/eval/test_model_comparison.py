@@ -51,7 +51,6 @@ from __future__ import annotations
 import hashlib
 import os
 from contextlib import contextmanager
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -60,11 +59,16 @@ import pytest
 from PIL import Image
 
 from facecore.contracts.policy import PolicyProfile
+from facecore.eval.candidate_registry import (
+    UnknownCandidateModel,
+    resolve_candidate_model,
+)
 from facecore.eval.model_comparison import (
     FA_BUDGETS,
     MARGIN_GRID,
     MATCH_GRID,
     CandidateComparison,
+    CandidateSpec,
     CandidateContractError,
     GalleryIncomplete,
     ModelBindingError,
@@ -73,7 +77,7 @@ from facecore.eval.model_comparison import (
     compare_candidate,
     frontier_at_budget,
     require_declared_interpreter,
-    require_weight_binding,
+    require_vector_shape,
     sha256_of_file,
 )
 from facecore.eval.static_baseline import SET_PROBE, score_photo
@@ -211,22 +215,62 @@ class _Stub:
         )
 
 
-def _spec(**over: Any):
-    from facecore.eval.model_comparison import CandidateSpec
+def _spec(**over: Any) -> CandidateSpec:
+    """A candidate spec built from the repo-fixed record.
 
-    base = {
+    The weight hash and the dimension are not arguments here and cannot
+    be: they are read from
+    :mod:`facecore.eval.candidate_registry` and a spec that disagrees
+    with the record is refused at construction. Tests about the
+    *bindings* do not go through this helper -- they pass an explicit
+    ``registry_id`` so the file and the record can disagree.
+    """
+    defaults: dict[str, Any] = {
         "candidate_id": "deepface-facenet512",
-        "model_name": "Facenet512",
         "model_version": MODEL,
-        "embedding_dim": 512,
-        "input_size": 160,
         "normalization": "Facenet",
         "interpreter": "3.13",
-        "weight_sha256": "a" * 64,
         "backend": "deepface-worker",
     }
-    return replace(
-        CandidateSpec(**(base | over)),
+    return CandidateSpec.from_registry_id(
+        "deepface_facenet512",
+        **{k: v for k, v in (defaults | over).items() if k not in _WEIGHT_FACTS},
+    )
+
+
+#: Where the recorded Facenet512 weights live, if they are present. The
+#: registry holds their real checksum, so a test cannot manufacture a
+#: file that legitimately matches it; the positive path is therefore
+#: conditional on the artifact existing, and says so when it is absent.
+_RECORDED_FACENET512_WEIGHT = (
+    Path.home() / "facecore-models" / "facenet512_weights.h5"
+)
+
+
+#: The fields a ``CandidateSpec`` takes from the repo-fixed record. A
+#: helper that defaults them would be re-introducing the free-form
+#: declaration this rework removed, so they are filtered out by name
+#: wherever a spec is built through ``from_registry_id``.
+_WEIGHT_FACTS = frozenset({"weight_sha256", "embedding_dim", "input_size"})
+
+
+def _registry_spec(registry_id: str, **over: Any) -> CandidateSpec:
+    """A spec built from the repo-fixed record, with only the caller-owned
+    fields (name, normalization, interpreter, backend) supplied.
+
+    The weight facts are never arguments here. That is the whole point:
+    a test that could pass them would be testing the old, bypassable
+    design.
+    """
+    defaults: dict[str, Any] = {
+        "candidate_id": "c",
+        "normalization": "Facenet",
+        "interpreter": "3.13",
+        "backend": "deepface-worker",
+    }
+    return CandidateSpec.from_registry_id(
+        registry_id,
+        **{k: v for k, v in (defaults | over).items() if k not in _WEIGHT_FACTS},
     )
 
 
@@ -254,16 +298,14 @@ def _vectors(*, seed: int, dim: int) -> dict[str, np.ndarray]:
 
 
 def _bound_spec(dim: int = 4) -> tuple:
-    """A spec whose declared hash really is the hash of its weight file.
+    """Retained for call sites that want "a spec and a file".
 
-    The default ``_spec()`` carries a placeholder digest, which
-    ``require_weight_binding`` now refuses on purpose. Tests about the
-    *other* refusals still need a genuinely bound spec, so they build
-    one here.
+    The spec comes from the registry, so the file cannot be made to
+    match it: no byte string a test writes will hash to the recorded
+    Facenet512 digest. Callers therefore use this to reach a *refusal*,
+    which is what the byte check now means.
     """
-    weight = _weight_file(b"facenet512-weights-bytes")
-    spec = _spec(embedding_dim=dim, weight_sha256=sha256_of_file(weight))
-    return spec, weight
+    return _spec(), _weight_file(b"facenet512-weights-bytes")
 
 
 # --------------------------------------------------------------------------
@@ -272,16 +314,33 @@ def _bound_spec(dim: int = 4) -> tuple:
 
 
 class TestCandidateGalleryIsItsOwn:
+    @pytest.mark.skipif(
+        not _RECORDED_FACENET512_WEIGHT.is_file(),
+        reason=(
+            "the recorded Facenet512 weights are absent, and the count "
+            "guard is only reachable after the byte check passes; the "
+            "registry holds a real checksum, so no substitute file can "
+            "legitimately match it"
+        ),
+    )
     def test_a_gallery_of_the_right_size_is_accepted(self) -> None:
-        spec, weight = _bound_spec()
+        """The count guard is only reachable once the bytes are right.
+
+        Ordering matters here: the byte check runs before the count
+        check, so proving "the right size is accepted" needs a file that
+        genuinely matches the record. That is why this test is
+        conditional on the artifact existing -- and why the *refusal*
+        tests below do not need it.
+        """
+        spec = _registry_spec("deepface_facenet512")
         gal = build_candidate_gallery(
             spec=spec,
-            weight_path=weight,
-            identities={f"id-{i:02d}": _axis(4, i) for i in range(4)},
+            weight_path=_RECORDED_FACENET512_WEIGHT,
+            identities=_vectors(seed=0, dim=512),
             expected_identities=4,
         )
         assert len(gal.embeddings) == 4
-        assert gal.model_version == MODEL
+        assert gal.model_version
 
     def test_a_short_gallery_stops_the_comparison_rather_than_shrinking_it(
         self,
@@ -372,106 +431,204 @@ class TestCandidateGalleryIsItsOwn:
 # --------------------------------------------------------------------------
 
 
-class TestGalleryIsBoundToTheWeightsNotTheLabel:
-    """The defect this rework exists to fix, stated as a test.
+class TestTheWeightFactsAreNotTheCallersToChoose:
+    """The bypass two reviewers found, and the property that closes it.
 
-    The first version of this module guarded cross-model comparison by
-    comparing ``model_version`` strings. Those strings came from the same
-    caller as the vectors, so a caller who mislabelled one mislabelled
-    both: 23 ArcFace vectors passed as a Facenet512 spec produced a
-    complete, plausible result labelled Facenet512. A guard that reads
-    only what the caller supplied cannot fail on the thing it claims to
-    check.
+    The previous design put ``weight_sha256`` and ``embedding_dim`` on
+    the spec as free fields, and every check compared the caller's
+    declaration against the caller's file. Those are the same fact read
+    twice. A caller who wrote the declaration to match the file it
+    supplied -- Facenet512's name over ArcFace's bytes, with ArcFace's
+    own hash declared -- satisfied every check, and
+    ``assert_binding_recorded()`` passed too, because the observed and
+    declared values agreed with each other. The result was complete,
+    plausible, and reported under the wrong model.
 
-    The test that matters is
-    :meth:`test_a_fully_relabelled_arcface_gallery_is_still_refused` —
-    the exact scenario that defeated the old guard.
+    The fix is not another comparison; it is that the two facts now
+    come from :mod:`facecore.eval.candidate_registry` and a caller may
+    only *select* a record, never write one. Every test here is about
+    that freedom being gone.
+
+    **What none of these tests claim.** A caller that supplies the
+    correct Facenet512 weights together with ArcFace-computed vectors
+    still passes. Proving otherwise needs the crops the vectors were
+    computed from, which this interface does not carry; that is A3's
+    work and it is recorded as UNVERIFIED. A test asserting the stronger
+    property would be asserting something false, which is how the
+    deleted ``test_a_fully_relabelled_arcface_gallery_is_still_refused``
+    came to be wrong in the first place.
     """
 
-    def test_a_fully_relabelled_arcface_gallery_is_still_refused(self) -> None:
-        """The attack the old guard could not see.
+    def test_a_spec_cannot_be_written_without_naming_a_recorded_model(self) -> None:
+        """The old API is gone: no registry id means no spec.
 
-        Everything a caller controls *is* controlled: the gallery's
-        ``model_version``, the spec's ``model_version``, the vector
-        dimensions (both real models are 512-D; both fixtures are 4-D so
-        the test stays small), and the weight file actually loaded. The
-        one thing the caller does not control is what the spec
-        *declares* — and that is the one thing the check reads.
-
-        The failure this replaces: under the old label-comparison guard,
-        a caller passing ArcFace weights and ArcFace vectors under a
-        Facenet512 name satisfied every check and got back a complete
-        result labelled Facenet512.
+        Previously every field was supplied by the caller, so a spec
+        could exist that the repo had no record of at all. That is the
+        freedom these tests exist to remove, and it is refused at
+        construction rather than at scoring time.
         """
-        facenet_weight = _weight_file(b"facenet512-weights-bytes")
+        with pytest.raises(CandidateContractError, match="no registry_id"):
+            CandidateSpec(
+                candidate_id="c",
+                model_name="Facenet512",
+                model_version="facenet512_v",
+                embedding_dim=512,
+                input_size=160,
+                normalization="Facenet",
+                interpreter="3.13",
+                weight_sha256="a" * 64,
+                backend="deepface-worker",
+            )
+
+    def test_an_unknown_model_id_is_refused(self) -> None:
+        """A registry that accepts new ids is the defect, not the fix.
+
+        So an unknown id stops the run. A typo fails here, loudly, with
+        the list of real ids -- and a caller cannot add its own entry on
+        the way past.
+        """
+        with pytest.raises(UnknownCandidateModel, match="no repo-fixed record"):
+            resolve_candidate_model("arcface")
+
+    def test_the_recorded_hash_cannot_be_overridden(self) -> None:
+        """The specific bypass: supply a real file and declare *its* hash.
+
+        This is the move that worked. The registry id says Facenet512,
+        the caller tries to attach the hash of the file it is actually
+        holding, and the override is refused because the recorded value
+        is not a parameter of the call.
+        """
         arcface_weight = _weight_file(b"arcface-weights-bytes")
-        facenet_spec = _spec(
-            model_version=MODEL,
-            embedding_dim=4,
-            weight_sha256=sha256_of_file(facenet_weight),
-        )
-        with pytest.raises(ModelBindingError, match="hashes to"):
+        with pytest.raises(CandidateContractError, match="may not override"):
+            CandidateSpec.from_registry_id(
+                "deepface_facenet512",
+                candidate_id="c",
+                normalization="Facenet",
+                interpreter="3.13",
+                backend="deepface-worker",
+                weight_sha256=sha256_of_file(arcface_weight),
+            )
+
+    def test_a_hand_tuned_spec_disagreeing_with_its_record_is_refused(self) -> None:
+        """Reaching past the classmethod does not help either.
+
+        ``from_registry_id`` is the convenient door, not the only one:
+        a caller can still reach the constructor. Building a spec
+        directly and then editing the hash is the same bypass in
+        another shape, so the constructor checks the declared facts
+        against the record rather than trusting the classmethod.
+        """
+        record = resolve_candidate_model("deepface_facenet512")
+        with pytest.raises(CandidateContractError, match="the repo records"):
+            CandidateSpec(
+                candidate_id="c",
+                model_name="Facenet512",
+                model_version="facenet512_v",
+                embedding_dim=512,
+                input_size=160,
+                normalization="Facenet",
+                interpreter="3.13",
+                weight_sha256="b" * 64,  # not the recorded value
+                backend="deepface-worker",
+                registry_id="deepface_facenet512",
+            )
+        assert record.weight_sha256 is not None
+
+    def test_the_dimension_comes_from_the_record_too(self) -> None:
+        """Facenet512 and ArcFace are both 512-D, so the hash is the only
+        discriminator between them -- but a 128-D model must not borrow a
+        512-D record's dimension either."""
+        with pytest.raises(CandidateContractError, match="embedding_dim"):
+            CandidateSpec(
+                candidate_id="c",
+                model_name="SFace",
+                model_version="sface_2021dec",
+                embedding_dim=512,
+                input_size=112,
+                normalization="base",
+                interpreter="3.13",
+                weight_sha256="0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
+                backend="product",
+                registry_id="sface_2021dec_fp32",
+            )
+
+    def test_a_file_that_is_not_the_recorded_weights_is_refused(self) -> None:
+        """The honest case, wrong file: the byte check still has a job.
+
+        The registry makes the *declaration* trustworthy, so this is no
+        longer the check that catches a lie -- it is the check that
+        catches pointing an honest spec at the wrong artifact on disk.
+        The spec here is built from the record, so the only thing wrong
+        is the file.
+        """
+        spec = _registry_spec("deepface_facenet512")
+        wrong_file = _weight_file(b"not-the-recorded-facenet512-bytes")
+        with pytest.raises(ModelBindingError, match="is recorded as hashing to"):
             build_candidate_gallery(
-                spec=facenet_spec,
-                weight_path=arcface_weight,
-                identities=_vectors(seed=1, dim=4),
+                spec=spec,
+                weight_path=wrong_file,
+                identities=_vectors(seed=0, dim=512),
                 expected_identities=4,
             )
 
-    def test_the_binding_rejects_a_vector_of_the_wrong_dimension(self) -> None:
-        """Dimensions are read off the arrays, so 128-D cannot pass as 512-D."""
-        spec, weight = _bound_spec(dim=4)
-        mixed = _vectors(seed=2, dim=4)
-        mixed["id-00"] = _axis(3, 0)
-        with pytest.raises(ModelBindingError, match="not 4-D"):
-            build_candidate_gallery(
-                spec=spec,
-                weight_path=weight,
-                identities=mixed,
-                expected_identities=len(mixed),
-            )
+    def test_a_vector_of_the_wrong_dimension_is_refused(self) -> None:
+        """Dimensions are read off the arrays and the record, not the caller.
 
-    def test_a_placeholder_hash_cannot_bind_anything(self) -> None:
-        """A dummy digest would turn the byte comparison into theatre.
-
-        ``weight_sha256="a" * 64`` is a valid-looking string, so without
-        a well-formedness check it would pass as a declaration and the
-        comparison below it would succeed only for a file whose hash is
-        that — which is a test fixture, never a model.
+        A 128-D vector under a 512-D record. The byte check would pass
+        here (the weight is the recorded one), so this is the check
+        doing the work the dimension is actually needed for.
         """
-        spec, weight = _bound_spec()
-        broken = replace(spec, weight_sha256="deadbeef")
-        with pytest.raises(ModelBindingError, match="not a 64-hex digest"):
-            require_weight_binding(
-                spec=broken, weight_path=weight, identities=_vectors(seed=0, dim=4)
-            )
+        spec = _registry_spec("deepface_facenet512")
+        mixed = _vectors(seed=2, dim=512)
+        mixed["id-00"] = _axis(128, 0)
+        with pytest.raises(ModelBindingError, match="not 512-D"):
+            require_vector_shape(spec=spec, identities=mixed)
 
+    @pytest.mark.skipif(
+        not _RECORDED_FACENET512_WEIGHT.is_file(),
+        reason=(
+            "the recorded Facenet512 weights are not present; the registry "
+            "holds their real checksum, so no substitute file can match it "
+            "and the positive path cannot be faked"
+        ),
+    )
     def test_the_correct_weights_do_bind(self) -> None:
-        """The positive case, so the refusals above are refusals and not a wall."""
-        spec, weight = _bound_spec()
+        """The positive case, so the refusals above are refusals and not a wall.
+
+        Skipped when the artifact is absent, which is the normal state
+        in CI. The skip says why it cannot be substituted: a registry
+        entry records a real checksum, so there is no byte string this
+        test could write that would legitimately match it.
+        """
+        spec = _registry_spec("deepface_facenet512")
         gal = build_candidate_gallery(
             spec=spec,
-            weight_path=weight,
-            identities=_vectors(seed=0, dim=4),
+            weight_path=_RECORDED_FACENET512_WEIGHT,
+            identities=_vectors(seed=0, dim=512),
             expected_identities=4,
         )
-        assert gal.model_version == MODEL
+        assert len(gal.embeddings) == 4
 
     def test_the_observed_hash_is_recorded_for_the_report(self) -> None:
-        """The report must carry what ran, not what was claimed.
+        """The report must carry what ran, and it now equals the record.
 
         A result recording only the declared hash is indistinguishable
-        from one whose weights were verified, and the counts are
-        identical either way — which is why no other check catches it.
+        from one whose file was verified, and the counts are identical
+        either way -- which is why nothing else catches it.
+
+        Asserted against the record rather than against a successful
+        bind, so it holds without the artifact present.
         """
-        spec, weight = _bound_spec()
-        observed = require_weight_binding(
-            spec=spec, weight_path=weight, identities=_vectors(seed=0, dim=4)
+        record = resolve_candidate_model("deepface_facenet512")
+        comparison = _comparison(
+            observed_weight_sha256=record.weight_sha256,
+            spec_overrides={"registry_id": "deepface_facenet512"},
         )
-        assert observed == spec.weight_sha256
-        comparison = _comparison(observed_weight_sha256=observed)
-        assert comparison.observed_weight_sha256 == spec.weight_sha256
-        assert comparison.to_dict()["observed_weight_sha256"] == spec.weight_sha256
+        assert comparison.observed_weight_sha256 == comparison.spec.weight_sha256
+        assert (
+            comparison.to_dict()["observed_weight_sha256"]
+            == record.weight_sha256
+        )
 
     def test_a_comparison_without_a_recorded_hash_cannot_be_published(self) -> None:
         """A result with no observed hash is a claim, not a measurement.
@@ -479,17 +636,20 @@ class TestGalleryIsBoundToTheWeightsNotTheLabel:
         The observed hash is a plain string field, so deleting the
         first clause lets execution fall into the second one, which
         slices ``None`` and raises ``TypeError``. That failure is real
-        but it belongs to the line *below* — and a mutation reporting it
+        but it belongs to the line *below* -- and a mutation reporting it
         looks exactly like a working guard, which is the shape of false
         evidence this rework exists to remove.
 
         So the call is made inside a ``try`` that catches *any*
         exception, and the assertions then demand this guard's own
         refusal. Catching only ``CandidateContractError`` would let the
-        ``TypeError`` escape as an error naming the line it came from —
+        ``TypeError`` escape as an error naming the line it came from --
         red, but not attributable to the clause that was deleted.
         """
-        comparison = _comparison(observed_weight_sha256=None)
+        comparison = _comparison(
+            observed_weight_sha256=None,
+            spec_overrides={"registry_id": "deepface_facenet512"},
+        )
         refusal: Exception | None = None
         try:
             comparison.assert_binding_recorded()
@@ -503,18 +663,16 @@ class TestGalleryIsBoundToTheWeightsNotTheLabel:
         )
         assert "no observed weight hash" in str(refusal)
 
-    def test_a_hash_disagreeing_with_the_declaration_cannot_be_published(self) -> None:
-        """A hash that does not match the spec is a binding that failed silently.
+    def test_a_hash_disagreeing_with_the_record_cannot_be_published(self) -> None:
+        """An observed value that is not the recorded one is a silent failure.
 
-        The observed value and the declared value disagreeing is the
-        exact state a mislabelled run would produce if the check were
-        advisory. The counts are already computed by then, so nothing
-        else looks wrong.
+        This is the state a mislabelled run would produce if the
+        binding were advisory. The counts are already computed by then,
+        so nothing else looks wrong.
         """
-        spec, weight = _bound_spec()
         comparison = _comparison(
             observed_weight_sha256="f" * 64,
-            spec_overrides={"weight_sha256": sha256_of_file(weight)},
+            spec_overrides={"registry_id": "deepface_facenet512"},
         )
         with pytest.raises(
             CandidateContractError, match="recorded observed weight hash"
@@ -1059,20 +1217,27 @@ def _comparison(
     spec_overrides: dict[str, Any] | None = None,
     **over: Any,
 ) -> CandidateComparison:
-    from facecore.eval.model_comparison import CandidateSpec
-
-    base = {
+    # Weight facts come from the registry, so they are not spelled out
+    # here; a test that needs a different recorded model passes
+    # ``registry_id`` and everything weight-related follows from it.
+    # Defaults first, caller overrides last: a test that sets
+    # ``backend="product"`` (the control case) must win over the
+    # worker's default, and one that sets ``registry_id`` must be able
+    # to reach a different recorded model. Explicit keyword arguments
+    # cannot express "override me", so the merge happens in the dict.
+    defaults: dict[str, Any] = {
+        "registry_id": "deepface_facenet512",
         "candidate_id": "deepface-facenet512",
-        "model_name": "Facenet512",
         "model_version": MODEL,
-        "embedding_dim": 512,
-        "input_size": 160,
         "normalization": "Facenet",
         "interpreter": "3.13",
-        "weight_sha256": "a" * 64,
         "backend": "deepface-worker",
     }
-    spec = replace(CandidateSpec(**(base | (spec_overrides or {}) | over)))
+    merged = defaults | (spec_overrides or {}) | over
+    spec = CandidateSpec.from_registry_id(
+        merged.pop("registry_id"),
+        **{k: v for k, v in merged.items() if k not in _WEIGHT_FACTS},
+    )
     return CandidateComparison.build(
         spec=spec,
         probe_rows=_rows(13),

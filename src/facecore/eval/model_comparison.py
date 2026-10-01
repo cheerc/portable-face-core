@@ -50,6 +50,7 @@ from typing import Any, Protocol, Sequence
 import numpy as np
 
 from facecore.contracts.policy import PolicyProfile
+from facecore.eval.candidate_registry import resolve_candidate_model
 from facecore.eval.static_baseline import (
     BAND_MATCHED,
     SET_NONTARGET,
@@ -126,13 +127,21 @@ class CandidateSpec:
     on the page cannot be reproduced, and two of them (input size and
     normalization) change the numbers by construction.
 
-    ``weight_sha256`` is the field this module leans on hardest, and it
-    is the only one that can be **checked against a fact**. The others
-    are declarations: a caller that writes ``model_version="Facenet512"``
-    writes a string, and a string proves nothing about which weights ran.
-    ``weight_sha256`` can be compared against the bytes actually loaded,
-    so it is what makes a mislabelled gallery detectable rather than
-    merely improbable.
+    ``weight_sha256`` is the field this module leans on hardest. It used
+    to be a field the caller filled in, and that was the defect: every
+    check built on it compared the caller's declaration against the
+    caller's file — the same fact read twice — so a caller who wrote the
+    declaration to match the file they were holding got a complete,
+    plausible result under the wrong model's name. Two independent
+    reviewers found that path.
+
+    The value is now read from
+    :mod:`facecore.eval.candidate_registry` and a caller may select a
+    record but not write one. ``weight_sha256`` and ``embedding_dim``
+    stay on this dataclass so the rest of the module and the report can
+    read them directly, but ``__post_init__`` refuses any spec that
+    disagrees with the record and ``from_registry_id`` is the only
+    supported way to build one.
     """
 
     candidate_id: str
@@ -144,6 +153,74 @@ class CandidateSpec:
     interpreter: str
     weight_sha256: str
     backend: str
+    #: Which repo-fixed record the two weight facts above were read
+    #: from. ``None`` is a refusal, not a default: a spec that does not
+    #: say which recorded model it is has no checked provenance at all.
+    registry_id: str | None = None
+
+    def __post_init__(self) -> None:
+        """Refuse a spec whose weight facts disagree with the registry.
+
+        This is the check the free-field design could not make. The hash
+        and the dimension are the two facts a caller most wants to
+        control, and they were exactly the two that decided whether a
+        gallery's vectors could be attributed to a model.
+        """
+        if self.registry_id is None:
+            raise CandidateContractError(
+                f"candidate {self.candidate_id!r} has no registry_id; "
+                "weight_sha256 and embedding_dim come from "
+                "facecore.eval.candidate_registry, not from the caller, "
+                "so a spec must say which recorded model it is. Use "
+                "CandidateSpec.from_registry_id()."
+            )
+        manifest = resolve_candidate_model(self.registry_id)
+        if self.weight_sha256 != manifest.weight_sha256:
+            raise CandidateContractError(
+                f"candidate {self.candidate_id!r} declares weight_sha256="
+                f"{self.weight_sha256[:12]}… but the repo records "
+                f"{self.registry_id!r} as {str(manifest.weight_sha256)[:12]}…; "
+                "the recorded value is not the caller's to choose"
+            )
+        if self.embedding_dim != manifest.embedding_dim:
+            raise CandidateContractError(
+                f"candidate {self.candidate_id!r} declares "
+                f"embedding_dim={self.embedding_dim} but the repo records "
+                f"{self.registry_id!r} as {manifest.embedding_dim}"
+            )
+
+    @classmethod
+    def from_registry_id(cls, registry_id: str, **over: Any) -> CandidateSpec:
+        """Build a spec from a repo-fixed record, then apply overrides.
+
+        The weight facts are filled from the record *before* any
+        override, ``__post_init__`` then rejects an override that
+        contradicts it, and the weight fields are refused outright as
+        parameters — so a caller may say which model it is comparing
+        and adjust what does not affect which bytes are loaded, but may
+        not say what those bytes hash to.
+        """
+        manifest = resolve_candidate_model(registry_id)
+        base: dict[str, Any] = {
+            "model_name": manifest.model_id,
+            "model_version": manifest.model_id,
+            "embedding_dim": manifest.embedding_dim,
+            "input_size": manifest.input_width,
+            "weight_sha256": str(manifest.weight_sha256),
+            "registry_id": registry_id,
+        }
+        forbidden = {
+            "weight_sha256",
+            "embedding_dim",
+            "input_size",
+            "registry_id",
+        } & set(over)
+        if forbidden:
+            raise CandidateContractError(
+                f"candidate {registry_id!r} may not override {sorted(forbidden)}; "
+                "those come from the repo-fixed record for that model"
+            )
+        return cls(**(base | over))
 
     @property
     def is_control(self) -> bool:
@@ -195,56 +272,77 @@ def require_weight_binding(
     *,
     spec: CandidateSpec,
     weight_path: Path,
-    identities: dict[str, np.ndarray],
 ) -> str:
-    """Bind a gallery to a spec using facts, not labels.
+    """Bind a file to a spec. One thing it does **not** establish.
 
-    Three checks, each reading something the caller cannot simply
-    assert:
+    What it establishes: the bytes on disk at ``weight_path`` are the
+    ones this repo records for ``spec.registry_id``. That statement is
+    meaningful because the recorded value is not the caller's to pick —
+    ``CandidateSpec.__post_init__`` refuses a spec whose declared hash
+    disagrees with the registry, and an id with no record cannot be
+    introduced at all.
 
-    1. **The declared digest is well-formed.** A placeholder would
-       otherwise turn check 2 into a comparison that is only meaningful
-       when it fails.
-    2. **The loaded weight file hashes to the declared SHA-256.** Read
-       off disk. This is the check that survives a fully relabelled
-       gallery: Facenet512 and ArcFace are both 512-D, so dimensions
-       agree, and a caller that writes the labels *and* the vector
-       length consistently still cannot forge the bytes. Their weights
-       are different files, so at most one of two same-shaped models
-       can match.
-    3. **Every vector is the declared dimension.** Read off the arrays,
-       so a 128-D model cannot pass as a 512-D one.
+    What it does **not** establish, and the previous version of this
+    docstring wrongly claimed the opposite: that the embeddings came
+    from those bytes. Nothing here re-derives a vector and compares it.
+    The gap is architectural — proving it needs the crops the vectors
+    were computed from, and the candidate interface carries only
+    ``dict[str, np.ndarray]``. So a caller that supplies the *correct*
+    Facenet512 weights together with ArcFace-computed vectors passes
+    this check. That case is **UNVERIFIED until A3**, which re-derives
+    and compares; it is not a check that can be added here, and a test
+    asserting otherwise would be asserting a false property.
+
+    Two reviewers demonstrated the bypass this replaced: writing the
+    declaration to match the file, so every field agreed while the
+    model name did not. That is now impossible rather than merely
+    unlikely, because the hash is not a caller-supplied field.
 
     Returns the observed hash so callers record what actually ran
     rather than what was claimed.
     """
-    if not _is_sha256(spec.weight_sha256):
-        raise ModelBindingError(
-            f"candidate {spec.candidate_id!r} declares weight_sha256="
-            f"{spec.weight_sha256!r}, which is not a 64-hex digest; a "
-            "placeholder cannot be compared against bytes, so the "
-            "binding below would be theatre"
-        )
+    manifest = resolve_candidate_model(str(spec.registry_id))
     observed = sha256_of_file(weight_path)
-    if observed != spec.weight_sha256:
+    if observed != manifest.weight_sha256:
         raise ModelBindingError(
-            f"candidate {spec.candidate_id!r} declares weights hashing to "
-            f"{spec.weight_sha256[:12]}… but the file it was given hashes "
-            f"to {observed[:12]}…; the gallery would be vectors from one "
-            "model reported under another model's name"
+            f"candidate {spec.candidate_id!r} (registry id "
+            f"{spec.registry_id!r}) is recorded as hashing to "
+            f"{str(manifest.weight_sha256)[:12]}… but the file it was given "
+            f"hashes to {observed[:12]}…; the gallery would be vectors from "
+            "one model reported under another model's name"
         )
+    return observed
+
+
+def require_vector_shape(
+    *,
+    spec: CandidateSpec,
+    identities: dict[str, np.ndarray],
+) -> None:
+    """Check vector dimensions against the recorded model, no file needed.
+
+    Split from :func:`require_weight_binding` because the two checks
+    answer different questions and need different evidence. "Are these
+    vectors the shape the recorded model produces?" is answerable from
+    the arrays and the registry alone; "is this file the recorded
+    artifact?" needs the file.
+
+    A caller holding the *correct* weights and vectors of the wrong
+    shape is refused here, which is the one mislabelling the byte check
+    cannot see.
+    """
+    manifest = resolve_candidate_model(str(spec.registry_id))
     wrong = sorted(
         ident
         for ident, vec in identities.items()
-        if len(np.asarray(vec)) != spec.embedding_dim
+        if len(np.asarray(vec)) != manifest.embedding_dim
     )
     if wrong:
         raise ModelBindingError(
             f"{len(wrong)} of {len(identities)} candidate vectors are not "
-            f"{spec.embedding_dim}-D, the dimension {spec.candidate_id!r} "
-            "declares (count only, no identity is named)"
+            f"{manifest.embedding_dim}-D, the dimension the repo records for "
+            f"{spec.registry_id!r} (count only, no identity is named)"
         )
-    return observed
 
 
 def require_declared_interpreter(
@@ -312,7 +410,8 @@ def build_candidate_gallery(
             "identities as the control, since a missing one is also the "
             "runner-up most likely to be beaten"
         )
-    require_weight_binding(spec=spec, weight_path=weight_path, identities=identities)
+    require_weight_binding(spec=spec, weight_path=weight_path)
+    require_vector_shape(spec=spec, identities=identities)
     # The digest is computed with `build_gallery_from_folder`'s own
     # recipe (sorted identity name, then vector bytes) rather than by
     # calling `ResearchGallery.compute_digest`, which hashes the
