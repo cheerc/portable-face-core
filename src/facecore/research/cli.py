@@ -1196,10 +1196,16 @@ def cmd_live(
             model_generation = context.gallery.generation
             gallery_digest = context.gallery.digest
         # D7-A W3: the sinks are defined ABOVE the `device == "fake"`
-        # branch so every engine on this path can share one definition.
-        # Previously this rebuilt the engine a second time purely to attach
-        # the sink, which also discarded the fake-device engine built at the
-        # branch above.
+        # branch, not inside this one.
+        #
+        # Why they had to move: W3 attaches `event_sink` to the per-round
+        # engine built in `next_session_factory`, and that closure sits in
+        # the `ui == "qt"` branch — which does not intersect this one. With
+        # the definition below, a reference to `_event_sink` from inside
+        # `next_session_factory` is a free-variable lookup that never binds.
+        # So this is the structural adjustment the new requirement needed,
+        # not a repair of a pre-existing bug: the per-round engine simply
+        # had no sink to attach to.
         engine = SessionEngine(
             profile,
             gallery_digest,

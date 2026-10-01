@@ -125,10 +125,10 @@ class SessionEngine:
         terminal_identity: str | None,
         now_ns: int,
     ) -> None:
-        # D7-A W3: tally before the sink guard so the counts survive the
-        # no-sink live path. Placed here (not after the guard) because a
-        # caller reading `event_counts()` must be able to tell "this round
-        # emitted no score_reset" from "nobody was listening".
+        # D7-A W3: tally before the sink guard, which is an early return.
+        # `event_counts()` is therefore a sink-independent read: a caller
+        # that only wants the tally does not have to become an
+        # `event_sink` and start retaining every DecisionEvent.
         self._event_counts[event_type] += 1
         if self._event_sink is None:
             return
