@@ -175,8 +175,20 @@ D6 是「用相同 23／13／30 照片集合、固定 detector 與 alignment，�
   fail，不得改 expected 值湊數。
 - 兩份候選 gate（2026-09-10 的產品 bake-off 與本輪的 D6 候選）**並列不合併**；D6 的新 gate 不回頭
   改寫舊檔，理由記在該檔開頭。
-- 目前階段是 plan §9 設計的 prep（文件／品質量測／環境 spike），**不是比較完成**，也還不是
-  shortage 結案 —— plan §11 的「候選不足交付 shortage」是最終完成定義。
+- **A3 本機 run 已完成（2026-10-01）**，結果與限制見
+  [D6 比較報告](research/2026-09-30-d6-deepface-comparison.md)。指標摘要：
+  同 SFace bytes bridge 成立（cosine median 1.0、maxdiff median 2.4e-07）；
+  兩臂各 43 列、unprocessable 0、gallery 23/23；**top1 正確 k／13 在 SFace control
+  與 Facenet512 都是 13/13**。
+  **這兩列不可當模型等價的證據 —— probe 13 張全部是單一身分 `enroll-23`。**
+  Facenet512 的 probe 與 non-target 分數同步偏高（non-target 有 9/30 高於最低
+  probe 分數，control 為 2/30），**故不可套用 SFace 門檻**。
+  **未選門檻、未做 frontier、未做獨立校準。**
+  ArcFace 已核准且 artifact 已核，但架構建構階段與該 Keras 組合不相容，
+  **環境本身可行**（Facenet512 在同一環境完成量測），依 plan `:86` 屬
+  不預設必跑的第二候選，**交付不受影響**。
+- 目前階段是 A 系列已交付、**R 彙總報告已產出**；**這不是 shortage 結案，也不是
+  產品門檻選定或部署授權** —— plan §11 的完成定義另需獨立校準與新資料驗證。
 - 所有 `selected=False`；D6 不選產品門檻。
 
 ## Next Session
