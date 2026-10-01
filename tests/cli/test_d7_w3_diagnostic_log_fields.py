@@ -42,6 +42,8 @@ not-recorded set is asserted as a set, not as a comment.
 from __future__ import annotations
 
 import csv
+import importlib.util
+import os
 from pathlib import Path
 from typing import Any
 
@@ -613,6 +615,78 @@ def test_demo_csv_end_to_end_carries_the_new_fields(tmp_path: Path) -> None:
     assert csv  # keep the import meaningful for readers
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("PySide6") is None,
+    reason="the real wiring is exercised through the Qt window",
+)
+def test_a_real_demo_round_fills_the_diagnostic_fields(
+    qt_app: Any, tmp_path: Path
+) -> None:
+    """The values must be real on a real round, not merely present.
+
+    The row-level tests inject `event_counts` and synthesise
+    `TimingMarks`, so they prove the plumbing but not that a live round
+    produces a meaningful value. This drives the actual window and reads
+    the file, which is the only place the claim 「逐幀計數會出現在 log」
+    can be checked end to end.
+
+    `recognition_duration_ms` is asserted non-blank specifically: it is
+    derived from `TimingMarks`, and `controller.py:235` deliberately
+    never fills the open segment on the demo path, so the natural
+    fear is that the whole marks object is empty there and the column
+    ships permanently blank — the §8 false-data shape. The real run
+    shows it is populated (0.0 on a single-frame round, which is a true
+    measurement: the round anchored and terminated at the same instant).
+    """
+    from facecore.live.capture import FakeCapture
+    from facecore.live.qt_window import QtResearchWindow
+    from facecore.research.cli import G3_DEMO_RESULTS_CSV_NAME
+    from tests.live.test_g3_round_records import _RoundFactory, _face_frames
+    from tests.live.test_qt_window import _matching_scorer
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    store = tmp_path / "demo-store"
+    store.mkdir()
+    demo_csv = store / G3_DEMO_RESULTS_CSV_NAME
+    factory = _RoundFactory(tmp_path, FakeCapture(_face_frames()), _matching_scorer)
+    desktop, consent, _attempt = factory()
+    window = QtResearchWindow(
+        desktop,
+        consent=consent,
+        recorder=None,
+        attempt_id=None,
+        offscreen=True,
+        clock_ns=lambda: 0,
+        next_session=factory,
+        demo_results_csv=demo_csv,
+    )
+    window.show()
+    window.enter_ready()
+    window.start_clicked()
+    window.process_until_terminal(max_steps=200)
+    window.press_correct()
+    window.close()
+
+    rows = list(csv.DictReader(demo_csv.open(encoding="utf-8")))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["recognition_duration_ms"] != "", (
+        "recognition_duration_ms came out blank on a real round: the "
+        "timing marks are not reaching the demo writer"
+    )
+    # A real round that matched had usable frames, so the quality gate
+    # rejected a definite number of them — or none. Either is meaningful;
+    # a blank cell is not.
+    assert row["frames_rejected"].isdigit()
+    assert row["score_reset_count"].isdigit()
+    assert row["interval_skip_count"].isdigit()
+    # The threshold snapshot must carry this round's actual profile.
+    assert row["match_threshold"] == "0.45", row["match_threshold"]
+    assert row["required_support"] == "1"
+    # W0 fields stay empty until W0-a supplies an input path.
+    assert row["probe_kind"] == "" and row["presenting_identity"] == ""
+
+
 # ---------------------------------------------------------------------------
 # 5. The sink is wired to EVERY engine (plan v8 §8, dispatch item 2)
 # ---------------------------------------------------------------------------
@@ -695,3 +769,13 @@ class TestEveryEngineHasASink:
         assert not early, (
             f"_event_sink used at line(s) {early}, defined at {defined_at}"
         )
+
+
+@pytest.fixture(scope="module")
+def qt_app() -> Any:
+    """A module-scoped QApplication, matching the D3b suite's fixture."""
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication as ActualQApplication
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    return ActualQApplication.instance() or ActualQApplication([])
