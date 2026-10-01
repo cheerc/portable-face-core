@@ -30,8 +30,10 @@ kind of quiet upgrade the decision forbids, so the value is pinned.
 
 from __future__ import annotations
 
+import inspect
 import sys
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
@@ -40,6 +42,7 @@ from facecore.eval import candidate_registry
 from facecore.eval.candidate_registry import (
     CANDIDATE_MODELS,
     UnknownCandidateModel,
+    _resolve_from,
     known_ids,
     resolve_candidate_model,
 )
@@ -215,7 +218,7 @@ class TestTheRegistryIsClosed:
         with pytest.raises(
             UnknownCandidateModel, match="did not produce a ModelManifest"
         ):
-            resolve_candidate_model("x", _records={"x": lambda: "not a manifest"})
+            _resolve_from("x", {"x": lambda: "not a manifest"})
 
     def test_an_entry_recording_no_hash_is_refused(self) -> None:
         """The ``weight_sha256 is None`` guard, likewise unpinned.
@@ -226,7 +229,163 @@ class TestTheRegistryIsClosed:
         manifest = ModelManifest.sface_2021dec_fp32()
         object.__setattr__(manifest, "weight_sha256", None)
         with pytest.raises(UnknownCandidateModel, match="records no weight_sha256"):
-            resolve_candidate_model("x", _records={"x": lambda: manifest})
+            _resolve_from("x", {"x": lambda: manifest})
+
+
+class TestThePublicResolverTakesNoMapping:
+    """The bypass three independent measurements found, and the closure
+    that closes it.
+
+    An earlier revision passed the records as a *default argument*. That
+    closed the module-rebinding route and left this one wide open:
+    ``resolve_candidate_model(id, _records={...})`` was a public,
+    documented-looking way for a caller to supply its own records. Three
+    sources found it independently — the author, reviewer 1, and the
+    lead, each measuring it rather than inferring it.
+
+    **Positional passing is covered separately and deliberately.** A
+    ``/`` marker was the lead's first instruction for closing this, and
+    it does not work: ``/`` governs whether an argument may be *named*,
+    not whether it may be *passed*. Both placements left
+    ``resolve_candidate_model("x", {...})`` accepted. A test that only
+    tried the keyword form would have passed against that broken fix,
+    which is why the positional case is its own test rather than another
+    parametrization of the keyword one.
+    """
+
+    @staticmethod
+    def _injected(registry_id: str, value: str = "injected") -> dict[str, object]:
+        return {registry_id: (lambda: value)}
+
+    def test_supplying_records_by_keyword_is_refused(self) -> None:
+        """Keyword: the form the default-argument revision was open to."""
+        with pytest.raises(TypeError):
+            resolve_candidate_model(  # type: ignore[call-arg]
+                "deepface_arcface", _records=self._injected("deepface_arcface")
+            )
+
+    def test_supplying_records_by_keyword_under_any_name_is_refused(self) -> None:
+        """A renamed parameter is not a new door.
+
+        The argument is refused because there is no second parameter at
+        all, not because this particular name is known. Asserting on the
+        *absence* of a second parameter is what makes that true, so it
+        is asserted separately below.
+        """
+        with pytest.raises(TypeError):
+            resolve_candidate_model(  # type: ignore[call-arg]
+                "deepface_arcface", records=self._injected("deepface_arcface")
+            )
+
+    def test_supplying_records_positionally_is_refused(self) -> None:
+        """Positional: the route a ``/`` fix would have left open."""
+        with pytest.raises(TypeError):
+            resolve_candidate_model(  # type: ignore[call-arg]
+                "deepface_arcface", self._injected("deepface_arcface")
+            )
+
+    def test_the_public_resolver_declares_exactly_one_parameter(self) -> None:
+        """The structural claim the three refusals rest on.
+
+        Asserting the signature rather than the exceptions: a caller
+        supplying a second argument fails on arity, and that is only a
+        property worth keeping if there is in fact no second parameter.
+        """
+        parameters = inspect.signature(resolve_candidate_model).parameters
+        assert list(parameters) == ["registry_id"], parameters
+        assert parameters["registry_id"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+
+    def test_the_public_resolver_has_no_writable_defaults(self) -> None:
+        """``__defaults__`` is the attribute the earlier shape exposed.
+
+        With a closure there is nothing there to rewrite, so the whole
+        ``__defaults__`` route is gone rather than merely narrowed.
+        """
+        assert resolve_candidate_model.__defaults__ is None
+        assert known_ids.__defaults__ is None
+
+    def test_the_records_live_in_a_closure_rather_than_a_parameter(self) -> None:
+        """Where the captured mapping actually is, stated as a fact."""
+        cells = resolve_candidate_model.__closure__ or ()
+        assert any(
+            isinstance(cell.cell_contents, MappingProxyType) for cell in cells
+        ), cells
+
+    def test_rebinding_every_module_name_leaves_resolution_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """All three names, rebound to a different mapping in turn.
+
+        Each rebinding is a separate assignment rather than one test
+        that does all three, so a failure names which name leaked.
+        """
+        genuine = resolve_candidate_model("deepface_arcface").weight_sha256
+        for name in ("CANDIDATE_MODELS", "_CANDIDATE_RECORDS", "_resolve_from"):
+            with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(
+                    candidate_registry, name, self._injected("deepface_arcface")
+                )
+                assert resolve_candidate_model("deepface_arcface").weight_sha256 == (
+                    genuine
+                ), name
+
+    def test_known_ids_also_takes_no_mapping(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The accessor had the same shape and the same fix."""
+        with pytest.raises(TypeError):
+            known_ids(  # type: ignore[call-arg]
+                _records=self._injected("evil")
+            )
+        with pytest.raises(TypeError):
+            known_ids(self._injected("evil"))  # type: ignore[call-arg]
+        monkeypatch.setattr(
+            candidate_registry, "CANDIDATE_MODELS", self._injected("evil")
+        )
+        assert known_ids() == RECORDED_IDS
+
+
+class TestTheInternalHelperIsDocumentedAsAResidualGap:
+    """Lead's third condition, turned into something executable.
+
+    ``_resolve_from`` is a module-level symbol, so it *can* be imported
+    and handed a caller-supplied mapping. That is not closed, and the
+    module docstring says so. This test fails if the docstring ever
+    stops saying so — which is the failure mode worth guarding: a reader
+    concluding the registry is fully closed.
+    """
+
+    def test_the_module_docstring_states_the_helper_is_importable(self) -> None:
+        source = Path(candidate_registry.__file__).read_text(encoding="utf-8")
+        assert "is a module-level symbol, so a caller that" in source, (
+            "the docstring no longer states that _resolve_from is importable"
+        )
+        assert "is not established against one that imports an underscore" in source, (
+            "the docstring no longer bounds what the closure closes"
+        )
+
+    def test_the_helper_docstring_calls_itself_internal(self) -> None:
+        doc = candidate_registry._resolve_from.__doc__ or ""
+        assert "**Internal." in doc
+        assert "not access" in doc, (
+            "the helper does not say the underscore is a convention"
+        )
+
+    def test_the_helper_is_not_exported_in_all(self) -> None:
+        """There is no ``__all__`` here, so the check is the public
+        surface: what ``from module import *`` would pick up.
+
+        ``candidate_registry`` has no ``__all__`` of its own (the one at
+        ``model_comparison.py:897`` is a different module), so an
+        unprefixed import is the only export list that exists. This test
+        pins that ``_resolve_from`` is reachable only under its
+        underscore name.
+        """
+        exported = {
+            name for name in dir(candidate_registry) if not name.startswith("_")
+        }
+        assert "_resolve_from" not in exported
+        assert "resolve_candidate_model" in exported
 
 
 class TestRebindingTheModuleNameChangesNothing:
@@ -288,23 +447,36 @@ class TestRebindingTheModuleNameChangesNothing:
 
 
 def test_the_residual_gap_is_stated_in_the_repo():
-    """The bypass that is *not* closed must be written where a reader meets it.
+    """Every gap that is *not* closed must be written where a reader meets it.
 
-    The assertions below were deliberately made narrow. A first version
-    checked only that the strings ``__defaults__`` and ``A3`` appeared
-    somewhere in the file, and a mutation that deleted the whole
-    residual-gap paragraph left both strings present elsewhere — the
-    test stayed green on the exact edit it was written to catch. So
-    this pins the *sentences*, not the vocabulary.
+    The assertions below were deliberately made narrow, and twice had to
+    be corrected. A first version checked only that the strings
+    ``__defaults__`` and ``A3`` appeared somewhere in the file, and a
+    mutation that deleted the whole residual-gap paragraph left both
+    strings present elsewhere — the test stayed green on the exact edit
+    it was written to catch. A second version pinned the sentences of
+    *one* gap, which passed just as silently when the closure rewrite
+    replaced that gap with a differently-worded one. Pinning prose
+    means pinning it against the prose that is actually there, so each
+    assertion names a gap the current module docstring states.
     """
     source = Path(candidate_registry.__file__).read_text(encoding="utf-8")
-    assert "**The residual gap, stated rather than implied.**" in source, (
-        "the residual gap is no longer named as a paragraph in the module"
+    flat = " ".join(source.split())
+    assert "**Two residual gaps, stated rather than implied.**" in flat, (
+        "the residual gaps are no longer named as a section in the module"
     )
-    assert "still substitute a mapping" in source, (
-        "the mechanism that survives the fix is no longer described"
+    assert "is a module-level symbol, so a caller that" in flat, (
+        "the docstring no longer states that _resolve_from is importable"
     )
-    assert "**A3 precondition**" in source, "the residual gap names no follow-up owner"
+    assert "a naming practice, not access control" in flat, (
+        "the docstring no longer says the underscore is a convention, not enforcement"
+    )
+    assert "writes into the closure's cells" in flat, (
+        "the docstring no longer states the closure-cell route"
+    )
+    assert "is not established against one that imports an underscore" in flat, (
+        "the docstring no longer bounds what the closure closes"
+    )
 
 
 class TestTheResearchOnlyEntriesCarryTheirUnresolvedLicense:
