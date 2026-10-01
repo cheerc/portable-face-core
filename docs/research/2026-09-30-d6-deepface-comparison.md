@@ -63,13 +63,16 @@ max_abs_component_diff min 1.7e-07       median 2.4e-07  max 3.9e-07
 分母：probe 13、non-target 30。**errors 保分母** —— 兩臂各 43 列、
 **unprocessable 0**（沒有被丟棄的列）。每格為 min／median／max。
 
+**median 定義**：`statistics.median` —— n 為奇數取正中一列，n 為偶數取
+中間兩列的平均。四捨五入至四位小數，下同。
+
 | | SFace control | Facenet512 |
 |---|---|---|
 | **top1 正確 k／13** | **13/13** | **13/13** |
 | probe wrong identity | 0 | 0 |
 | probe top1 score | 0.4914／0.6636／0.7248 | 0.7291／0.8222／0.8789 |
 | probe margin | 0.2853／0.4270／0.5232 | 0.1979／0.2756／0.3456 |
-| non-target top1 | 0.3111／0.3976／0.5386 | 0.5477／0.7012／0.8625 |
+| non-target top1 | 0.3111／0.3972／0.5386 | 0.5477／0.6978／0.8625 |
 | non-target margin | 0.0016／0.0338／0.1714 | 0.0037／0.0543／0.2523 |
 | gallery | 23/23 | 23/23 |
 
@@ -98,6 +101,10 @@ non-target 會全部落進 `matched`。
 ### 6.1 樣本（最重要）
 
 - **probe 13 張全部是單一身分 `enroll-23`**（見 §5 的警示框）。
+- **這不是本輪的取樣意外，是 corpus 結構。** 同一個 probe 身分在歷史 29 輪
+  真機 session 裡 11 輪產生 top1，**全部**為 `enroll-23`（`PROJECT-STATE.md:39`、
+  `:53` 記錄該 29 輪及其解讀界線）。**因此下一步不是換一批 probe，而是換 corpus
+  或擴大 probe 身分覆蓋** —— 換 probe 身分不會改變任何一個 `13/13` 的意義。
 - non-target 僅 30 張，corpus 僅 23 個註冊身分。
 - **不外推 500 人**；不從 23 人 open-set 的結果推論產品規模下的表現。
 - 單一 corpus、單一相機來源、單次採集，無跨 epoch／跨來源變異。
