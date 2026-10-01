@@ -296,7 +296,10 @@ def require_weight_binding(
     Two reviewers demonstrated the bypass this replaced: writing the
     declaration to match the file, so every field agreed while the
     model name did not. That is now impossible rather than merely
-    unlikely, because the hash is not a caller-supplied field.
+    unlikely, because the hash is not a caller-supplied field. The
+    registry entry is itself protected — see
+    ``facecore.eval.candidate_registry``, which states the two
+    mechanisms and the residual gap they do not close.
 
     Returns the observed hash so callers record what actually ran
     rather than what was claimed.
@@ -328,8 +331,12 @@ def require_vector_shape(
     artifact?" needs the file.
 
     A caller holding the *correct* weights and vectors of the wrong
-    shape is refused here, which is the one mislabelling the byte check
-    cannot see.
+    dimension is refused here, which is the one *dimension* mislabelling
+    the byte check cannot see. Not the only mislabelling: Facenet512
+    and ArcFace are both recorded at 512-D, so a swap between those two
+    is invisible to a dimension check and is the case
+    :func:`require_weight_binding`'s docstring records as UNVERIFIED
+    until A3.
     """
     manifest = resolve_candidate_model(str(spec.registry_id))
     wrong = sorted(
