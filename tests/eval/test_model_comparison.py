@@ -466,8 +466,16 @@ class TestTheWeightFactsAreNotTheCallersToChoose:
         could exist that the repo had no record of at all. That is the
         freedom these tests exist to remove, and it is refused at
         construction rather than at scoring time.
+
+        The registry's own refusal is caught too, and the assertion
+        demands *this* guard's message. Without that, deleting the guard
+        still leaves a red run -- ``resolve_candidate_model(None)``
+        raises ``UnknownCandidateModel`` on the line below -- and a
+        mutation would be scored as a pass on a failure belonging to a
+        different check.
         """
-        with pytest.raises(CandidateContractError, match="no registry_id"):
+        refusal: Exception | None = None
+        try:
             CandidateSpec(
                 candidate_id="c",
                 model_name="Facenet512",
@@ -479,6 +487,14 @@ class TestTheWeightFactsAreNotTheCallersToChoose:
                 weight_sha256="a" * 64,
                 backend="deepface-worker",
             )
+        except Exception as exc:  # noqa: BLE001 - the point is to name whatever came
+            refusal = exc
+        assert refusal is not None, "a spec with no registry_id was accepted"
+        assert isinstance(refusal, CandidateContractError), (
+            f"raised {type(refusal).__name__} rather than this guard's "
+            f"refusal; without the guard the registry refuses next, giving {refusal}"
+        )
+        assert "no registry_id" in str(refusal)
 
     def test_an_unknown_model_id_is_refused(self) -> None:
         """A registry that accepts new ids is the defect, not the fix.
