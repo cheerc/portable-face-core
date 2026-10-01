@@ -101,10 +101,13 @@ non-target 會全部落進 `matched`。
 ### 6.1 樣本（最重要）
 
 - **probe 13 張全部是單一身分 `enroll-23`**（見 §5 的警示框）。
-- **這不是本輪的取樣意外，是 corpus 結構。** 同一個 probe 身分在歷史 29 輪
-  真機 session 裡 11 輪產生 top1，**全部**為 `enroll-23`（`PROJECT-STATE.md:39`、
-  `:53` 記錄該 29 輪及其解讀界線）。**因此下一步不是換一批 probe，而是換 corpus
-  或擴大 probe 身分覆蓋** —— 換 probe 身分不會改變任何一個 `13/13` 的意義。
+- **這不是本輪的取樣意外，是 corpus 結構。** 同一個 probe 身分在 M3 real replay 的
+  13 個探針中同樣是單一身分（`d5-static-baseline-plan.md:39` 記載 `person-23`
+  ＝ live gallery 的 `enroll-23`），且在歷史 29 輪真機 session（**同一 stream，
+  非獨立 probe 量測**）裡 11 輪產生 top1、**全部**為 `enroll-23`
+  （`PROJECT-STATE.md:39`、`:53` 記錄該 29 輪及其解讀界線）。
+  **因此下一步不是換一批 probe，而是換 corpus 或擴大 probe 身分覆蓋** ——
+  換 probe 身分不會改變任何一個 `13/13` 的意義。
 - non-target 僅 30 張，corpus 僅 23 個註冊身分。
 - **不外推 500 人**；不從 23 人 open-set 的結果推論產品規模下的表現。
 - 單一 corpus、單一相機來源、單次採集，無跨 epoch／跨來源變異。
