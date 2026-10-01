@@ -194,11 +194,23 @@ MobileFaceNet ONNX、facenet-torch ONNX 匯出），列入下一輪候選 gate�
 
 ## 7. 本檔與 plan 的關係
 
-- 本檔是**功能協議**（做什麼、怎麼算公平、介面契約）；plan 是**執行計畫**（授權邊界、PR 切分、test-first、
-  mutation、stop conditions、完成定義）。衝突時以 plan 為準。
+三層定案，衝突時依序讓位：
+
+1. **operator decision** —— 授權邊界、scope、資料邊界、候選資格。spec 與 plan 均不得以自身較舊文字
+   拒絕較新的 operator 裁決。**授權邊界以 operator decision 為準，不以本檔為準**；若本檔與較新的
+   decision 衝突，以 decision 為準**並修正本檔**。
+2. **plan** —— 執行方式：PR 切分、test-first、mutation、stop conditions、完成定義。**對本檔的技術內容
+   有優先權**，但不凌駕第 1 層：**plan 內就授權邊界、scope、資料邊界或候選資格作結論的條文，不論其用詞，
+   若與較新的 operator decision 衝突，依第 1 層讓位。**
+3. **spec（本檔）** —— 功能協議：做什麼、怎麼算公平、介面契約。
+4. **無法歸類時的處理** —— 若某爭議無法判定屬第 2 層的技術內容或第 1 層的授權／邊界，**不得以「plan 是執行
+   計畫」為由逕自適用第 2 層**；停下並由 operator 以 decision 裁決。歧義的解決方向恆為不得架空 operator。
 - plan §11「候選不足交付 shortage」是**最終**完成定義，不是本輪結論。當前的 PR-D／C／E 是 plan §9 設計的
   prep，不是 shortfall 結案。
 - 本檔描述**目前設計與授權狀態**；實作進度看 `docs/PROJECT-STATE.md` 的 pointer，授權與未解事項看
   candidate gate，兩者不重複。
-- 授權邊界以 **operator decision 為準，不以本檔為準**。若本檔與較新的 decision 衝突，以 decision 為準並
-  修正本檔 —— **不得以本檔的較舊文字為由拒絕較新的 operator 裁決。**
+
+**本節各層的推翻方法：** 主張 plan 或 spec 某條文不屬其層時，須指出該條文**在不引用任何授權相關詞彙的
+情況下**仍決定了授權邊界、scope、資料邊界或候選資格，並依第 4 條請 operator 裁決。**本節不提供可自行
+執行的判定程序**——條文是否作結論屬語意判斷，任何以用詞、字串或位置為依據的自動判定都不成立且不得引用。
+第 4 條未被遵守（出現應停下請裁而未停下的爭議）本身即是本節分層未能收斂的證據。
