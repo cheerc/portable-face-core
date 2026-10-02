@@ -1074,10 +1074,114 @@ class TestSupportClearReasonsReachTheCSV:
             profile=_profile(),
         )
         joined = str(row["support_clear_reasons"])
-        # The count is whatever follows the LAST colon: a reset_reason may
-        # itself contain colons (`quality_rejected: <reasons>`), so a naive
-        # split on the first one reads the count as a word.
+        # Since F1 truncation no reason carries a colon, so the first one
+        # separates the family from its count unambiguously.
         for part in (p for p in joined.split(";") if p):
-            reason, _, count = part.rpartition(":")
+            reason, _, count = part.partition(":")
             assert count.isdigit(), f"unparsable count in {part!r}"
-            assert reason.startswith("quality_rejected:"), reason
+            assert reason.startswith("quality_rejected"), reason
+
+
+class TestQualityReasonsAreTruncatedInTheCSV:
+    """F1: the CSV carries the reason FAMILY, not the gate combination.
+
+    The seven gates in `pipeline/quality.py:36-55` each append
+    independently, so the in-memory `reset_reason` has a 2^7 key space —
+    127 non-empty subsets. A W4 `groupby(reason)` over that produces a
+    near-singleton tail, and the question the log has to answer (「was the
+    quality gate the blocker」) is boolean, not a 7-way combination.
+
+    These use MULTIPLE gates on one frame on purpose: a single-gate case
+    would pass against an untruncated writer too, so it would prove
+    nothing about the truncation.
+    """
+
+    def _row(self, quality_reasons: tuple[str, ...]) -> dict[str, object]:
+        from facecore.live.session import SessionEngine
+
+        engine = SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test")
+        engine.start("sess-1", 0)
+        scores = {"person-synth-01": 0.90, "person-synth-02": 0.10}
+        engine.observe(_obs(1, scores=scores, captured_ns=0))
+        engine.observe(_obs(2, scores=scores, captured_ns=200_000_000))
+        engine.observe(
+            _obs(3, scores={}, quality_pass=False, captured_ns=400_000_000)
+        )
+        # The engine must be keeping the detail even though the CSV will not.
+        reasons = engine.support_clear_reasons()
+        (reason, count), = reasons.items()
+        assert count == 1
+        assert reason.startswith("quality_rejected:"), reason
+        return g3_demo_round_row(
+            _Round.make(_terminal(), (_obs(1, scores=scores),)),
+            required_support=3,
+            labeled_at_utc="2026-10-01T00:00:00+00:00",
+            event_counts=engine.event_counts(),
+            support_clears=reasons,
+            profile=_profile(),
+        )
+
+    def test_a_single_gate_is_truncated_to_the_family(self) -> None:
+        row = self._row(("quality_blurry",))
+        assert row["support_clear_reasons"] == "quality_rejected:1"
+
+    def test_several_gates_still_yield_one_cell_not_many(self) -> None:
+        """The whole point: N gates must not become N keys or N cells."""
+        row = self._row(
+            (
+                "quality_detector_confidence",
+                "quality_blurry",
+                "quality_exposure",
+                "quality_pose_yaw",
+                "quality_occluded",
+            )
+        )
+        assert row["support_clear_reasons"] == "quality_rejected:1", (
+            "five simultaneous gates must collapse to the same single cell "
+            "as one gate; a per-gate or per-subset encoding would produce a "
+            "different value here"
+        )
+
+    def test_the_cell_value_carries_no_gate_names(self) -> None:
+        row = self._row(("quality_detector_confidence", "quality_exposure"))
+        cell = str(row["support_clear_reasons"])
+        for gate in ("quality_detector_confidence", "quality_exposure"):
+            assert gate not in cell, (
+                f"{gate} leaked into the CSV cell; the per-gate detail "
+                "belongs to the in-memory interface and the trace"
+            )
+
+    def test_the_count_is_unambiguous_after_truncation(self) -> None:
+        """With no colon left in the reason, `split(':', 1)` is exact."""
+        row = self._row(("quality_blurry", "quality_exposure"))
+        reason, _, count = str(row["support_clear_reasons"]).partition(":")
+        assert reason == "quality_rejected"
+        assert count.isdigit() and int(count) == 1
+
+    def test_other_families_are_untouched_by_the_truncation(self) -> None:
+        """Only `quality_rejected` grows a suffix; the rest are literals.
+
+        A blanket `split(':', 1)` would be harmless here only because the
+        other reasons contain no colon — this pins that, so a future
+        reason that does would fail rather than silently truncate.
+        """
+        from facecore.live.session import SessionEngine
+
+        engine = SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test")
+        engine.start("sess-1", 0)
+        scores = {"person-synth-01": 0.90, "person-synth-02": 0.10}
+        engine.observe(_obs(1, scores=scores, captured_ns=0))
+        engine.observe(_obs(2, scores=scores, captured_ns=200_000_000))
+        engine.observe(
+            _obs(3, scores={"person-synth-01": 0.05, "person-synth-02": 0.0},
+                 captured_ns=400_000_000)
+        )
+        row = g3_demo_round_row(
+            _Round.make(_terminal(), (_obs(1, scores=scores),)),
+            required_support=3,
+            labeled_at_utc="2026-10-01T00:00:00+00:00",
+            event_counts=engine.event_counts(),
+            support_clears=engine.support_clear_reasons(),
+            profile=_profile(),
+        )
+        assert row["support_clear_reasons"] == "score_below_threshold:1"

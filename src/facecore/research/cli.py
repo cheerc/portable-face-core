@@ -438,13 +438,12 @@ G3_DEMO_RESULTS_CSV_COLUMNS = (
     # `score_p50`, deleted because it measured a biased subset and invited
     # a wrong inference.) No input path exists yet — nothing in the CLI
     # writes them — so until W0-a adds one they are always empty.
-    # REVIEW CONDITION (reviewers' wording, not a deadline): if W0-b is not
-    # scheduled, re-open whether these columns should exist at all.
-    # Whether W0-b runs is the operator's open decision — it needs the
-    # operator present to drive a real device, which no implementation
-    # task can authorise. No time limit is stated here on purpose: a
-    # deadline would put the columns' existence on a timer this codebase
-    # has no authority to set.
+    # REVIEW CONDITION (reviewers' wording, not a deadline): if W0-b is
+    # not scheduled, delete these columns. W0-b's scheduling is the
+    # operator's open decision — it needs the operator present to drive
+    # a real device, which no implementation task can authorise. No time
+    # limit is stated here on purpose: a deadline would put the columns'
+    # existence on a timer this codebase has no authority to set.
     "probe_kind",
     "presenting_identity",
     # Threshold snapshot. Plan v8 §4 admits only parameters proven to be
@@ -555,12 +554,24 @@ def g3_demo_round_row(
             "" if recognition_ms is None else f"{recognition_ms}"
         ),
         "frames_rejected": str(terminal.frames_rejected),
-        # `reason:count` pairs joined by `;`. The count is rsplit on the
-        # LAST colon because a reset_reason may itself contain colons —
-        # `session.py:396` builds `quality_rejected: <joined reasons>`, so
-        # a split on the first colon would read the count as "quality".
+        # `reason:count` pairs joined by `;`.
+        #
+        # D7-A W3 rework 3 (F1): `quality_rejected` is truncated to its
+        # prefix. The seven quality gates at `pipeline/quality.py:36-55`
+        # each append independently, so the full reset_reason has an
+        # unbounded 2^7 key space — 127 non-empty subsets — and a W4
+        # `groupby(reason)` would produce a near-singleton tail. The
+        # question the log has to answer is 「which FAMILY of cause」,
+        # and 「was the quality gate the blocker」 is boolean, not a
+        # 7-way combination. The per-gate codes are not lost: they stay
+        # in `SessionEngine.support_clear_reasons()`, the trace channel,
+        # and the `reason_codes` column.
+        #
+        # Split on the FIRST colon deliberately: after truncation no
+        # reason can contain one, so the count is unambiguous.
         "support_clear_reasons": ";".join(
-            f"{reason}:{n}" for reason, n in sorted(clears.items())
+            f"{reason.split(':', 1)[0]}:{n}"
+            for reason, n in sorted(clears.items())
         ),
         "score_reset_count": str(counts.get("score_reset", 0)),
         "interval_skip_count": str(counts.get("interval_skip", 0)),
