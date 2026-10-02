@@ -57,6 +57,11 @@ class RoundComplete:
     label_identity: str | None
     profile_version: str
     started_utc: str
+    # D7-A W1: the gallery this round ran against. The gallery is loaded
+    # once at App startup, so every round carries the same report — that
+    # is the point: the demo row records which gallery produced it.
+    # Optional because record-mode callers construct this without one.
+    gallery_load_report: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -896,6 +901,10 @@ else:
                 label_identity=None,
                 profile_version=self.desktop.profile_version,
                 started_utc=self._round_started_utc or "",
+                # D7-A W1: same report as the labeled path — both write
+                # demo rows, so both must record which gallery they ran
+                # against. It is the App-startup report, unchanged per round.
+                gallery_load_report=self.load_report,
             )
             try:
                 append_g3_demo_results_csv(
@@ -910,6 +919,7 @@ else:
                     event_counts=self.desktop.event_counts(),
                     support_clears=self.desktop.support_clear_reasons(),
                     profile=self.desktop.profile,
+                    gallery_load_report=self.load_report,
                 )
             except OSError:
                 # Fail-closed: a round we cannot record must not look
@@ -1525,6 +1535,9 @@ else:
                     label_identity=label_identity,
                     profile_version=self.desktop.profile_version,
                     started_utc=self._round_started_utc or "",
+                    # D7-A W1: the App-startup gallery report, forwarded so
+                    # the demo row records which gallery this round used.
+                    gallery_load_report=self.load_report,
                 )
                 if self._results_csv is not None and self.recorder is not None:
                     # G3 W8: commit on label (bundle + attempt + csv row)
@@ -1559,6 +1572,8 @@ else:
                             event_counts=self.desktop.event_counts(),
                             support_clears=self.desktop.support_clear_reasons(),
                             profile=self.desktop.profile,
+                            # D7-A W1: the App-startup gallery report.
+                            gallery_load_report=self.load_report,
                         )
                     except OSError:
                         self._set_status("紀錄寫入失敗")

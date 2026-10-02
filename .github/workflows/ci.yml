@@ -154,6 +154,12 @@ jobs:
           # primary evidence for the new columns exists only on a
           # contributor's machine.
           python -m pytest tests/cli/test_d7_w3_diagnostic_log_fields.py -q
+          # D7-A W1: the gallery-visibility columns are only produced by the
+          # Qt demo path (the window forwards its startup load_report), so
+          # the same argument as above applies — without a job running this
+          # file, the evidence that every row carries the three columns
+          # exists only on a contributor's machine.
+          python -m pytest tests/cli/test_d7_w1_gallery_visibility.py -q
       - name: Run G3 Start-gated integration (R1 §2/§5, PR-B)
         run: >-
           python -m pytest

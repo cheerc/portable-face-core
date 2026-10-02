@@ -554,6 +554,13 @@ class TestForbiddenFields:
             "interval_skip_count",
             "probe_kind",
             "presenting_identity",
+            # D7-A W1: gallery startup visibility, vetted in
+            # tests/cli/test_d7_w1_gallery_visibility.py. Listed here so a
+            # FOURTH column cannot be appended without a name appearing
+            # in this allow-set — which is the whole point of the guard.
+            "expected_count",
+            "loaded_count",
+            "gallery_rejected",
         }, f"unvetted new columns: {sorted(set(extra) - set(SNAPSHOT_ALLOWED))}"
 
 
@@ -612,12 +619,24 @@ def test_demo_csv_end_to_end_carries_the_new_fields(tmp_path: Path) -> None:
     # `support_clear_reasons` is legitimately empty for a round whose
     # support window was never disturbed — that is the measurement, not a
     # missing value. Same reasoning as the W0 fields.
+    #
+    # D7-A W1's three gallery columns are excluded for the SAME reason but
+    # a different one: this window is built WITHOUT a gallery, so it has no
+    # `load_report` to forward and the three cells are honestly empty. The
+    # companion assertion below is what keeps that exclusion honest — it
+    # fails if the columns are blank on a window that DOES carry a report,
+    # so the exclusion can never quietly become the normal case.
     blank = [c for c, v in row.items() if v == "" and c not in
              {"top1_identity", "top1_score", "top2_identity", "top2_score",
               "margin", "label_identity", "probe_kind",
-              "presenting_identity", "support_clear_reasons"}]
+              "presenting_identity", "support_clear_reasons",
+              "expected_count", "loaded_count", "gallery_rejected"}]
     assert not blank, f"columns blank in a real scored round: {blank}"
     assert int(row["frames_rejected"]) >= 0
+    assert row["gallery_rejected"] == "", (
+        "a window with no gallery carries no report; the cell must say so "
+        "rather than claiming a measured empty gallery"
+    )
     assert csv  # keep the import meaningful for readers
 
 
