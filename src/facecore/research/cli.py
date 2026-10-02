@@ -564,8 +564,12 @@ def g3_demo_round_row(
         # question the log has to answer is 「which FAMILY of cause」,
         # and 「was the quality gate the blocker」 is boolean, not a
         # 7-way combination. The per-gate codes are not lost: they stay
-        # in `SessionEngine.support_clear_reasons()`, the trace channel,
-        # and the `reason_codes` column.
+        # in `SessionEngine.support_clear_reasons()` and the trace
+        # channel. They are NOT in this CSV — `reason_codes` carries the
+        # family too (session.py:414 stores only 「quality_rejected」 in
+        # `_rejection_reasons`), so the per-gate detail is unreachable
+        # from the demo log alone and must be read in-process or from a
+        # recording.
         #
         # Split on the FIRST colon deliberately: after truncation no
         # reason can contain one, so the count is unambiguous.
