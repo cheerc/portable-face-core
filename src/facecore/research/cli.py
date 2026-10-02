@@ -412,6 +412,17 @@ G3_DEMO_RESULTS_CSV_COLUMNS = (
     # `frames_dropped` is deliberately NOT recorded: no `+= 1` exists, so
     # it would be a column that is always 0 — plan v8 §8.
     "frames_rejected",
+    # ⚠️ SCOPE: this column answers 「why the support window was cleared」,
+    #    which is NOT all of D4 §11 item 18b. Measured on the 32-round
+    #    demo log: 16 rounds have `frames_usable == 0` (11 of them with
+    #    `frames_sampled == 0`, 5 with `frames_sampled > 0`), and those
+    #    16 sum to frames_sampled=122 / frames_usable=0. Every one of
+    #    those 122 frames was turned away by the quality gate, so the
+    #    support window never opened in any of them and 「why it was
+    #    cleared」 cannot explain them at all. 18b's real answer is in the
+    #    gap between frames_sampled and frames_usable (24 vs 3, for one),
+    #    which needs a per-gate breakdown of what the quality gate
+    #    rejected — that is W2's scope, not this column.
     # D4 §11 item 18b: why the support window was emptied, and how often.
     # `reason:count` pairs joined by `;`, empty when the window was never
     # disturbed. `reset_reason` is the key rather than `event_type`
@@ -429,6 +440,14 @@ G3_DEMO_RESULTS_CSV_COLUMNS = (
     # 「support 為何沒到 3」 — conflating them is the 18b error itself.
     "score_reset_count",
     "interval_skip_count",
+    # ⚠️ HOW THE THREE MAY BE COMBINED — this lives here because a reader
+    #    of the CSV cannot see any of it. W4's summary contract has to
+    #    state it outright:
+    #      · `interval_skip_count` and `support_clear_reasons` must NOT
+    #        be added together — a skipped frame left the window intact.
+    #      · `score_reset_count` is a SUBSET of `support_clear_reasons`
+    #        (every `score_reset` also lands in that cell), so summing
+    #        them double-counts. Report `support_clear_reasons`.
     # W0 ground truth. Empty means "not recorded", never a guess: an
     # invented 'target' would silently corrupt the cross-identity counts.
     # ⚠️ CONDITIONALLY RETAINED (D7-A W3 rework 2, R4). These are

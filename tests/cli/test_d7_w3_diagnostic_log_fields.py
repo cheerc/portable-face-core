@@ -1185,3 +1185,119 @@ class TestQualityReasonsAreTruncatedInTheCSV:
             profile=_profile(),
         )
         assert row["support_clear_reasons"] == "score_below_threshold:1"
+
+
+class TestDocumentedScopeMatchesTheLog:
+    """The scope note quotes real numbers, so it can rot like code can.
+
+    `support_clear_reasons`'s field comment states that 16 of the 32 demo
+    rounds have `frames_usable == 0`, summing to frames_sampled=122 /
+    frames_usable=0. Those are facts about a CSV that lives OUTSIDE the
+    repo, so nothing in the suite would notice them going stale — the
+    exact 「a comment becomes a fact by being written down」 shape.
+
+    This pins the three claims against the CSV when it is present, and
+    SKIPS when it is not: a contributor without operator data still gets
+    the rest of the file. When the file is missing the assertions cannot
+    run, and this test says so out loud rather than passing silently.
+    """
+    CSV = Path(
+        "~/Downloads/face_sample/_facecore/store/demo-results.csv"
+    ).expanduser()
+
+    def test_the_scope_note_numbers_are_the_csv_actual(self) -> None:
+        if not self.CSV.is_file():
+            pytest.skip(
+                f"operator demo log not present at {self.CSV}; the scope "
+                "note's numbers cannot be re-checked here"
+            )
+        rows = list(csv.DictReader(self.CSV.open(encoding="utf-8")))
+        zero = [r for r in rows if int(r["frames_usable"]) == 0]
+        assert len(rows) == 32
+        assert len(zero) == 16, "the comment says 16 rounds have no usable frame"
+        assert sum(1 for r in zero if int(r["frames_sampled"]) == 0) == 11
+        assert sum(1 for r in zero if int(r["frames_sampled"]) > 0) == 5
+        assert sum(int(r["frames_sampled"]) for r in zero) == 122
+        assert sum(int(r["frames_usable"]) for r in zero) == 0
+
+    def _scope_note(self) -> str:
+        """The comment block immediately above the column declaration.
+
+        Scoping matters: an earlier version of this test grepped the whole
+        file, and every mutation survived because those figures also occur
+        elsewhere in `cli.py` — 16/11/5/122 appear in unrelated arithmetic
+        and in the leading-zero test. A guard that greps too much is a
+        guard that cannot fail, so this returns only the lines belonging
+        to this column's own comment.
+        """
+        src = (
+            Path(__file__).resolve().parents[2]
+            / "src" / "facecore" / "research" / "cli.py"
+        )
+        lines = src.read_text(encoding="utf-8").splitlines()
+        idx = next(
+            i
+            for i, line in enumerate(lines)
+            if line.strip() == '"support_clear_reasons",'
+        )
+        note: list[str] = []
+        for line in reversed(lines[:idx]):
+            if line.strip() and not line.strip().startswith("#"):
+                break
+            note.append(line)
+        return "\n".join(reversed(note))
+
+    def test_the_comment_actually_states_those_numbers(self) -> None:
+        """Binds the prose to the facts, so editing one alone is caught.
+
+        Each figure is matched in the phrase that states it, not as a bare
+        substring. A bare `"16" in note` check passed even after the
+        figure was edited to 14, because the note also says 「16 sum to …」
+        and 「those 122 frames」 — every mutation of the headline numbers
+        survived. Matching the phrase makes the edit detectable.
+        """
+        note = self._scope_note()
+        for phrase in (
+            "frames_usable == 0",
+            "16 rounds have",
+            "11 of them with",
+            "5 with",
+            "frames_sampled=122",
+        ):
+            assert phrase in note, f"scope note lost the phrasing {phrase!r}"
+        assert "W2" in note, "the note must say where 18b's answer does live"
+
+    def test_the_w4_combination_rules_are_stated(self) -> None:
+        """The reader of a CSV sees none of this, so it must be in the file."""
+        src = (
+            Path(__file__).resolve().parents[2]
+            / "src" / "facecore" / "research" / "cli.py"
+        )
+        lines = src.read_text(encoding="utf-8").splitlines()
+        idx = next(
+            i
+            for i, line in enumerate(lines)
+            if line.strip() == '"interval_skip_count",'
+        )
+        # The rules are the comment block immediately BELOW the column, so
+        # walk forward. An earlier version walked forward too but stopped
+        # at the first blank line, which is the line right after the
+        # column — so it collected nothing and the two mutation checks
+        # below passed against an empty string.
+        block: list[str] = []
+        for line in lines[idx + 1:]:
+            if line.strip() and not line.strip().startswith("#"):
+                break
+            block.append(line)
+        text = "\n".join(block)
+        # Anchored to the rules themselves. A loose `or "subset" in text`
+        # passed against a mutated comment because the word recurs in the
+        # W0 block further down; `and "add" in text.lower()` passed for
+        # the same reason. Both mutations were survivable until the
+        # assertions named the sentences they are guarding.
+        assert "`score_reset_count` is a SUBSET of `support_clear_reasons`" in text
+        assert (
+            "`interval_skip_count` and `support_clear_reasons` must NOT"
+            in text
+        ), "the no-adding rule must be stated explicitly, not implied"
+        assert "double-counts" in text
