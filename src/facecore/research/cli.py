@@ -438,8 +438,13 @@ G3_DEMO_RESULTS_CSV_COLUMNS = (
     # `score_p50`, deleted because it measured a biased subset and invited
     # a wrong inference.) No input path exists yet — nothing in the CLI
     # writes them — so until W0-a adds one they are always empty.
-    # REVIEW GATE: if W0-b has not been scheduled within 30 days of this
-    # change, re-open whether these columns should exist at all.
+    # REVIEW CONDITION (reviewers' wording, not a deadline): if W0-b is not
+    # scheduled, re-open whether these columns should exist at all.
+    # Whether W0-b runs is the operator's open decision — it needs the
+    # operator present to drive a real device, which no implementation
+    # task can authorise. No time limit is stated here on purpose: a
+    # deadline would put the columns' existence on a timer this codebase
+    # has no authority to set.
     "probe_kind",
     "presenting_identity",
     # Threshold snapshot. Plan v8 §4 admits only parameters proven to be

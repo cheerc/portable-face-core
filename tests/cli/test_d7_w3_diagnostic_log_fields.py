@@ -868,17 +868,58 @@ class TestSupportClearReasons:
         assert reason.startswith("quality_rejected:"), reason
 
     def test_no_face_is_recorded_under_its_own_reason(self) -> None:
+        """`no_face_detected` is a DISTINCT reason from `quality_rejected`.
+
+        Both come from the same clearing site, so observing only one of
+        them would not prove the column buckets by reason — it would only
+        prove that site emits something. A previous version of this test
+        sent two `face_count=0` frames with no support accumulated and
+        asserted `== {}`, which passed for the wrong reason: the window
+        was never non-empty, so nothing could clear it. That is the 「a
+        guard that guards nothing」 shape — see
+        [[green-ci-proves-nothing-about-execution]].
+        """
         engine = self._engine()
         engine.start("sess-1", 0)
+        self._seed_support(engine)
+        engine.observe(_obs(3, scores={}, face_count=0, captured_ns=400_000_000))
+        assert engine.support_clear_reasons() == {"no_face_detected": 1}
+
+    def test_empty_identity_scores_is_recorded_under_its_own_reason(
+        self,
+    ) -> None:
+        """The third reason from that one site — a face but no scores.
+
+        `no_face_detected`, `quality_rejected: …` and
+        `empty_identity_scores` all clear from the same guard, and each
+        names a different operator-facing cause. Covering one of them
+        proves nothing about the others.
+        """
+        engine = self._engine()
+        engine.start("sess-1", 0)
+        self._seed_support(engine)
+        engine.observe(_obs(3, scores={}, captured_ns=400_000_000))
+        assert engine.support_clear_reasons() == {"empty_identity_scores": 1}
+
+    def test_margin_below_threshold_is_a_distinct_reason(self) -> None:
+        """Same clearing site as `score_below_threshold`, opposite cause.
+
+        The top score clears `match_threshold` comfortably here; only the
+        gap to the runner-up fails. Both come from the single
+        `if top_score < … or margin < …` guard, so the reason string is
+        the only thing that separates them.
+        """
+        engine = self._engine()
+        engine.start("sess-1", 0)
+        self._seed_support(engine)
         engine.observe(
-            _obs(1, scores={}, face_count=0, captured_ns=0)
+            _obs(
+                3,
+                scores={"person-synth-01": 0.40, "person-synth-02": 0.38},
+                captured_ns=400_000_000,
+            )
         )
-        engine.observe(
-            _obs(2, scores={}, face_count=0, captured_ns=200_000_000)
-        )
-        # face_count==0 with no support accumulated cannot clear anything,
-        # so seed first with accepted frames instead.
-        assert engine.support_clear_reasons() == {}
+        assert engine.support_clear_reasons() == {"margin_below_threshold": 1}
 
     def test_multiple_faces_is_recorded_and_terminates(self) -> None:
         """The other restart-required reason; also a terminal."""

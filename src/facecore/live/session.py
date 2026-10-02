@@ -545,6 +545,23 @@ class SessionEngine:
             return None
 
         # If continuity limit is None (T1 contract), auto-match is disabled!
+        #
+        # D7-A W3: this site is STRUCTURALLY UNOBSERVABLE in
+        # `support_clear_reasons()`, and that is honest rather than a gap.
+        # `can_auto_match()` is False only when the profile has no
+        # continuity bound — and this branch is reached from a frame that
+        # already passed the score and margin gates, which is the first
+        # place a support window can be opened. So a round on such a
+        # profile returns here on its very first qualified frame, with
+        # the window still empty: `support_before == support_after == 0`
+        # and the clear predicate correctly reports nothing. There is no
+        # sequence of frames that can make this site's clear observable.
+        #
+        # `profiles/g3-v1.json` sets `continuity_max_center_delta_ratio`,
+        # so the demo path never comes here at all. Do not write a test
+        # asserting this reason appears — it cannot. It stays listed here
+        # so a reader auditing the clearing sites knows the one omission
+        # is structural.
         if not self.profile.can_auto_match():
             supp_before = len(self._support_sequences)
             self._clear_support_window()
