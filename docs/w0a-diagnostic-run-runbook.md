@@ -551,7 +551,7 @@ top1_score               0.5226
   - 是 `gallery_rejected`（38 欄）或 `timeout_ms`（35 欄）→ **通過**，繼續 A2。
   - **那個檔案不存在** → ⚠️ **照第 0 步「如果沒有這個檔案」跑一輪讓 App 產生**，再確認一次。
   - 是 `label_identity`（只有 23 欄）→ 照第 0 步「如果你手上還是 23 欄」處理，然後再確認一次。
-  - **最後一欄還是 `label_identity`** → ⚠️ **停下，回報團隊，不要往下做。** 請一併回報：`git pull` 的輸出、檔案存不存在、最後一欄的標題。**這種檔案（23 欄）讀不了 C、D、F 三項** —— C 要看的 `support_clear_reasons`／`score_reset_count`／`interval_skip_count`（第 26–28 欄）、D 要看的 `recognition_duration_ms`（第 24 欄）、F 要看的 `probe_kind`／`presenting_identity`（第 29–30 欄）全都在第 24 欄之後。**只有 B 與 E 還能看**（它們只要第 12、13、19、20、22、23 欄），但缺少第 2、3 步的判斷依據，**先換檔再說**。
+  - **最後一欄還是 `label_identity`** → ⚠️ **停下，回報團隊，不要往下做。** 請一併回報：`git pull` 的輸出、檔案存不存在、最後一欄的標題。**這種檔案（23 欄）缺第 24 欄之後的欄位**：C 項要看的 `support_clear_reasons`／`score_reset_count`／`interval_skip_count`（第 26–28 欄）、F 項要看的 `probe_kind`／`presenting_identity`（第 29–30 欄）都在那之後，**C 與 F 這兩項讀不了**。D 項是**部分可讀**：D1 要看的 `recognition_duration_ms`（第 24 欄）沒有，**但 D2 只用 `elapsed_ms`（第 11 欄），那個有、照樣能答**。E 項能答，但 E2／E3 靠的是**本手冊寫死的門檻值 0.363**，不是 log 的欄位 —— 那一欄（第 31 欄 `match_threshold`）在 23 欄檔裡沒有。**B 與 D2 都做得了，其餘（尤其 C）缺判斷依據，先換檔再說。**
 - [ ] **A2** 確認你能獨立說出你的 log 有幾欄，以及**哪些是這次新增的**
       - 若是 **38 欄**：第 24–35 欄是 D7-A W3 加的 12 欄；**第 36–38 欄是 W1 加的 gallery 三欄**
       - 若是 **35 欄**：只有第 24–35 欄那 12 欄；**後面三欄不存在，也不需要**
