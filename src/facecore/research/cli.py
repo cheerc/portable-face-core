@@ -27,6 +27,7 @@ Hard boundaries:
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 import json
@@ -533,6 +534,15 @@ def g3_demo_round_row(
     base = g3_round_row(round_)
     counts = event_counts or {}
     clears = support_clears or {}
+    # D7-A W3 rework 4 (B): aggregate by FAMILY before serialising.
+    # Truncating each item inside the comprehension collided but never
+    # merged, so a round that was refused for two different quality
+    # reasons produced two `quality_rejected:1` cells instead of one
+    # `quality_rejected:2` — the F1 long tail returning under a new name.
+    # Sums are preserved either way; the presentation was wrong.
+    clears_by_family: Counter[str] = Counter()
+    for _reason, _n in clears.items():
+        clears_by_family[_reason.split(":", 1)[0]] += _n
 
     # `recognition_duration_ms` is a derived property, so it is None when
     # the round never anchored. Render None as empty rather than 0: a zero
@@ -590,11 +600,18 @@ def g3_demo_round_row(
         # from the demo log alone and must be read in-process or from a
         # recording.
         #
-        # Split on the FIRST colon deliberately: after truncation no
-        # reason can contain one, so the count is unambiguous.
+        # Aggregate first (above), then serialise — never truncate inside
+        # the comprehension, which is what produced duplicate keys.
+        #
+        # Split on the FIRST colon: that is the family boundary. Today
+        # exactly one producer (`q_reason` at `session.py:407`) yields a
+        # reason containing a colon, and that is a coincidence of the
+        # current call sites, NOT a contract: a future reason carrying a
+        # colon outside this family would have its tail dropped with
+        # nothing in the CSV to show it. The key is documented as a
+        # family prefix precisely so that shows up as a decision.
         "support_clear_reasons": ";".join(
-            f"{reason.split(':', 1)[0]}:{n}"
-            for reason, n in sorted(clears.items())
+            f"{family}:{n}" for family, n in sorted(clears_by_family.items())
         ),
         "score_reset_count": str(counts.get("score_reset", 0)),
         "interval_skip_count": str(counts.get("interval_skip", 0)),

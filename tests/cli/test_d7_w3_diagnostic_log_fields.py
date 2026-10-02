@@ -1301,3 +1301,114 @@ class TestDocumentedScopeMatchesTheLog:
             in text
         ), "the no-adding rule must be stated explicitly, not implied"
         assert "double-counts" in text
+
+
+class TestSameRoundReasonsAreAggregated:
+    """B: one round, two different quality causes → ONE cell, count 2.
+
+    The truncation in F1 was applied per item inside the comprehension,
+    so two in-memory keys that only differ after truncation collided and
+    were emitted side by side: 「quality_rejected:1;quality_rejected:1」.
+    W4's `groupby(key)` would then see the same key twice instead of one
+    key with count 2 — the F1 long tail returning under a new name.
+
+    The scenario is a SINGLE round. Reviewer1's first probe used four
+    separate rounds and merged them with `dict.update()`, which the real
+    writer never does (one row per round, no cross-round merge) — so it
+    both missed the defect and would have proved a path that cannot occur.
+    Reachable: the window reopens between the two refusals, and
+    `required_support=3` does not end the round early.
+
+    `FrameObservation` is built directly rather than through `_obs`,
+    which hardcodes `quality_reasons=("quality_blurry",)` — going
+    through it silently produces two *identical* gate sets, so the defect
+    does not reproduce at all. Sequence numbers come from a counter for
+    the same reason: hand-written ids go non-monotonic and trip the
+    `duplicate_sequence` guard at `session.py:326`, which ends the round
+    before the second refusal.
+    """
+
+    @staticmethod
+    def _profile() -> ResearchProfile:
+        import json
+
+        return ResearchProfile.from_dict(
+            json.loads(
+                (
+                    Path(__file__).resolve().parents[2]
+                    / "profiles" / "g3-v1.json"
+                ).read_text(encoding="utf-8")
+            )
+        )
+
+    def _run(self, gates_per_refusal: list[tuple[str, ...]]) -> dict[str, object]:
+        """One round: seed the window, then refuse, reopen, refuse, …"""
+        from facecore.live.contracts import FrameObservation
+        from facecore.live.qt_window import RoundComplete
+        from facecore.live.session import SessionEngine
+
+        prof = self._profile()
+        good = {"person-synth-01": 0.90, "person-synth-02": 0.10}
+        seq = 0
+        clock = 0
+
+        def good_frame() -> FrameObservation:
+            nonlocal seq, clock
+            seq += 1
+            clock += 200_000_000
+            return FrameObservation(
+                sequence=seq, captured_ns=clock, processed_ns=clock + 1_000_000,
+                quality_pass=True, quality_reasons=(), face_count=1,
+                face_box=(0.0, 0.0, 2.0, 2.0), identity_scores=good,
+                quality_rank=0.9, model_generation="gen-1", gallery_digest="d",
+            )
+
+        def bad_frame(gates: tuple[str, ...]) -> FrameObservation:
+            nonlocal seq, clock
+            seq += 1
+            clock += 200_000_000
+            return FrameObservation(
+                sequence=seq, captured_ns=clock, processed_ns=clock + 1_000_000,
+                quality_pass=False, quality_reasons=gates, face_count=1,
+                face_box=(0.0, 0.0, 2.0, 2.0), identity_scores={},
+                quality_rank=0.0, model_generation="gen-1", gallery_digest="d",
+            )
+
+        engine = SessionEngine(prof, "d", "gen-1")
+        engine.start("sess-1", 0)
+        engine.observe(good_frame())
+        engine.observe(good_frame())
+        for gates in gates_per_refusal:
+            engine.observe(bad_frame(gates))
+            engine.observe(good_frame())
+            engine.observe(good_frame())
+        terminal = engine.finish(clock, reason="timeout")
+        return g3_demo_round_row(
+            RoundComplete(
+                session_id="sess-1", attempt_id="a1", terminal=terminal,
+                observations=(good_frame(),), label_kind="unenrolled",
+                label_identity=None, profile_version=prof.profile_version,
+                started_utc="2026-10-01T00:00:00+00:00",
+            ),
+            required_support=3, labeled_at_utc="2026-10-01T00:00:01+00:00",
+            event_counts=engine.event_counts(),
+            support_clears=engine.support_clear_reasons(),
+            profile=prof,
+        )
+
+    def test_two_distinct_causes_in_one_round_become_one_cell(self) -> None:
+        row = self._run([("quality_exposure",), ("quality_pose_yaw",)])
+        assert row["support_clear_reasons"] == "quality_rejected:2", (
+            "two distinct quality causes in one round must aggregate into a "
+            "single cell with count 2; duplicate cells are the F1 long tail "
+            "returning under a new name"
+        )
+
+    def test_the_same_cause_twice_also_reads_as_two(self) -> None:
+        row = self._run([("quality_exposure",), ("quality_exposure",)])
+        assert row["support_clear_reasons"] == "quality_rejected:2"
+
+    def test_a_single_refusal_is_one_cell(self) -> None:
+        assert self._run([("quality_exposure",)])["support_clear_reasons"] == (
+            "quality_rejected:1"
+        )
