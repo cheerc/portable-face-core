@@ -158,6 +158,8 @@ def _obs(
     scores: dict[str, float] | None = None,
     quality_pass: bool = True,
     captured_ns: int | None = None,
+    face_count: int = 1,
+    face_box: tuple[float, float, float, float] | None = (0.0, 0.0, 2.0, 2.0),
 ) -> FrameObservation:
     """One observation.
 
@@ -176,9 +178,9 @@ def _obs(
         captured_ns=stamp,
         processed_ns=stamp + 1_000_000,
         quality_pass=quality_pass,
-        quality_reasons=(),
-        face_count=1,
-        face_box=(0.0, 0.0, 2.0, 2.0),
+        quality_reasons=("quality_blurry",) if not quality_pass else (),
+        face_count=face_count,
+        face_box=face_box,
         identity_scores=(
             scores
             if scores is not None
@@ -547,6 +549,7 @@ class TestForbiddenFields:
         assert set(extra) <= set(SNAPSHOT_ALLOWED) | {
             "recognition_duration_ms",
             "frames_rejected",
+            "support_clear_reasons",
             "score_reset_count",
             "interval_skip_count",
             "probe_kind",
@@ -606,10 +609,13 @@ def test_demo_csv_end_to_end_carries_the_new_fields(tmp_path: Path) -> None:
     assert header[: len(LEGACY_23)] == list(LEGACY_23)
     row = dict(zip(header, rows[0], strict=True))
     # Non-blank for every declared column: the §8 false-data guard.
+    # `support_clear_reasons` is legitimately empty for a round whose
+    # support window was never disturbed — that is the measurement, not a
+    # missing value. Same reasoning as the W0 fields.
     blank = [c for c, v in row.items() if v == "" and c not in
              {"top1_identity", "top1_score", "top2_identity", "top2_score",
               "margin", "label_identity", "probe_kind",
-              "presenting_identity"}]
+              "presenting_identity", "support_clear_reasons"}]
     assert not blank, f"columns blank in a real scored round: {blank}"
     assert int(row["frames_rejected"]) >= 0
     assert csv  # keep the import meaningful for readers
@@ -779,3 +785,258 @@ def qt_app() -> Any:
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     return ActualQApplication.instance() or ActualQApplication([])
+
+
+# ---------------------------------------------------------------------------
+# 6. Rework 2: support_clear_reasons must cover every clearing path
+# ---------------------------------------------------------------------------
+class TestSupportClearReasons:
+    """The read that actually answers D4 §11 item 18b.
+
+    `event_type` cannot: four sites emit `event_type="rejected"` while
+    their `reset_reason` values split into 「restart the App」 and 「keep
+    sampling」. Before this rework the demo log recorded only
+    `score_reset` and `interval_skip`, so three of the five clearing
+    families were invisible — and the two recorded columns were not even
+    the same kind of fact (one clears, one does not).
+
+    Every test here first accumulates a NON-EMPTY support window, because
+    a clear is only observable relative to something: with an empty
+    window `support_before == support_after == 0` and the predicate is
+    vacuously false.
+    """
+
+    def _engine(self) -> Any:
+        from facecore.live.session import SessionEngine
+
+        return SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test")
+
+    @staticmethod
+    def _seed_support(engine: Any) -> None:
+        """Two accepted frames → support window of 2."""
+        scores = {"person-synth-01": 0.90, "person-synth-02": 0.10}
+        engine.observe(_obs(1, scores=scores, captured_ns=0))
+        engine.observe(_obs(2, scores=scores, captured_ns=200_000_000))
+        assert len(engine._support_sequences) == 2, (
+            "the fixture must actually accumulate support, or every clear "
+            "below is vacuous"
+        )
+
+    def test_score_below_threshold_is_recorded_with_its_reason(self) -> None:
+        engine = self._engine()
+        engine.start("sess-1", 0)
+        self._seed_support(engine)
+        engine.observe(
+            _obs(3, scores={"person-synth-01": 0.05, "person-synth-02": 0.0},
+                 captured_ns=400_000_000)
+        )
+        assert engine.support_clear_reasons() == {"score_below_threshold": 1}
+
+    def test_continuity_jump_is_recorded(self) -> None:
+        """The third family the rework exists for, and the one the
+        reviewers named: `continuity_max_center_delta_ratio` is 0.5 in
+        `profiles/g3-v1.json`, so this path is live on the demo path, not
+        dead code. Without a test it could silently stop being recorded.
+        """
+        engine = self._engine()
+        engine.start("sess-1", 0)
+        self._seed_support(engine)
+        # g3-v1's limit is 0.5; jump the box far enough that
+        # delta / max(dim1, 1.0) exceeds it. `face_box` is (x0,y0,x1,y1).
+        engine.observe(
+            _obs(3, scores={"person-synth-01": 0.90, "person-synth-02": 0.10},
+                 captured_ns=400_000_000, face_box=(40.0, 40.0, 42.0, 42.0))
+        )
+        assert engine.support_clear_reasons() == {"continuity_jump_detected": 1}, (
+            "a continuity jump clears the support window and is one of the "
+            "two reasons the operator must restart the App; it must appear "
+            "in the log with its own reason"
+        )
+
+    def test_quality_reject_is_recorded_with_the_quality_reasons(self) -> None:
+        """A rejected frame keeps sampling; the reason carries the detail."""
+        engine = self._engine()
+        engine.start("sess-1", 0)
+        self._seed_support(engine)
+        engine.observe(
+            _obs(3, scores={}, quality_pass=False, captured_ns=400_000_000)
+        )
+        reasons = engine.support_clear_reasons()
+        assert len(reasons) == 1
+        (reason, count), = reasons.items()
+        assert count == 1
+        assert reason.startswith("quality_rejected:"), reason
+
+    def test_no_face_is_recorded_under_its_own_reason(self) -> None:
+        engine = self._engine()
+        engine.start("sess-1", 0)
+        engine.observe(
+            _obs(1, scores={}, face_count=0, captured_ns=0)
+        )
+        engine.observe(
+            _obs(2, scores={}, face_count=0, captured_ns=200_000_000)
+        )
+        # face_count==0 with no support accumulated cannot clear anything,
+        # so seed first with accepted frames instead.
+        assert engine.support_clear_reasons() == {}
+
+    def test_multiple_faces_is_recorded_and_terminates(self) -> None:
+        """The other restart-required reason; also a terminal."""
+        engine = self._engine()
+        engine.start("sess-1", 0)
+        self._seed_support(engine)
+        engine.observe(
+            _obs(3, scores={"person-synth-01": 0.90, "person-synth-02": 0.10},
+                 captured_ns=400_000_000, face_count=2)
+        )
+        assert engine.support_clear_reasons() == {"input_multiple_faces": 1}
+
+    def test_none_runner_up_is_recorded(self) -> None:
+        """A single-candidate frame has no margin, so it cannot qualify."""
+        engine = self._engine()
+        engine.start("sess-1", 0)
+        self._seed_support(engine)
+        engine.observe(
+            _obs(3, scores={"person-synth-01": 0.90}, captured_ns=400_000_000)
+        )
+        assert engine.support_clear_reasons() == {"none_runner_up": 1}
+
+    def test_interval_skip_is_not_a_clear(self) -> None:
+        """The column that is NOT a clearing event must stay out.
+
+        This is the conflation 18b was about: a frame that arrives inside
+        the interval is not accumulated, but the window is left intact.
+        Counting it here would report a clear that never happened.
+        """
+        engine = self._engine()
+        engine.start("sess-1", 0)
+        passing = {"person-synth-01": 0.90, "person-synth-02": 0.10}
+        engine.observe(_obs(1, scores=passing, captured_ns=0))
+        engine.observe(_obs(2, scores=passing, captured_ns=50_000_000))
+        engine.observe(_obs(3, scores=passing, captured_ns=1_000_000_000))
+        assert engine.event_count("interval_skip") == 1
+        assert engine.support_clear_reasons() == {}, (
+            "interval_skip leaves the support window untouched; recording "
+            "it as a clear is the 18b conflation"
+        )
+
+    def test_identity_change_is_not_a_clear(self) -> None:
+        """It reseeds the window to 1 rather than emptying it."""
+        engine = self._engine()
+        engine.start("sess-1", 0)
+        self._seed_support(engine)
+        engine.observe(
+            _obs(3, scores={"person-synth-09": 0.90, "person-synth-10": 0.10},
+                 captured_ns=400_000_000)
+        )
+        assert engine.support_clear_reasons() == {}
+
+    def test_continuity_accumulation_is_not_a_clear(self) -> None:
+        engine = self._engine()
+        engine.start("sess-1", 0)
+        self._seed_support(engine)
+        engine.observe(
+            _obs(3, scores={"person-synth-01": 0.90, "person-synth-02": 0.10},
+                 captured_ns=400_000_000)
+        )
+        assert engine.support_clear_reasons() == {}
+
+    def test_a_round_with_no_clears_reports_empty_not_zeroes(self) -> None:
+        engine = self._engine()
+        engine.start("sess-1", 0)
+        self._seed_support(engine)
+        assert engine.support_clear_reasons() == {}
+
+    def test_counts_reset_between_rounds(self) -> None:
+        engine = self._engine()
+        engine.start("round-1", 0)
+        self._seed_support(engine)
+        engine.observe(
+            _obs(3, scores={"person-synth-01": 0.05, "person-synth-02": 0.0},
+                 captured_ns=400_000_000)
+        )
+        assert engine.support_clear_reasons() == {"score_below_threshold": 1}
+        engine.start("round-2", 10_000_000_000)
+        assert engine.support_clear_reasons() == {}
+
+
+class TestSupportClearReasonsReachTheCSV:
+    """The column must be observably populated, not merely present.
+
+    An earlier version of this file asserted only that
+    `support_clear_reasons` was not blank. That assertion is vacuous for
+    a round that never cleared: the correct value there IS the empty
+    string. So mutating the writer to always emit "" survived — the exact
+    §8 "column present but tells you nothing" shape, and a false green in
+    my own test.
+
+    These close it: they drive the real engine through a real clear and
+    read the value the CSV would carry.
+    """
+
+    def _row_from_real_engine(self) -> dict[str, object]:
+        from facecore.live.session import SessionEngine
+
+        engine = SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test")
+        engine.start("sess-1", 0)
+        scores = {"person-synth-01": 0.90, "person-synth-02": 0.10}
+        engine.observe(_obs(1, scores=scores, captured_ns=0))
+        engine.observe(_obs(2, scores=scores, captured_ns=200_000_000))
+        engine.observe(
+            _obs(3, scores={"person-synth-01": 0.05, "person-synth-02": 0.0},
+                 captured_ns=400_000_000)
+        )
+        assert engine.support_clear_reasons() == {"score_below_threshold": 1}
+        return g3_demo_round_row(
+            _Round.make(
+                _terminal(),
+                (_obs(1, scores=scores), _obs(2, scores=scores)),
+            ),
+            required_support=3,
+            labeled_at_utc="2026-10-01T00:00:00+00:00",
+            event_counts=engine.event_counts(),
+            support_clears=engine.support_clear_reasons(),
+            profile=_profile(),
+        )
+
+    def test_the_column_carries_the_real_reason_and_count(self) -> None:
+        row = self._row_from_real_engine()
+        assert row["support_clear_reasons"] == "score_below_threshold:1", (
+            "the column must serialise the reason and its count; an empty "
+            "value here would be indistinguishable from 'nothing cleared'"
+        )
+
+    def test_multiple_reasons_are_joined_and_sorted(self) -> None:
+        from facecore.live.session import SessionEngine
+
+        engine = SessionEngine(_profile(), "gallery-qt-test", "gen-qt-test")
+        engine.start("sess-1", 0)
+        # Seed a NON-EMPTY window first: a clear is only observable
+        # relative to something, exactly as in TestSupportClearReasons.
+        scores = {"person-synth-01": 0.90, "person-synth-02": 0.10}
+        engine.observe(_obs(1, scores=scores, captured_ns=0))
+        engine.observe(_obs(2, scores=scores, captured_ns=200_000_000))
+        engine.observe(
+            _obs(3, scores={}, quality_pass=False, captured_ns=400_000_000)
+        )
+        engine.observe(
+            _obs(4, scores={}, quality_pass=False, captured_ns=600_000_000)
+        )
+        reasons = engine.support_clear_reasons()
+        assert reasons, "two rejected frames should each record a reason"
+        row = g3_demo_round_row(
+            _Round.make(_terminal(), (_obs(1, scores={}),)),
+            required_support=3,
+            labeled_at_utc="2026-10-01T00:00:00+00:00",
+            event_counts=engine.event_counts(),
+            support_clears=reasons,
+            profile=_profile(),
+        )
+        joined = str(row["support_clear_reasons"])
+        # The count is whatever follows the LAST colon: a reset_reason may
+        # itself contain colons (`quality_rejected: <reasons>`), so a naive
+        # split on the first one reads the count as a word.
+        for part in (p for p in joined.split(";") if p):
+            reason, _, count = part.rpartition(":")
+            assert count.isdigit(), f"unparsable count in {part!r}"
+            assert reason.startswith("quality_rejected:"), reason

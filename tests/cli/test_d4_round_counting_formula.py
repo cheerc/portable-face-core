@@ -137,6 +137,13 @@ class TestColumnOrderIsPinnedIndependently:
             # wrong field, which is the S1 failure this file exists for.
             "recognition_duration_ms",
             "frames_rejected",
+            # D7-A W3 rework 2 (R1): replaced the pair of raw event-type
+            # counters as the answer to D4 §11 18b. `support_clear_reasons`
+            # buckets by `reset_reason` and only counts genuine clears;
+            # `score_reset_count` / `interval_skip_count` remain for
+            # per-event-type inspection. Appended, so positions 1-23 and
+            # the SOP's column 22 are untouched.
+            "support_clear_reasons",
             "score_reset_count",
             "interval_skip_count",
             "probe_kind",

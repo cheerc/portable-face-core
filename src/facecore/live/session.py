@@ -95,6 +95,9 @@ class SessionEngine:
         # attribute that only exists after `start()` would turn that read
         # into an AttributeError rather than a truthful zero.
         self._event_counts: Counter[str] = Counter()
+        # Why the support window was emptied, bucketed by `reset_reason`.
+        # See `_emit_event`: `event_type` cannot carry this distinction.
+        self._support_clear_reasons: Counter[str] = Counter()
 
         # Diagnostic counters
         self._frames_sampled: int = 0
@@ -130,6 +133,21 @@ class SessionEngine:
         # that only wants the tally does not have to become an
         # `event_sink` and start retaining every DecisionEvent.
         self._event_counts[event_type] += 1
+        # D7-A W3 rework 2 (R1): also bucket by WHY the support window was
+        # cleared. `event_type` cannot answer D4 §11 item 18b, because
+        # `rejected` covers four sites whose `reset_reason` values carry
+        # opposite operator meaning (two require an App restart, two do
+        # not) — the distinction only exists on `reset_reason`.
+        #
+        # `support_after < support_before` is the observable that says the
+        # window was actually emptied, so it is the predicate rather than
+        # any hand-maintained list of event types. Three sites report
+        # `support_after=0` WITHOUT clearing: `late_processing` and
+        # `identity_change` terminate or reseed instead, and `continuity`
+        # grows the window. Counting those would report a clear that never
+        # happened. `interval_skip` reports equal counts and never clears.
+        if support_after < support_before and reset_reason is not None:
+            self._support_clear_reasons[reset_reason] += 1
         if self._event_sink is None:
             return
         remaining_ms = (
@@ -190,6 +208,7 @@ class SessionEngine:
         # never the previous round's. No re-annotation: the attribute is
         # declared in `__init__` and mypy (strict) rejects a second one.
         self._event_counts = Counter()
+        self._support_clear_reasons = Counter()
 
     @property
     def deadline_ns(self) -> int | None:
@@ -214,6 +233,24 @@ class SessionEngine:
     def event_counts(self) -> Mapping[str, int]:
         """A copy of this round's per-event-type tallies (D7-A W3)."""
         return dict(self._event_counts)
+
+    def support_clear_reasons(self) -> Mapping[str, int]:
+        """Why the support window was emptied this round, and how often.
+
+        D7-A W3 rework 2 (R1). This — not `event_counts()` — is the read
+        that answers D4 §11 item 18b, because the useful distinction lives
+        on `reset_reason`: four separate sites emit `event_type="rejected"`
+        and their reasons split cleanly into 「restart the App」 and
+        「keep sampling」, which `event_type` cannot express.
+
+        Only genuine clears are counted (`support_after < support_before`),
+        so a round whose window was never disturbed returns an empty
+        mapping rather than a set of zero-count buckets. `interval_skip` is
+        deliberately absent from this mapping — it does not clear, and
+        counting it here is exactly the conflation 18b was about.
+        """
+        return dict(self._support_clear_reasons)
+
 
     def note_timing(
         self,
@@ -330,13 +367,21 @@ class SessionEngine:
         # Multi-face -> terminal invalid_input (restart required)
         if obs.face_count > 1:
             self._frames_rejected += 1
+            # D7-A W3 rework 2: capture the window size BEFORE clearing, as
+            # every other clearing site here already does. Reading
+            # `len(self._support_sequences)` after the clear always yielded
+            # 0, so `support_before` reported 0 for a real clear and this
+            # site looked identical to an empty window — which is what made
+            # the clear invisible to the demo log. The reported value was
+            # also wrong for any `event_sink` consumer.
+            supp_before = len(self._support_sequences)
             self._clear_support_window()
             self._emit_event(
                 sequence=obs.sequence,
                 event_type="rejected",
                 accepted=False,
                 reset_reason="input_multiple_faces",
-                support_before=len(self._support_sequences),
+                support_before=supp_before,
                 support_after=0,
                 candidate_before=self._current_candidate,
                 candidate_after=None,

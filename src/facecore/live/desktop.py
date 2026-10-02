@@ -556,6 +556,11 @@ class DesktopSession:
         """This round's per-event-type tallies (D7-A W3, read-only)."""
         return dict(self._engine.event_counts())
 
+    def support_clear_reasons(self) -> dict[str, int]:
+        """Why the support window was emptied (D7-A W3 rework 2, read-only)."""
+        return dict(self._engine.support_clear_reasons())
+
+
     @property
     def profile_version(self) -> str:
         """Profile version of this round (read-only; G3 W4 round record)."""

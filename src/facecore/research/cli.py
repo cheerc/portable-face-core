@@ -412,14 +412,34 @@ G3_DEMO_RESULTS_CSV_COLUMNS = (
     # `frames_dropped` is deliberately NOT recorded: no `+= 1` exists, so
     # it would be a column that is always 0 — plan v8 §8.
     "frames_rejected",
-    # D4 §11 item 18b: how many times the support window was cleared
-    # because a frame scored below a gate, versus skipped because it
-    # arrived inside min_support_interval_ms. Those are the two
-    # indistinguishable paths behind `support_0_of_3`.
+    # D4 §11 item 18b: why the support window was emptied, and how often.
+    # `reason:count` pairs joined by `;`, empty when the window was never
+    # disturbed. `reset_reason` is the key rather than `event_type`
+    # because four sites share `event_type="rejected"` while their reasons
+    # split into 「restart the App」 and 「keep sampling」 — the distinction
+    # 18b is after does not exist on `event_type`. Counted only when the
+    # window actually shrank, so this column never reports a clear that
+    # did not happen.
+    "support_clear_reasons",
+    # This frame was NOT accumulated because it arrived inside
+    # `min_support_interval_ms` of the previous support frame.
+    # ⚠️ It is NOT a clearing event: the support window is left exactly as
+    # it was (`support_before == support_after`). W4 must not add this to
+    # `support_clear_reasons` or present the two as competing answers to
+    # 「support 為何沒到 3」 — conflating them is the 18b error itself.
     "score_reset_count",
     "interval_skip_count",
     # W0 ground truth. Empty means "not recorded", never a guess: an
     # invented 'target' would silently corrupt the cross-identity counts.
+    # ⚠️ CONDITIONALLY RETAINED (D7-A W3 rework 2, R4). These are
+    # RECEIVING fields, not measuring ones: the empty string honestly
+    # reports that the round has no ground truth, which is the operator's
+    # actual state today — that is information, not noise. (Contrast
+    # `score_p50`, deleted because it measured a biased subset and invited
+    # a wrong inference.) No input path exists yet — nothing in the CLI
+    # writes them — so until W0-a adds one they are always empty.
+    # REVIEW GATE: if W0-b has not been scheduled within 30 days of this
+    # change, re-open whether these columns should exist at all.
     "probe_kind",
     "presenting_identity",
     # Threshold snapshot. Plan v8 §4 admits only parameters proven to be
@@ -452,6 +472,7 @@ def g3_demo_round_row(
     labeled_at_utc: str,
     app_version: str | None = None,
     event_counts: Mapping[str, int] | None = None,
+    support_clears: Mapping[str, int] | None = None,
     profile: ResearchProfile | None = None,
     probe_kind: str = "",
     presenting_identity: str = "",
@@ -474,6 +495,11 @@ def g3_demo_round_row(
       "nobody looked".
     - `profile` — supplies the §4 threshold snapshot. Recorded only for
       parameters proven to be read on the live control flow.
+    - `support_clears` — the per-`reset_reason` buckets for rounds whose
+      support window actually shrank. This, not `event_counts`, is the read
+      that answers D4 §11 18b; see `SessionEngine.support_clear_reasons`.
+      Serialised as `reason:count` joined by `;`, and empty when the window
+      was never disturbed.
     - `probe_kind` / `presenting_identity` — the W0 runbook's ground
       truth. Default to empty, never to a guess.
     """
@@ -483,6 +509,7 @@ def g3_demo_round_row(
     terminal = round_.terminal
     base = g3_round_row(round_)
     counts = event_counts or {}
+    clears = support_clears or {}
 
     # `recognition_duration_ms` is a derived property, so it is None when
     # the round never anchored. Render None as empty rather than 0: a zero
@@ -523,6 +550,13 @@ def g3_demo_round_row(
             "" if recognition_ms is None else f"{recognition_ms}"
         ),
         "frames_rejected": str(terminal.frames_rejected),
+        # `reason:count` pairs joined by `;`. The count is rsplit on the
+        # LAST colon because a reset_reason may itself contain colons —
+        # `session.py:396` builds `quality_rejected: <joined reasons>`, so
+        # a split on the first colon would read the count as "quality".
+        "support_clear_reasons": ";".join(
+            f"{reason}:{n}" for reason, n in sorted(clears.items())
+        ),
         "score_reset_count": str(counts.get("score_reset", 0)),
         "interval_skip_count": str(counts.get("interval_skip", 0)),
         "probe_kind": probe_kind,
@@ -543,6 +577,7 @@ def append_g3_demo_results_csv(
     required_support: int,
     labeled_at_utc: str,
     event_counts: Mapping[str, int] | None = None,
+    support_clears: Mapping[str, int] | None = None,
     profile: ResearchProfile | None = None,
     probe_kind: str = "",
     presenting_identity: str = "",
@@ -563,6 +598,7 @@ def append_g3_demo_results_csv(
         required_support=required_support,
         labeled_at_utc=labeled_at_utc,
         event_counts=event_counts,
+        support_clears=support_clears,
         profile=profile,
         probe_kind=probe_kind,
         presenting_identity=presenting_identity,
@@ -1042,6 +1078,13 @@ def cmd_live(
     context: Any = None
     # E3 wiring (2): live trace + diagnostic/event sinks on the true path.
     trace_diags: list[Any] = []
+    # D7-A W3 rework 2 (R3): NO CONSUMER. `trace_events` is appended to by
+    # `_event_sink` and read nowhere in the repo — it exists so the trace
+    # channel has the same shape as `trace_diags`, and is retained as the
+    # wiring point W5 will read when the demo/research comparison lands.
+    # Do not read a value from it today: there is none. Per-round counts
+    # reach the demo log through `SessionEngine.event_counts()` /
+    # `support_clear_reasons()` instead, which do not need this buffer.
     trace_events: list[Any] = []
     # G3 W5: the live desktops (first round + continuous rounds) that
     # currently own the trace writer. The scorer closures below are
