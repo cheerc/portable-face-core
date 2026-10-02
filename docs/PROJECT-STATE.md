@@ -1,12 +1,25 @@
 # Project State
 
-更新：2026-09-30。**目前主線是「Mac Demo 修復與驗收」（D0–D4）＋「D5 現版本靜態 baseline」，不再是「繼續擴充 G3 研究工具」。**
+更新：2026-10-03（同步至 `main` `2059380`）。**目前主線是「Mac Demo 修復與驗收」（D0–D4）＋「D5／D6 靜態與模型比較」，並正在推進「D7-A 診斷 log 基礎設施」；不再是「繼續擴充 G3 研究工具」。**
 證據基準：`cf1d6dd0b3f4238ce333f961b74efa24c9e5b820`（PR-A，D5 harness）。D0 已完成並凍結基準，見
 [Mac Demo 修復基準 D0](mac-demo-baseline-d0.md)。
 
 **D0–D4 已全部完成並合併**（PR #119／#120／#121／#122／#124／#125）。**D5 的 Task 1（harness ＋ 計數語意，
 PR-A）與 Task 3（baseline 報告，PR-B）亦已交付**，報告見
 [D5 現版本靜態 baseline](research/2026-09-30-d5-static-baseline.md)。
+
+**其後續合併（2026-10-01 起）** —— 讀本檔時請一併知道，本檔其後段落仍保留較早的狀態敘述：
+
+| 合併 | PR | 帶來什麼 |
+| --- | --- | --- |
+| D6 spec §7 三層定案 | #137 | 刪除「衝突時以 plan 為準」，改為 spec／plan／decision 三層各司其職 |
+| D6 R 報告 | #136 | Facenet512 vs SFace control，兩臂各 43 列 |
+| **D7-A W3** | #138 | demo log 由 23 欄擴為 **35 欄**（第 24–35 欄為診斷欄位） |
+| **D7-A W0-a** | #139 | 診斷 run 操作手冊（operator 可不透過 agent 獨立執行），見 [runbook](w0a-diagnostic-run-runbook.md) |
+| **D7-A W1** | #142 | demo log 再加 **3 欄 → 共 38 欄**（第 36–38 欄 `expected_count`／`loaded_count`／`gallery_rejected`） |
+
+⚠️ **demo log 現為 38 欄。** 欄位常數在 `research/cli.py` 的 `G3_DEMO_RESULTS_CSV_COLUMNS`；
+既有 23 欄位置**不得**變動（operator 試算表公式依賴 `margin` 第 18 欄與 `label_kind` 第 22 欄）。
 
 D4 真機第一輪的觀察與 D5 的靜態結果分屬不同協議（見 D0 §11 第 17、18 項與 D5 報告第 8 節），
 **不得互相推論**。本檔更早段落仍保留 Phase 2A／2B 的歷史事實與未驗限制，那部分是背景，不是
@@ -28,9 +41,21 @@ D4 真機第一輪的觀察與 D5 的靜態結果分屬不同協議（見 D0 §1
   照片偏暗與量測誤判無法從這批資料分辨。
 - **門檻未被選定**：sweep grid 以 live 語意呈現 28 格，`selected` 全部為 False。
   **這批照片沒有 holdout，事後挑門檻等於用測試集調參。**
-- **D6（換模型後端）已由 operator 授權並建 board task，落在 prep 階段** —— 見下方「D6 現況」。
+- **D6（換模型後端）已完成**（R 報告 #136、spec 定案 #137；A3 本機 run 2026-10-01）—— 見下方「D6 現況」。
 
 ## 現場紀錄（此前本檔誤述為「尚無任何真實 session」）
+
+⚠️ **2026-10-03 operator 已刪除 `~/Downloads/face_sample/_facecore/store/demo-results.csv`**（該 32 欄檔因 header drift 而錯位，見 issue **#140**）。**因此本檔下方所有指向「那批 32 列 log」的數字，描述的是「當時發生了什麼」，不是「檔案現在還在」** —— 事實本身不因砍檔而失效，引用時須註明資料檔已刪。
+
+**目前唯一保留的 demo log**（在 repo 外，唯讀，**不得把逐列原始資料抄進 repo**）：
+`~/Downloads/face_sample/_facecore/enroll-24-cross-identity-baseline.csv`，2 列：
+
+- r1 `invalid_input`／`all_frames_rejected_no_face|deadline_exceeded`，sampled 25／usable 0／rejected 24，證據段 5175ms
+- r3 `matched`，top1 `enroll-24` @ 0.5226、top2 `enroll-17` @ 0.3206、margin 0.2021，sampled 23／**usable 3**／rejected 20，證據段 4895ms
+
+⚠️ **該檔是 35 欄格式，不是最新的 38 欄** —— 它產生於 W1（#142）合併之前，**沒有** `expected_count`／`loaded_count`／`gallery_rejected` 三欄。operator 下次跑出來的檔會是 38 欄。
+
+⚠️ **這是 D7-A 以來第一筆跨身分 ground truth**：operator 新增 `enroll-24` 並成功辨識、按「正確」標註（`label_kind=enrolled`），**但樣本只有 2 列、單一身分、不含 non-target**。**它不足以回答「門檻該不該調」或「會不會認錯人」** —— 那需要 W0-b 的跨身分＋非目標輪替 run，而 W0-b 是 operator 的 key issue、**尚未排程**。
 
 **本機已有真機 session 紀錄**（`~/Downloads/face_sample/_facecore/store/results.csv`，
 2026-09-24／09-29，共 29 輪；唯讀，未覆寫）。先前「尚無任何真實 session、尚無辨識有效性證據」
@@ -194,14 +219,17 @@ D6 是「用相同 23／13／30 照片集合、固定 detector 與 alignment，�
 
 ## Next Session
 
-1. 讀本檔、[D0 基準](mac-demo-baseline-d0.md)、母規格、ADR 0008／0009；查 git／task／inbox 活源。
-2. **現行主線是 Mac Demo 修復與驗收 D0–D4（已完成）＋ D5 靜態 baseline（已交付）＋ D6（進行中）。**
-   D6 已建 board task 並派工（文件／品質量測／環境 spike），**operator 已核准 Facenet512／ArcFace 限本機
-   研究比較使用**，A 系列（adapter／runner／本機 run）可推進。**授權邊界以 decision board 為準，不以本檔
-   為準** —— 本檔若與較新的 decision 衝突，以 decision 為準並修正本檔。
-3. D0–D5 不得偏離 D0 凍結基準（版本、profile g3-v1 門檻 0.363／0.10、gallery 23 張），不得為得到
-   matched 而直接降門檻或移除三幀確認。**D5 未選定新門檻**——sweep 只作呈現。
-4. **不得把 D5 的靜態結果推論到動態**（三幀規則不適用於單張照片），也**不得把 M1／M5／v3 的歷史
-   FA 數字與 D5 並列比較**（gate、contract、gallery digest 都不同）。
-5. Plan 規範：相機錄製需個別參與者同意；文件批准不構成同意。真機測試需 operator 在場並另行授權。
-6. Phase 2A 已結案、G3 暫停擴充採集；不重開已完成的 P0／2A，不把歷史骨架當現況，不重新派已完成任務。
+1. 讀本檔、[D0 基準](mac-demo-baseline-d0.md)、母規格、ADR 0008／0009；**若要操作本機 App，另讀 [runbook](w0a-diagnostic-run-runbook.md)**；查 git／task／inbox 活源。
+2. **現行主線**：
+   - **D0–D4 已完成**；**D5 靜態 baseline 已交付**；**D6 已完成**（PR #136 R 報告、#137 spec 定案；A3 本機 run 2026-10-01 完成，見下方「D6 現況」）。
+   - **D7-A 診斷 log 基礎設施進行中**：W3（#138）、W0-a runbook（#139）、W1 gallery 可見性（#142）已合併。**demo log 現為 38 欄。**
+   - **D4 真機驗收仍未完成**（board task open，**19 項**待驗，須 operator 在場 —— 見 [SOP D0 §11 對照表](g3-local-test-sop.md)）。
+3. ⚠️ **兩筆 open issue，裁決權在 operator，不在 agent**：
+   - **#140（bug）**：demo CSV header 不隨欄位擴充更新，既有 store 的新列以欄名讀取回傳 None。**程式碼缺陷仍存在，砍檔不使其消失。⚠️ 裁決（甲／乙／丙）operator 尚未回覆 —— 不要把任何方向的建議寫成事實。**
+   - **#141（decision）**：demo 診斷 log 格式重新設計（session 分割 或 sqlite 權威紀錄）。⚠️ **標 `STOP` 待 operator 裁決，不是進行中工作**，不得逕行開工。
+4. **不得把 D7-B（模型選擇）寫成已授權** —— 它的前提是 W0-b 產出跨身分資料，而 **W0-b 尚未排程**（operator 的 key issue，須其在場操作真機）。⚠️ **不得因它未排程而阻擋 W2／W5／W4**；計畫順序為 W3 → W0-a → W1 → W2 → W5 → W4，**W4 必須最後做**（它消費 W3 的欄位形狀）。
+5. **授權邊界以 decision board 為準，不以本檔為準** —— 本檔若與較新的 decision 衝突，以 decision 為準並修正本檔。
+6. D0–D5 不得偏離 D0 凍結基準（版本、profile g3-v1 門檻 0.363／0.10、gallery 23 張），不得為得到 matched 而直接降門檻或移除三幀確認。**D5／D6 未選定新門檻**——sweep 只作呈現。
+7. **不得把 D5 的靜態結果推論到動態**（三幀規則不適用於單張照片），也**不得把 M1／M5／v3 的歷史 FA 數字與 D5／D6 並列比較**（gate、contract、gallery digest 都不同）。
+8. Plan 規範：相機錄製需個別參與者同意；文件批准不構成同意。真機測試需 operator 在場並另行授權。
+9. Phase 2A 已結案、G3 暫停擴充採集；不重開已完成的 P0／2A，不把歷史骨架當現況，不重新派已完成任務。
