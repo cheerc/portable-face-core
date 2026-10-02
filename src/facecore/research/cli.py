@@ -476,6 +476,22 @@ G3_DEMO_RESULTS_CSV_COLUMNS = (
     "margin_threshold",
     "min_support_interval_ms",
     "timeout_ms",
+    # D7-A W1: gallery startup visibility, already computed by
+    # `GalleryLoadReport` and already shown in the Qt UI — this only
+    # writes the same three facts into every round of the demo log, so a
+    # CSV reader no longer has to trust the UI for them.
+    #
+    # APPENDED, never inserted: the existing 23 columns keep their
+    # positions because the operator's spreadsheet formulas depend on
+    # `margin` (col 18) and `label_kind` (col 22).
+    #
+    # `gallery_rejected` is "filename（reason）" per failure joined by ";"
+    # — filename AND reason, not counts, because a count alone reproduces
+    # the original problem: you cannot tell WHICH photos were dropped.
+    # Empty string means every photo loaded.
+    "expected_count",
+    "loaded_count",
+    "gallery_rejected",
 )
 
 
@@ -500,6 +516,7 @@ def g3_demo_round_row(
     profile: ResearchProfile | None = None,
     probe_kind: str = "",
     presenting_identity: str = "",
+    gallery_load_report: Any | None = None,
 ) -> dict[str, object]:
     """Reduce one labeled round to its demo row (D3b decision -11 item 2).
 
@@ -526,6 +543,12 @@ def g3_demo_round_row(
       was never disturbed.
     - `probe_kind` / `presenting_identity` — the W0 runbook's ground
       truth. Default to empty, never to a guess.
+    - `gallery_load_report` — D7-A W1. The startup `GalleryLoadReport`
+      the window already holds, forwarded so the row records which
+      gallery the round ran against. Absent (None) renders the three
+      columns empty rather than zero: zero would claim the gallery held
+      zero people, which is a measurement, while empty says no report
+      reached this row.
     """
     from facecore.live.qt_window import RoundComplete as _RC
 
@@ -555,6 +578,23 @@ def g3_demo_round_row(
 
     def _thr(name: str) -> str:
         return "" if profile is None else str(getattr(profile, name))
+
+    # D7-A W1: gallery visibility. Read defensively rather than asserting
+    # the exact type: the window holds whatever the gallery carried, and a
+    # caller with a report-shaped object should get a row, not a crash
+    # during CSV writing (the window turns any write error into 「紀錄
+    # 寫入失敗」, which would hide a healthy round).
+    if gallery_load_report is None:
+        expected_str = loaded_str = rejected_str = ""
+    else:
+        expected_str = str(getattr(gallery_load_report, "expected_count", ""))
+        loaded_str = str(getattr(gallery_load_report, "loaded_count", ""))
+        # filename AND reason, semicolon-joined. Empty means every photo
+        # loaded — NOT "0" and NOT "none", which would read as a value.
+        rejected_str = ";".join(
+            f"{getattr(f, 'filename', '')}（{getattr(f, 'reason', '')}）"
+            for f in getattr(gallery_load_report, "failures", ())
+        )
 
     return {
         "mode": "demo-no-recording",
@@ -623,6 +663,9 @@ def g3_demo_round_row(
         "required_support": str(required_support),
         "min_support_interval_ms": _thr("min_support_interval_ms"),
         "timeout_ms": _thr("timeout_ms"),
+        "expected_count": expected_str,
+        "loaded_count": loaded_str,
+        "gallery_rejected": rejected_str,
     }
 
 
@@ -637,6 +680,7 @@ def append_g3_demo_results_csv(
     profile: ResearchProfile | None = None,
     probe_kind: str = "",
     presenting_identity: str = "",
+    gallery_load_report: Any | None = None,
 ) -> None:
     """Append one non-recording round to the plaintext demo result file.
 
@@ -646,6 +690,10 @@ def append_g3_demo_results_csv(
     D7-A W3: the caller forwards the per-round engine tallies and the
     round's profile so the row can carry data the live round already
     computed. See `g3_demo_round_row` for why each is optional.
+
+    D7-A W1: `gallery_load_report` rides along so every row records which
+    gallery it ran against. The append semantics are unchanged — this adds
+    no branch to the write path (issue #140 stays exactly as it is).
     """
     import csv as _csv
 
@@ -658,6 +706,7 @@ def append_g3_demo_results_csv(
         profile=profile,
         probe_kind=probe_kind,
         presenting_identity=presenting_identity,
+        gallery_load_report=gallery_load_report,
     )
     write_header = not demo_csv.is_file()
     demo_csv.parent.mkdir(parents=True, exist_ok=True)

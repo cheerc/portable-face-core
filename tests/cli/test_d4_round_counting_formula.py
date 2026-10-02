@@ -157,6 +157,14 @@ class TestColumnOrderIsPinnedIndependently:
             # row dict.
             "min_support_interval_ms",
             "timeout_ms",
+            # D7-A W1 appended 3 more, again strictly AFTER
+            # `timeout_ms`. Same rule as W3: appending is the only shape
+            # permitted, because positions 1-23 (margin at 18,
+            # label_kind at 22) are what the operator's spreadsheet
+            # formulas read.
+            "expected_count",
+            "loaded_count",
+            "gallery_rejected",
         ]
 
 
