@@ -27,7 +27,8 @@ Hard boundaries:
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable
+from collections import Counter
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 import json
 import os
@@ -398,6 +399,83 @@ G3_DEMO_RESULTS_CSV_COLUMNS = (
     # operator verdict (label_terminal semantics, unchanged)
     "label_kind",
     "label_identity",
+    # D7-A W3. Everything below is data a live round ALREADY computes; none
+    # of it is a new measurement. See plan v8 §3.3 and §4.
+    #
+    # Time actually spent gathering recognition evidence. This is the
+    # `TimingMarks.recognition_duration_ms` property (contracts.py:302),
+    # NOT `open_duration_ms` / `open_to_first_frame_ms`: controller.py:235
+    # deliberately never fills the open segment on the demo path, so those
+    # two would be permanently blank here — plan v8 §8.
+    "recognition_duration_ms",
+    # Frames the quality gate rejected (session.py:293/:317). With
+    # frames_sampled/frames_usable this gives the usable rate directly.
+    # `frames_dropped` is deliberately NOT recorded: no `+= 1` exists, so
+    # it would be a column that is always 0 — plan v8 §8.
+    "frames_rejected",
+    # ⚠️ SCOPE: this column answers 「why the support window was cleared」,
+    #    which is NOT all of D4 §11 item 18b. Measured on the 32-round
+    #    demo log: 16 rounds have `frames_usable == 0` (11 of them with
+    #    `frames_sampled == 0`, 5 with `frames_sampled > 0`), and those
+    #    16 sum to frames_sampled=122 / frames_usable=0. Every one of
+    #    those 122 frames was turned away by the quality gate, so the
+    #    support window never opened in any of them and 「why it was
+    #    cleared」 cannot explain them at all. 18b's real answer is in the
+    #    gap between frames_sampled and frames_usable (24 vs 3, for one),
+    #    which needs a per-gate breakdown of what the quality gate
+    #    rejected — that is W2's scope, not this column.
+    # D4 §11 item 18b: why the support window was emptied, and how often.
+    # `reason:count` pairs joined by `;`, empty when the window was never
+    # disturbed. `reset_reason` is the key rather than `event_type`
+    # because four sites share `event_type="rejected"` while their reasons
+    # split into 「restart the App」 and 「keep sampling」 — the distinction
+    # 18b is after does not exist on `event_type`. Counted only when the
+    # window actually shrank, so this column never reports a clear that
+    # did not happen.
+    "support_clear_reasons",
+    # This frame was NOT accumulated because it arrived inside
+    # `min_support_interval_ms` of the previous support frame.
+    # ⚠️ It is NOT a clearing event: the support window is left exactly as
+    # it was (`support_before == support_after`). W4 must not add this to
+    # `support_clear_reasons` or present the two as competing answers to
+    # 「support 為何沒到 3」 — conflating them is the 18b error itself.
+    "score_reset_count",
+    "interval_skip_count",
+    # ⚠️ HOW THE THREE MAY BE COMBINED — this lives here because a reader
+    #    of the CSV cannot see any of it. W4's summary contract has to
+    #    state it outright:
+    #      · `interval_skip_count` and `support_clear_reasons` must NOT
+    #        be added together — a skipped frame left the window intact.
+    #      · `score_reset_count` is a SUBSET of `support_clear_reasons`
+    #        (every `score_reset` also lands in that cell), so summing
+    #        them double-counts. Report `support_clear_reasons`.
+    # W0 ground truth. Empty means "not recorded", never a guess: an
+    # invented 'target' would silently corrupt the cross-identity counts.
+    # ⚠️ CONDITIONALLY RETAINED (D7-A W3 rework 2, R4). These are
+    # RECEIVING fields, not measuring ones: the empty string honestly
+    # reports that the round has no ground truth, which is the operator's
+    # actual state today — that is information, not noise. (Contrast
+    # `score_p50`, deleted because it measured a biased subset and invited
+    # a wrong inference.) No input path exists yet — nothing in the CLI
+    # writes them — so until W0-a adds one they are always empty.
+    # REVIEW CONDITION (reviewers' wording, not a deadline): if W0-b is
+    # not scheduled, delete these columns. W0-b's scheduling is the
+    # operator's open decision — it needs the operator present to drive
+    # a real device, which no implementation task can authorise. No time
+    # limit is stated here on purpose: a deadline would put the columns'
+    # existence on a timer this codebase has no authority to set.
+    "probe_kind",
+    "presenting_identity",
+    # Threshold snapshot. Plan v8 §4 admits only parameters proven to be
+    # read on the live control flow. `sample_interval_ms` and `max_frames`
+    # are excluded on purpose — the first is a false knob (hardcoded
+    # 200 ms at controller.py:57), the second is unreachable in the
+    # launcher's --continuous path.
+    "match_threshold",
+    "review_threshold",
+    "margin_threshold",
+    "min_support_interval_ms",
+    "timeout_ms",
 )
 
 
@@ -417,6 +495,11 @@ def g3_demo_round_row(
     required_support: int,
     labeled_at_utc: str,
     app_version: str | None = None,
+    event_counts: Mapping[str, int] | None = None,
+    support_clears: Mapping[str, int] | None = None,
+    profile: ResearchProfile | None = None,
+    probe_kind: str = "",
+    presenting_identity: str = "",
 ) -> dict[str, object]:
     """Reduce one labeled round to its demo row (D3b decision -11 item 2).
 
@@ -424,12 +507,55 @@ def g3_demo_round_row(
     demo file cannot drift from the research ledger's semantics. Only the
     D1 reason codes, the frame counts, and the mode/version provenance are
     added here.
+
+    D7-A W3 adds the fields a live round already computed but never wrote
+    out. Three of them are optional arguments on purpose:
+
+    - `event_counts` — the caller owns the engine that produced the round,
+      so it is the only place the per-round event tally can be read. When
+      omitted the counts are 0, which is a true reading for a round that
+      emitted nothing; the column is always present either way, so a
+      reader never has to guess whether 0 means "none happened" or
+      "nobody looked".
+    - `profile` — supplies the §4 threshold snapshot. Recorded only for
+      parameters proven to be read on the live control flow.
+    - `support_clears` — the per-`reset_reason` buckets for rounds whose
+      support window actually shrank. This, not `event_counts`, is the read
+      that answers D4 §11 18b; see `SessionEngine.support_clear_reasons`.
+      Serialised as `reason:count` joined by `;`, and empty when the window
+      was never disturbed.
+    - `probe_kind` / `presenting_identity` — the W0 runbook's ground
+      truth. Default to empty, never to a guess.
     """
     from facecore.live.qt_window import RoundComplete as _RC
 
     assert isinstance(round_, _RC), f"expected RoundComplete, got {type(round_)}"
     terminal = round_.terminal
     base = g3_round_row(round_)
+    counts = event_counts or {}
+    clears = support_clears or {}
+    # D7-A W3 rework 4 (B): aggregate by FAMILY before serialising.
+    # Truncating each item inside the comprehension collided but never
+    # merged, so a round that was refused for two different quality
+    # reasons produced two `quality_rejected:1` cells instead of one
+    # `quality_rejected:2` — the F1 long tail returning under a new name.
+    # Sums are preserved either way; the presentation was wrong.
+    clears_by_family: Counter[str] = Counter()
+    for _reason, _n in clears.items():
+        clears_by_family[_reason.split(":", 1)[0]] += _n
+
+    # `recognition_duration_ms` is a derived property, so it is None when
+    # the round never anchored. Render None as empty rather than 0: a zero
+    # would claim "the round took no time to recognise", which is a
+    # measurement; empty says the marks were never set.
+    marks = terminal.timing_marks
+    recognition_ms = (
+        marks.recognition_duration_ms if marks is not None else None
+    )
+
+    def _thr(name: str) -> str:
+        return "" if profile is None else str(getattr(profile, name))
+
     return {
         "mode": "demo-no-recording",
         "app_version": app_version or _app_version(),
@@ -451,9 +577,52 @@ def g3_demo_round_row(
         "margin": base["margin"],
         "frames_sampled": base["frames_sampled"],
         "frames_usable": str(terminal.frames_usable),
-        "required_support": str(required_support),
         "label_kind": base["label_kind"],
         "label_identity": base["label_identity"],
+        "recognition_duration_ms": (
+            "" if recognition_ms is None else f"{recognition_ms}"
+        ),
+        "frames_rejected": str(terminal.frames_rejected),
+        # `reason:count` pairs joined by `;`.
+        #
+        # D7-A W3 rework 3 (F1): `quality_rejected` is truncated to its
+        # prefix. The seven quality gates at `pipeline/quality.py:36-55`
+        # each append independently, so the full reset_reason has an
+        # unbounded 2^7 key space — 127 non-empty subsets — and a W4
+        # `groupby(reason)` would produce a near-singleton tail. The
+        # question the log has to answer is 「which FAMILY of cause」,
+        # and 「was the quality gate the blocker」 is boolean, not a
+        # 7-way combination. The per-gate codes are not lost: they stay
+        # in `SessionEngine.support_clear_reasons()` and the trace
+        # channel. They are NOT in this CSV — `reason_codes` carries the
+        # family too (session.py:414 stores only 「quality_rejected」 in
+        # `_rejection_reasons`), so the per-gate detail is unreachable
+        # from the demo log alone and must be read in-process or from a
+        # recording.
+        #
+        # Aggregate first (above), then serialise — never truncate inside
+        # the comprehension, which is what produced duplicate keys.
+        #
+        # Split on the FIRST colon: that is the family boundary. Today
+        # exactly one producer (`q_reason` at `session.py:407`) yields a
+        # reason containing a colon, and that is a coincidence of the
+        # current call sites, NOT a contract: a future reason carrying a
+        # colon outside this family would have its tail dropped with
+        # nothing in the CSV to show it. The key is documented as a
+        # family prefix precisely so that shows up as a decision.
+        "support_clear_reasons": ";".join(
+            f"{family}:{n}" for family, n in sorted(clears_by_family.items())
+        ),
+        "score_reset_count": str(counts.get("score_reset", 0)),
+        "interval_skip_count": str(counts.get("interval_skip", 0)),
+        "probe_kind": probe_kind,
+        "presenting_identity": presenting_identity,
+        "match_threshold": _thr("match_threshold"),
+        "review_threshold": _thr("review_threshold"),
+        "margin_threshold": _thr("margin_threshold"),
+        "required_support": str(required_support),
+        "min_support_interval_ms": _thr("min_support_interval_ms"),
+        "timeout_ms": _thr("timeout_ms"),
     }
 
 
@@ -463,11 +632,20 @@ def append_g3_demo_results_csv(
     *,
     required_support: int,
     labeled_at_utc: str,
+    event_counts: Mapping[str, int] | None = None,
+    support_clears: Mapping[str, int] | None = None,
+    profile: ResearchProfile | None = None,
+    probe_kind: str = "",
+    presenting_identity: str = "",
 ) -> None:
     """Append one non-recording round to the plaintext demo result file.
 
     The header is written once, exactly like append_g3_results_csv, and the
     row is derived from g3_round_row so the two ledgers agree on scores.
+
+    D7-A W3: the caller forwards the per-round engine tallies and the
+    round's profile so the row can carry data the live round already
+    computed. See `g3_demo_round_row` for why each is optional.
     """
     import csv as _csv
 
@@ -475,6 +653,11 @@ def append_g3_demo_results_csv(
         round_,
         required_support=required_support,
         labeled_at_utc=labeled_at_utc,
+        event_counts=event_counts,
+        support_clears=support_clears,
+        profile=profile,
+        probe_kind=probe_kind,
+        presenting_identity=presenting_identity,
     )
     write_header = not demo_csv.is_file()
     demo_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -949,10 +1132,39 @@ def cmd_live(
     window_label = "early-stop"
     source: CaptureSource
     context: Any = None
+    # E3 wiring (2): live trace + diagnostic/event sinks on the true path.
+    trace_diags: list[Any] = []
+    # D7-A W3 rework 2 (R3): NO CONSUMER. `trace_events` is appended to by
+    # `_event_sink` and read nowhere in the repo — it exists so the trace
+    # channel has the same shape as `trace_diags`, and is retained as the
+    # wiring point W5 will read when the demo/research comparison lands.
+    # Do not read a value from it today: there is none. Per-round counts
+    # reach the demo log through `SessionEngine.event_counts()` /
+    # `support_clear_reasons()` instead, which do not need this buffer.
+    trace_events: list[Any] = []
+    # G3 W5: the live desktops (first round + continuous rounds) that
+    # currently own the trace writer. The scorer closures below are
+    # defined before the desktops exist; late binding routes each
+    # emitted diag to the live desktop's pending store.
+    diag_desktops: list[DesktopSession] = []
+
+    def _diagnostic_sink(diag: Any) -> None:
+        trace_diags.append(diag)
+        for live_desktop in diag_desktops:
+            live_desktop.note_diagnostics(diag)
+
+    def _event_sink(event: Any) -> None:
+        trace_events.append(event)
+
     if device == "fake":
         model_generation = "cli-fake-gen-1"
         gallery_digest = "cli-fake-gallery"
-        engine = SessionEngine(profile, gallery_digest, model_generation)
+        engine = SessionEngine(
+            profile,
+            gallery_digest,
+            model_generation,
+            event_sink=_event_sink,
+        )
         if capture_factory is not None:
             source = capture_factory(device)
         else:
@@ -1082,34 +1294,26 @@ def cmd_live(
             assert context is not None
             model_generation = context.gallery.generation
             gallery_digest = context.gallery.digest
-        engine = SessionEngine(profile, gallery_digest, model_generation)
-
-        from facecore.live.frame_pipeline import (  # noqa: PLC0415 (device-gated)
-            score_frame,
-        )
-
-        # E3 wiring (2): live trace + diagnostic/event sinks on the true path.
-        trace_diags: list[Any] = []
-        trace_events: list[Any] = []
-        # G3 W5: the live desktops (first round + continuous rounds) that
-        # currently own the trace writer. The scorer closures below are
-        # defined before the desktops exist; late binding routes each
-        # emitted diag to the live desktop's pending store.
-        diag_desktops: list[DesktopSession] = []
-
-        def _diagnostic_sink(diag: Any) -> None:
-            trace_diags.append(diag)
-            for live_desktop in diag_desktops:
-                live_desktop.note_diagnostics(diag)
-
-        def _event_sink(event: Any) -> None:
-            trace_events.append(event)
-
+        # D7-A W3: the sinks are defined ABOVE the `device == "fake"`
+        # branch, not inside this one.
+        #
+        # Why they had to move: W3 attaches `event_sink` to the per-round
+        # engine built in `next_session_factory`, and that closure sits in
+        # the `ui == "qt"` branch — which does not intersect this one. With
+        # the definition below, a reference to `_event_sink` from inside
+        # `next_session_factory` is a free-variable lookup that never binds.
+        # So this is the structural adjustment the new requirement needed,
+        # not a repair of a pre-existing bug: the per-round engine simply
+        # had no sink to attach to.
         engine = SessionEngine(
             profile,
             gallery_digest,
             model_generation,
             event_sink=_event_sink,
+        )
+
+        from facecore.live.frame_pipeline import (  # noqa: PLC0415 (device-gated)
+            score_frame,
         )
 
         if presence_mode == "checkpoint":
@@ -1133,7 +1337,16 @@ def cmd_live(
                 return 2
             model_generation = "checkpoint-presence-gen-1"
             gallery_digest = "checkpoint-presence-gallery"
-            engine = SessionEngine(profile, gallery_digest, model_generation)
+            # D7-A W3: same sink as every other engine, so a checkpoint
+            # round's events are not the one path that silently discards
+            # them. This branch re-assigns `engine` (it did so before W3
+            # too); the sink rides along rather than being left behind.
+            engine = SessionEngine(
+                profile,
+                gallery_digest,
+                model_generation,
+                event_sink=_event_sink,
+            )
             _hybrid = presence_scorer(
                 checkpoint_detector,
                 model_generation,
@@ -1424,7 +1637,20 @@ def cmd_live(
                             staged_errors.append(f"crop:{type(exc).__name__}")
 
                 round_desktop = DesktopSession(
-                    engine=SessionEngine(profile, gallery_digest, model_generation),
+                    # D7-A W3: this per-round engine is built inline, so it
+                    # is the one place the live loop's rounds were getting an
+                    # engine with no `event_sink` — the first round's engine
+                    # (built above) has had one all along. Counting no longer
+                    # depends on the sink (SessionEngine tallies every event
+                    # before the sink guard), but wiring it keeps the two
+                    # rounds' event behaviour identical instead of leaving a
+                    # difference that only the first round can see.
+                    engine=SessionEngine(
+                        profile,
+                        gallery_digest,
+                        model_generation,
+                        event_sink=_event_sink,
+                    ),
                     source=source,
                     scorer=scorer,
                     session_id=round_session_id,

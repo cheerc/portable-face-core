@@ -905,6 +905,11 @@ else:
                         self.desktop.profile, "required_support", 0
                     ),
                     labeled_at_utc=datetime.now(timezone.utc).isoformat(),
+                    # D7-A W3: forward the round's own tallies and profile so
+                    # the row carries what this round already computed.
+                    event_counts=self.desktop.event_counts(),
+                    support_clears=self.desktop.support_clear_reasons(),
+                    profile=self.desktop.profile,
                 )
             except OSError:
                 # Fail-closed: a round we cannot record must not look
@@ -1549,6 +1554,11 @@ else:
                                 self.desktop.profile, "required_support", 0
                             ),
                             labeled_at_utc=datetime.now(timezone.utc).isoformat(),
+                            # D7-A W3: same forwarding as the unlabeled
+                            # path — both write demo rows from this round.
+                            event_counts=self.desktop.event_counts(),
+                            support_clears=self.desktop.support_clear_reasons(),
+                            profile=self.desktop.profile,
                         )
                     except OSError:
                         self._set_status("紀錄寫入失敗")

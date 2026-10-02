@@ -128,6 +128,35 @@ class TestColumnOrderIsPinnedIndependently:
             "required_support",
             "label_kind",
             "label_identity",
+            # D7-A W3 appended 12 columns. They are added strictly AFTER
+            # `label_identity`, so every position 1-23 is unchanged and the
+            # SOP's 「第 22 欄」 for label_kind (column V) still holds — see
+            # TestLabelKindColumn above, which re-asserts that index
+            # independently. Appending is the only shape W3 may take; an
+            # insertion ahead of `label_kind` would move V:V onto the
+            # wrong field, which is the S1 failure this file exists for.
+            "recognition_duration_ms",
+            "frames_rejected",
+            # D7-A W3 rework 2 (R1): replaced the pair of raw event-type
+            # counters as the answer to D4 §11 18b. `support_clear_reasons`
+            # buckets by `reset_reason` and only counts genuine clears;
+            # `score_reset_count` / `interval_skip_count` remain for
+            # per-event-type inspection. Appended, so positions 1-23 and
+            # the SOP's column 22 are untouched.
+            "support_clear_reasons",
+            "score_reset_count",
+            "interval_skip_count",
+            "probe_kind",
+            "presenting_identity",
+            "match_threshold",
+            "review_threshold",
+            "margin_threshold",
+            # `required_support` is not re-declared: it already sits at
+            # position 21 and is reused in the snapshot block below, so a
+            # second declaration would silently override the first in the
+            # row dict.
+            "min_support_interval_ms",
+            "timeout_ms",
         ]
 
 

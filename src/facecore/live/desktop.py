@@ -539,6 +539,28 @@ class DesktopSession:
         """Research profile of this round (read-only)."""
         return self._engine.profile
 
+    def event_count(self, event_type: str) -> int:
+        """Per-round tally of one engine event type (D7-A W3, read-only).
+
+        Exposed because the demo CSV row is written from the window (which
+        holds a `DesktopSession`, not the engine), and the counts are the
+        only way to answer 「support 窗是被清空，還是從未累積」 for a round
+        that never reached `required_support` — the D4 §11 item 18b
+        ambiguity. Read-only: it neither subscribes to events nor mutates
+        engine state, so a caller that only wants the tally does not also
+        have to become an `event_sink` and start retaining DecisionEvents.
+        """
+        return self._engine.event_count(event_type)
+
+    def event_counts(self) -> dict[str, int]:
+        """This round's per-event-type tallies (D7-A W3, read-only)."""
+        return dict(self._engine.event_counts())
+
+    def support_clear_reasons(self) -> dict[str, int]:
+        """Why the support window was emptied (D7-A W3 rework 2, read-only)."""
+        return dict(self._engine.support_clear_reasons())
+
+
     @property
     def profile_version(self) -> str:
         """Profile version of this round (read-only; G3 W4 round record)."""
