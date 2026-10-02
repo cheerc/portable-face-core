@@ -73,6 +73,7 @@ uv run --extra research-ui python -m facecore.research.cli live \
 
 ## 資料在哪裡、怎麼交給 AI
 
+- ⚠️ **想自己讀懂 `demo-results.csv`、想知道某一輪為什麼失敗：看 [`w0a-diagnostic-run-runbook.md`](w0a-diagnostic-run-runbook.md)。** 那份手冊教你只靠 CSV 就能分辨「相機沒出影格／品質全被拒／support 沒累積到 3」，並附自我驗證清單。**不需要問任何人。** 本 SOP 只告訴你怎麼「跑」；要「讀懂結果」請看那份手冊。
 - `~/Downloads/face_sample/_facecore/store/demo-results.csv`：**demo 模式（雙擊 App）**的逐輪摘要，可用試算表打開。欄位含模式、App 版本、profile 版本、gallery digest、失败原因代碼、顯示身份、top1／top2、分數、差距、有效幀／所需幀、標註與時間。**這是明文，且不含任何影像或 embedding**。
 - `~/Downloads/face_sample/_facecore/store/results.csv`：**record 模式**的逐輪摘要（固定 17 欄）。demo 模式**不會**寫這個檔，既有內容與修改時間都不變。
 - `~/Downloads/face_sample/_facecore/store/`：record 模式下的加密影像與逐幀診斷。解密鍵在同層的 `research_keys/`，**不要隨意複製、上傳或分享這兩個資料夾**。demo 模式不會在這裡留下加密資料。
