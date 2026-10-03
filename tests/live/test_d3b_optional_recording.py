@@ -37,6 +37,7 @@ from facecore.live.qt_window import QtResearchWindow
 from facecore.research.cli import (
     G3_DEMO_RESULTS_CSV_COLUMNS,
     G3_DEMO_RESULTS_CSV_NAME,
+    G3_DEMO_RESULTS_CSV_STEM,
     G3_RESULTS_CSV_COLUMNS,
     cmd_live,
     g3_demo_round_row,
@@ -297,6 +298,143 @@ class TestDemoModeLeavesResearchLedgerUntouched:
         assert list(store.glob("**/*.enc")) == []
         assert not (store / "d3b-demo-2").exists()
 
+    def test_header_mismatch_reaches_the_operator_not_just_the_log(
+        self, qt_app: Any, tmp_path: Path
+    ) -> None:
+        """#141: the refusal text must arrive ON SCREEN.
+
+        The message is written correctly and then dropped: both write paths
+        wrap the append in a bare `except OSError:` with no exception
+        variable, so the operator saw 「紀錄寫入失敗」 and nothing else —
+        no column counts, no last-column heading, no next step. The
+        dispatch's third constraint is about what the OPERATOR can read,
+        not about what the exception carries, so this drives the real
+        window and reads the label.
+
+        Asserted through the window rather than by calling the writer
+        directly: the whole failure was in the path BETWEEN the raise and
+        the screen.
+        """
+        store = tmp_path / "demo-store"
+        store.mkdir()
+        demo_csv = store / G3_DEMO_RESULTS_CSV_NAME
+        # A header from an older build: fewer columns, and the operator's
+        # documented way to tell logs apart is the LAST heading.
+        demo_csv.write_text(
+            ",".join(G3_DEMO_RESULTS_CSV_COLUMNS[:23]) + "\n", encoding="utf-8"
+        )
+        before = demo_csv.read_bytes()
+
+        factory = _RoundFactory(tmp_path, FakeCapture(_face_frames()), _matching_scorer)
+        desktop, consent, _attempt = factory()
+        window = QtResearchWindow(
+            desktop,
+            consent=consent,
+            recorder=None,
+            attempt_id=None,
+            offscreen=True,
+            clock_ns=lambda: 0,
+            next_session=factory,
+            demo_results_csv=demo_csv,
+        )
+        window.show()
+        window.enter_ready()
+        window.start_clicked()
+        window.process_until_terminal(max_steps=200)
+        window.press_correct()
+        window.close()
+
+        shown = window.status_label.text()
+        assert "23" in shown, shown
+        assert str(len(G3_DEMO_RESULTS_CSV_COLUMNS)) in shown, shown
+        assert "label_identity" in shown, shown
+        assert G3_DEMO_RESULTS_CSV_COLUMNS[-1] in shown, shown
+        assert demo_csv.read_bytes() == before, (
+            "a refusal the operator cannot read is bad; a refusal that "
+            "still writes is worse"
+        )
+
+    def test_a_plain_write_failure_keeps_the_short_generic_message(
+        self, qt_app: Any, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        """The per-file remedy must not appear for failures that have none.
+
+        A full disk or a permission problem has no "look at the last
+        column" answer, and padding those with header wording would point
+        the operator at the wrong thing.
+        """
+        store = tmp_path / "demo-store"
+        store.mkdir()
+        demo_csv = store / G3_DEMO_RESULTS_CSV_NAME
+
+        def _boom(*_a: Any, **_k: Any) -> None:
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(
+            "facecore.research.cli.append_g3_demo_results_csv", _boom
+        )
+
+        factory = _RoundFactory(tmp_path, FakeCapture(_face_frames()), _matching_scorer)
+        desktop, consent, _attempt = factory()
+        window = QtResearchWindow(
+            desktop,
+            consent=consent,
+            recorder=None,
+            attempt_id=None,
+            offscreen=True,
+            clock_ns=lambda: 0,
+            next_session=factory,
+            demo_results_csv=demo_csv,
+        )
+        window.show()
+        window.enter_ready()
+        window.start_clicked()
+        window.process_until_terminal(max_steps=200)
+        window.press_correct()
+        window.close()
+
+        assert window.status_label.text() == "紀錄寫入失敗"
+
+    def test_header_mismatch_reaches_the_operator_on_the_unlabeled_path(
+        self, qt_app: Any, tmp_path: Path
+    ) -> None:
+        """#141: BOTH write paths must show it, not just the labeled one.
+
+        The labeled test above passes even when only the labeled branch is
+        fixed — a mutation that reverted the unlabeled branch left it green.
+        The operator skips the verdict often enough to hit the unlabeled
+        path, so a fix on one branch only is half a fix.
+        """
+        store = tmp_path / "demo-store"
+        store.mkdir()
+        demo_csv = store / G3_DEMO_RESULTS_CSV_NAME
+        demo_csv.write_text(
+            ",".join(G3_DEMO_RESULTS_CSV_COLUMNS[:23]) + "\n", encoding="utf-8"
+        )
+
+        factory = _RoundFactory(tmp_path, FakeCapture(_face_frames()), _matching_scorer)
+        desktop, consent, _attempt = factory()
+        window = QtResearchWindow(
+            desktop,
+            consent=consent,
+            recorder=None,
+            attempt_id=None,
+            offscreen=True,
+            clock_ns=lambda: 0,
+            next_session=factory,
+            demo_results_csv=demo_csv,
+        )
+        window.show()
+        window.enter_ready()
+        window.start_clicked()
+        window.process_until_terminal(max_steps=200)
+        window._record_unlabeled_round()
+        window.close()
+
+        shown = window.status_label.text()
+        assert "23" in shown, shown
+        assert G3_DEMO_RESULTS_CSV_COLUMNS[-1] in shown, shown
+
     def test_demo_verdict_writes_the_plaintext_demo_row(
         self, qt_app: Any, tmp_path: Path
     ) -> None:
@@ -468,11 +606,18 @@ class TestDemoModeLeavesResearchLedgerUntouched:
         assert seen[0]["results_csv"] is None, (
             "demo mode must not be handed the research ledger target"
         )
-        assert seen[0]["demo_results_csv"] == (
-            results_csv.parent / G3_DEMO_RESULTS_CSV_NAME
+        assert seen[0]["demo_results_csv"].parent == results_csv.parent
+        assert seen[0]["demo_results_csv"].name.startswith(
+            G3_DEMO_RESULTS_CSV_STEM + "-"
+        ), (
+            "#141: the demo log is named per App EXECUTION. Asserted as a "
+            "prefix rather than an exact name because the stamp is this "
+            "run's start instant; what matters here is that the path moved "
+            "to the per-App form and stayed in the store root."
         )
         # The verdict landed in the demo file, with its own header.
-        demo_csv = results_csv.parent / G3_DEMO_RESULTS_CSV_NAME
+        demo_csv = seen[0]["demo_results_csv"]
+        assert demo_csv.is_file()
         header, rows, _ = _csv_parts(demo_csv)
         assert header == list(G3_DEMO_RESULTS_CSV_COLUMNS)
         assert len(rows) == 1
