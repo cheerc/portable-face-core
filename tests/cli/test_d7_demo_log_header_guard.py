@@ -60,6 +60,14 @@ def _rows(path: Path) -> list[dict[str, str]]:
 
 @pytest.fixture
 def qt_app() -> Any:
+    """Only for the tests that build a real window.
+
+    Kept so a future Qt-backed guard has a fixture; a test that merely
+    drives `cmd_live` must NOT ask for it. `importorskip` makes a
+    PySide6-dependent test vanish from the `verify` job (which installs
+    .[dev] only) instead of failing there — and a guard that no CI job
+    runs is a guard that proves nothing while the run stays green.
+    """
     pytest.importorskip("PySide6.QtWidgets")
     from PySide6.QtWidgets import QApplication as ActualQApplication
 
@@ -316,6 +324,38 @@ class TestPerAppExecutionFileName:
         assert "session" not in path.name.lower()
 
 
+    def test_this_guard_runs_where_ci_runs_it(self) -> None:
+        """The wiring guard must not depend on PySide6.
+
+        The `verify` CI job installs `.[dev]` only — no PySide6. The
+        `qt_app` fixture uses `importorskip`, so any test requesting it
+        there is silently skipped rather than failed: the job stays
+        green and the guard proves nothing. `qt-smoke` does install
+        PySide6 but never runs `tests/cli/`, so nothing else picks it up.
+
+        That is how this wiring guard shipped in its first form — it was
+        written, it passed locally, and no CI job ever executed it.
+
+        Asserted structurally, by inspecting the guard's own signature:
+        adding `qt_app` back turns this red without needing a second
+        environment.
+        """
+        import inspect
+
+        from tests.cli.test_d7_demo_log_header_guard import (
+            TestSecondPrecisionFileName as cls,
+        )
+
+        params = inspect.signature(
+            cls.test_cmd_live_passes_a_microsecond_instant_and_gets_a_second_precision_name
+        ).parameters
+        assert "qt_app" not in params, (
+            "cmd_live defaults to ui='fake' and needs no Qt — requesting "
+            "qt_app makes importorskip drop this test in the verify job, "
+            "where a green run would mean the guard never ran"
+        )
+
+
 class TestSecondPrecisionFileName:
     """#145 follow-up: the name carries seconds, not microseconds.
 
@@ -391,7 +431,7 @@ class TestSecondPrecisionFileName:
         )
 
     def test_cmd_live_passes_a_microsecond_instant_and_gets_a_second_precision_name(
-        self, qt_app: Any, tmp_path: Path, monkeypatch: Any
+        self, tmp_path: Path, monkeypatch: Any
     ) -> None:
         """Wiring guard: what `cmd_live` actually passes in, and what comes out.
 
@@ -405,6 +445,13 @@ class TestSecondPrecisionFileName:
         (rather than on a file that only appears after an operator
         verdict) keeps the assertion on the wire between the two, which
         is where the defect lived.
+
+        Deliberately takes NO `qt_app` fixture: `cmd_live` defaults to
+        `ui="fake"` and never builds a window. An earlier version asked
+        for Qt, and because the fixture uses `importorskip` the whole
+        test vanished from the `verify` job — green run, no guard. The
+        CI config has the same blind spot documented in
+        `test_this_guard_runs_where_ci_runs_it`.
         """
         import json
 
