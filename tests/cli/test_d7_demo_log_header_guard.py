@@ -60,13 +60,23 @@ def _rows(path: Path) -> list[dict[str, str]]:
 
 @pytest.fixture
 def qt_app() -> Any:
-    """Only for the tests that build a real window.
+    """A real Qt application, for the tests that build a real window.
 
-    Kept so a future Qt-backed guard has a fixture; a test that merely
-    drives `cmd_live` must NOT ask for it. `importorskip` makes a
-    PySide6-dependent test vanish from the `verify` job (which installs
-    .[dev] only) instead of failing there — and a guard that no CI job
-    runs is a guard that proves nothing while the run stays green.
+    `importorskip` is what makes this fixture a trap. The `verify` CI job
+    installs `.[dev]` only — no PySide6 — so a test requesting this
+    fixture there is silently SKIPPED instead of failing. The job stays
+    green and the guard is simply absent from the run.
+
+    That is not hypothetical: the wiring guard below shipped in a form
+    that requested this fixture, passed everywhere it was run, and was
+    executed by no CI job at all. It then reappeared via
+    `@pytest.mark.usefixtures("qt_app")` — a fixture the test's own
+    signature never mentions, so a signature check cannot see it.
+
+    So the guard is `test_this_guard_runs_where_ci_runs_it`, which runs
+    the wiring guard in a subprocess WITHOUT PySide6 and requires it to
+    execute. It looks for all three ways pytest supplies a fixture:
+    the signature, `usefixtures`, and an autouse fixture on the class.
     """
     pytest.importorskip("PySide6.QtWidgets")
     from PySide6.QtWidgets import QApplication as ActualQApplication
@@ -324,21 +334,99 @@ class TestPerAppExecutionFileName:
         assert "session" not in path.name.lower()
 
 
+
+class TestTheGuardRunsWhereCiRunsIt:
+    """The wiring guard must execute in a job without PySide6.
+
+    Kept in its own class rather than inside TestPerAppExecutionFileName:
+    both tests below inspect TestSecondPrecisionFileName, and importing the
+    class they police from inside an unrelated one put a 69-line forward
+    reference in the middle of a file whose ordering then mattered. If
+    that class were ever deleted, the failure would surface as an
+    ImportError pointing at the wrong place.
+    """
+
     def test_this_guard_runs_where_ci_runs_it(self) -> None:
-        """The wiring guard must not depend on PySide6.
+        """The wiring guard must execute in a job without PySide6.
 
         The `verify` CI job installs `.[dev]` only — no PySide6. The
-        `qt_app` fixture uses `importorskip`, so any test requesting it
-        there is silently skipped rather than failed: the job stays
-        green and the guard proves nothing. `qt-smoke` does install
-        PySide6 but never runs `tests/cli/`, so nothing else picks it up.
+        `qt_app` fixture uses `importorskip`, so any test that acquires it
+        there is silently skipped rather than failed: the job stays green
+        and the guard proves nothing. `qt-smoke` has PySide6 but never
+        runs `tests/cli/`, so nothing else picks it up.
 
-        That is how this wiring guard shipped in its first form — it was
-        written, it passed locally, and no CI job ever executed it.
+        That is how this wiring guard shipped in its first form. It then
+        came back through `@pytest.mark.usefixtures("qt_app")` — a fixture
+        the test's own signature never mentions. A signature check cannot
+        see that, which is exactly what the review demonstrated: with the
+        bypass in place the guard passed locally AND the file went back to
+        `27 passed, 1 skipped` in a no-Qt environment. Both at once.
 
-        Asserted structurally, by inspecting the guard's own signature:
-        adding `qt_app` back turns this red without needing a second
-        environment.
+        So run pytest in a subprocess with PySide6 blocked from import,
+        and require the guard to be REPORTED as passed rather than
+        skipped. Collection-time textual checks were tried first and
+        dropped: pytest decorates the function object, so the marker is
+        invisible in the source, and rewriting `sys.modules` in-process
+        cannot undo a fixture another module already resolved.
+        """
+        import subprocess
+        import sys
+        import textwrap
+
+        target = (
+            "tests/cli/test_d7_demo_log_header_guard.py::TestSecondPrecisionFileName"
+        )
+        # -p no:cacheprovider keeps the subprocess from writing to the
+        # repo; the plugin block below is what hides PySide6 from it.
+        program = textwrap.dedent(
+            f"""
+            import sys
+
+            class _BlockQt:
+                def find_module(self, name, path=None):
+                    if name == "PySide6" or name.startswith("PySide6."):
+                        return self
+                    return None
+                def load_module(self, name):
+                    raise ImportError("PySide6 blocked by the guard under test")
+
+            sys.meta_path.insert(0, _BlockQt())
+            import pytest
+            sys.exit(
+                pytest.main(["-q", "-p", "no:cacheprovider",
+                             "--no-header", "-rN", "{target}"])
+            )
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", program],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parents[2]),
+        )
+        output = result.stdout + result.stderr
+        assert result.returncode == 0, f"the guarded file failed without Qt:\n{output}"
+        assert "passed" in output, (
+            "the wiring guard did not RUN without PySide6 — nothing was "
+            f"reported as passed:\n{output}"
+        )
+        assert "skipped" not in output, (
+            "a test in this file is skipped without PySide6, so the "
+            f"verify job would stay green without running it:\n{output}"
+        )
+        assert "error" not in output.lower().replace("errorcase", ""), (
+            f"collection or execution error without Qt:\n{output}"
+        )
+
+    def test_no_other_fixture_can_reach_the_wiring_guard(self) -> None:
+        """No route by which a fixture reaches the guard without its signature.
+
+        Belt to the subprocess guard's braces: pytest supplies fixtures
+        three ways, and the signature is only one of them. If a future
+        edit hands the wiring guard a Qt dependency through
+        `usefixtures` or an autouse fixture, the subprocess run above
+        turns red — this makes the reason legible at the point of the
+        change instead of only in CI.
         """
         import inspect
 
@@ -346,14 +434,30 @@ class TestPerAppExecutionFileName:
             TestSecondPrecisionFileName as cls,
         )
 
-        params = inspect.signature(
+        func = (
             cls.test_cmd_live_passes_a_microsecond_instant_and_gets_a_second_precision_name
-        ).parameters
-        assert "qt_app" not in params, (
-            "cmd_live defaults to ui='fake' and needs no Qt — requesting "
-            "qt_app makes importorskip drop this test in the verify job, "
-            "where a green run would mean the guard never ran"
         )
+        assert "qt_app" not in inspect.signature(func).parameters, (
+            "cmd_live defaults to ui='fake' and needs no Qt; requesting "
+            "qt_app in the signature makes importorskip drop this test in "
+            "the verify job, where a green run would mean the guard never ran"
+        )
+        marks = getattr(func, "pytestmark", [])
+        names = {m.name for m in marks if getattr(m, "name", None)}
+        assert "qt_app" not in names, (
+            f"usefixtures({sorted(names)}) reaches a fixture the signature "
+            "cannot show — the subprocess guard above will catch it, but it "
+            "should not be added here"
+        )
+        autouse = [
+            name
+            for name, f in vars(cls).items()
+            if isinstance(f, type(lambda: None))
+            and getattr(f, "_pytestfixturefunction", None) is not None
+            and getattr(f._pytestfixturefunction, "scope", None)
+        ]
+        assert not autouse, f"autouse fixtures on the class: {autouse}"
+
 
 
 class TestSecondPrecisionFileName:
