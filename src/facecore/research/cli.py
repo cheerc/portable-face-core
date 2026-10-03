@@ -366,6 +366,12 @@ def append_g3_results_csv(results_csv: Path, round_: Any) -> None:
 # summary already present in results.csv or the session envelope. No frame
 # pixels, no embeddings, no gallery photos, no face boxes.
 G3_DEMO_RESULTS_CSV_NAME = "demo-results.csv"
+# D7-A #141: the demo log is named per App EXECUTION, not per session and
+# not per round — see `demo_results_csv_path`. `G3_DEMO_RESULTS_CSV_NAME`
+# stays as the un-suffixed legacy name: it is what existing files are
+# called, what the close-out envelope reports for them, and what the
+# header guard refuses to append to.
+G3_DEMO_RESULTS_CSV_STEM = "demo-results"
 
 G3_DEMO_RESULTS_CSV_COLUMNS = (
     # mode + provenance: a demo row is distinguishable from research evidence
@@ -493,6 +499,83 @@ G3_DEMO_RESULTS_CSV_COLUMNS = (
     "loaded_count",
     "gallery_rejected",
 )
+
+
+class DemoLogHeaderMismatch(OSError):
+    """#141: the demo log's header is not this build's header.
+
+    An `OSError` subclass on purpose, not a new failure kind: both window
+    write paths already wrap `append_g3_demo_results_csv` in
+    `except OSError`, which sets 「紀錄寫入失敗」 and drops the round from
+    `completed_rounds`. A refusal must land on that same fail-closed path —
+    a round we refuse to record must not count as a recorded round.
+
+    The guard exists because the header is written once, on first write
+    (`write_header = not demo_csv.is_file()`), so a file created by an
+    older build keeps its old header forever and every later row lands in
+    the wrong cells. `demo_results_csv_path` removes that situation by
+    construction (a new App run opens a new file); this is the backstop
+    for when it does not happen.
+    """
+
+
+def demo_results_csv_path(store_root: Path, started_utc: str) -> Path:
+    """The demo log path for ONE App execution (#141 丙-新).
+
+    Named for when the App started, so a new App run opens a new file and
+    never appends to an older one. That is the decision's point: the
+    operator's version and the file's header move together, so an existing
+    log never needs its header upgraded in place.
+
+    `started_utc` is the App's start time, NOT `session_id` — in this
+    codebase `session_id` is per-ROUND (`round_session_id` in `cmd_live`),
+    and naming files after it would split one App run into dozens of files.
+    Callers pass their own start instant; the format is trimmed to
+    filesystem-safe characters because an ISO timestamp contains `:`.
+    """
+    stamp = started_utc.strip().replace(":", "").replace("+", "_").replace(".", "")
+    return store_root / f"{G3_DEMO_RESULTS_CSV_STEM}-{stamp}.csv"
+
+
+def _demo_log_header_mismatch_error(
+    demo_csv: Path, actual: tuple[str, ...]
+) -> DemoLogHeaderMismatch:
+    """Build the refusal the operator can act on without asking anyone.
+
+    The runbook's step 0 tells the operator to identify their log by the
+    LAST column's heading, not by counting columns — so the message names
+    the last column of both headers and both counts. It also names the
+    per-App file, because that is the actual next step: the old log is not
+    broken, it is from another App run.
+    """
+    expected = G3_DEMO_RESULTS_CSV_COLUMNS
+    return DemoLogHeaderMismatch(
+        f"demo log 的欄位標題與這版 App 不符，已拒絕寫入（零寫入）：{demo_csv}\n"
+        f"  你的檔案：{len(actual)} 欄，最後一欄是 "
+        f"{actual[-1] if actual else '(空檔)'}。\n"
+        f"  這版 App：{len(expected)} 欄，最後一欄是 {expected[-1]}。\n"
+        f"  這是舊一次 App 執行留下的檔案（每個欄位標題都不同時，"
+        f"照舊標題讀會讀錯欄）。\n"
+        f"  下一步：不用改這個檔案 —— 下次啟動 App 會自動開新檔 "
+        f"{G3_DEMO_RESULTS_CSV_STEM}-<啟動時間>.csv，用那個新檔即可。"
+    )
+
+
+def _read_demo_log_header(demo_csv: Path) -> tuple[str, ...] | None:
+    """The file's ACTUAL first row, or None when there is no file yet.
+
+    Read from disk on every append rather than remembered: the whole point
+    is to catch a header written by a different build, which by definition
+    this process never saw being written.
+    """
+    if not demo_csv.is_file():
+        return None
+    import csv as _csv
+
+    with demo_csv.open("r", newline="", encoding="utf-8") as handle:
+        for row in _csv.reader(handle):
+            return tuple(row)
+    return None
 
 
 def _app_version() -> str:
@@ -692,10 +775,22 @@ def append_g3_demo_results_csv(
     computed. See `g3_demo_round_row` for why each is optional.
 
     D7-A W1: `gallery_load_report` rides along so every row records which
-    gallery it ran against. The append semantics are unchanged — this adds
-    no branch to the write path (issue #140 stays exactly as it is).
+    gallery it ran against. The append semantics are unchanged — writing a
+    row still never touches the header.
+
+    D7-A #141: a file whose header is not this build's is REFUSED with
+    zero writes. This IS a new branch on the write path, and it is what
+    issue #140 asked for: the header used to be written once, on first
+    write, so a file created by an older build kept its old header forever
+    and every later row landed in the wrong cells. The comparison is the
+    whole header tuple, not its length — a renamed or reordered column
+    keeps the count and would still be caught.
     """
     import csv as _csv
+
+    actual_header = _read_demo_log_header(demo_csv)
+    if actual_header is not None and actual_header != G3_DEMO_RESULTS_CSV_COLUMNS:
+        raise _demo_log_header_mismatch_error(demo_csv, actual_header)
 
     row = g3_demo_round_row(
         round_,
@@ -1484,7 +1579,14 @@ def cmd_live(
 
     # D3b: the demo result file, resolved once so the initial desktop and
     # every round the next_session factory builds share the same target.
-    demo_csv_path = store_root / G3_DEMO_RESULTS_CSV_NAME
+    #
+    # D7-A #141: named for when THIS APP EXECUTION started, not for
+    # `session_id` (which is per-round here). Every round of this run lands
+    # in one file; the next App start opens a new one. That is what keeps an
+    # existing log's header from needing an in-place upgrade — the header
+    # guard in `append_g3_demo_results_csv` is the backstop, not the
+    # everyday path. The stamp is `now`, this App's start instant.
+    demo_csv_path = demo_results_csv_path(store_root, now.isoformat())
 
     desktop = DesktopSession(
         engine=engine,
@@ -1999,7 +2101,11 @@ def cmd_live(
                         else "demo_results_csv"
                     ): str(
                         store_root
-                        / ("results.csv" if recording else G3_DEMO_RESULTS_CSV_NAME)
+                        / (
+                            "results.csv"
+                            if recording
+                            else demo_csv_path.name
+                        )
                     ),
                     "generation": model_generation,
                     "gallery_digest": gallery_digest,
