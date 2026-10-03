@@ -41,7 +41,7 @@ G3 本機測試 App — 目前版本
    - **正確**：顯示的是實際對應的註冊照；或測試者原本未註冊而顯示「找不到」。
    - **錯誤**：你有註冊卻顯示別人／找不到，或未註冊者卻被認成任何一張註冊照。
      按「正確／錯誤」即把這一輪寫入本機（右下「已保存」只在完整寫入後才亮；若顯示「紀錄寫入失敗」就停下回報，不要繼續）。回到待開始：**相機選項保留、鏡頭關閉、上一輪結果面板清空**，下一輪要再按一次 Start。若你只有自己測，`enroll-23` 才是正確的身份。
-   - **再次辨識**：不想標註、想直接再試一次。**不會重開鏡頭** —— 直接沿用仍開著的相機再跑一輪，上一輪的結果、文字、倒數全部清空。剛才那一輪**不會被丟掉**：demo 模式仍會寫一列到 `demo-results.csv`，只是 `label_kind` 記作 `unlabeled`（見下方說明）。
+   - **再次辨識**：不想標註、想直接再試一次。**不會重開鏡頭** —— 直接沿用仍開著的相機再跑一輪，上一輪的結果、文字、倒數全部清空。剛才那一輪**不會被丟掉**：demo 模式仍會寫一列到**這次啟動的 log 檔**（`store/demo-results-<啟動時間>.csv`），只是 `label_kind` 記作 `unlabeled`（見下方說明）。
    - **停止相機**：關閉鏡頭、清空畫面與結果面板、回到待開始，**相機選項保留**。連續預覽時想提早收工就按這個。
 5. 建議的實際節奏：想連續測同一個人，就一路「再次辨識」；確定要收工、或要換相機，就按「停止相機」再回待開始挑另一台。**任何時候關視窗都一定會關鏡頭**，所以直接按視窗關閉鈕也是安全的收尾。⚠️ **只有按「正確／錯誤」才會確實存檔。** 在結果頁按「再次辨識」，demo 模式也會留一列 `unlabeled`（限於 App 還開著、你在結果頁按再次辨識的情況）；**按「停止相機」或直接關視窗，都不會把當下那一輪補存成檔** —— 所以收尾前請先完成標註。
 
@@ -53,7 +53,7 @@ G3 本機測試 App — 目前版本
 | --- | --- | --- |
 | 怎麼開 | 雙擊 `g3-local-test-app.command` | Terminal 執行下方命令 |
 | 影像／embedding | **不寫任何** | 加密寫入本機 |
-| 逐輪結果檔 | `store/demo-results.csv`（明文） | `store/results.csv`（明文，固定 17 欄） |
+| 逐輪結果檔 | `store/demo-results-<啟動時間>.csv`（明文，**每次啟動 App 一個新檔**） | `store/results.csv`（明文，固定 17 欄） |
 | attempt ledger | 不寫 | 寫入 |
 | 兩個同意勾選 | **不需要**（帶了會直接報錯，不會靜默忽略） | 必須兩者都帶 |
 
@@ -73,13 +73,13 @@ uv run --extra research-ui python -m facecore.research.cli live \
 
 ## 資料在哪裡、怎麼交給 AI
 
-- ⚠️ **想自己讀懂 `demo-results.csv`、想知道某一輪為什麼失敗：看 [`w0a-diagnostic-run-runbook.md`](w0a-diagnostic-run-runbook.md)。** 那份手冊教你只靠 CSV 就能分辨「相機沒出影格／品質全被拒／support 沒累積到 3」，並附自我驗證清單。**不需要問任何人。** 本 SOP 只告訴你怎麼「跑」；要「讀懂結果」請看那份手冊。
-- `~/Downloads/face_sample/_facecore/store/demo-results.csv`：**demo 模式（雙擊 App）**的逐輪摘要，可用試算表打開。欄位含模式、App 版本、profile 版本、gallery digest、失败原因代碼、顯示身份、top1／top2、分數、差距、有效幀／所需幀、標註與時間。**這是明文，且不含任何影像或 embedding**。
+- ⚠️ **想自己讀懂 demo log、想知道某一輪為什麼失敗：看 [`w0a-diagnostic-run-runbook.md`](w0a-diagnostic-run-runbook.md)。** 那份手冊教你只靠 CSV 就能分辨「相機沒出影格／品質全被拒／support 沒累積到 3」，並附自我驗證清單。**不需要問任何人。** 本 SOP 只告訴你怎麼「跑」；要「讀懂結果」請看那份手冊。
+- `~/Downloads/face_sample/_facecore/store/demo-results-<啟動時間>.csv`：**demo 模式（雙擊 App）**的逐輪摘要，可用試算表打開。⚠️ **檔名帶啟動時間，App 每次啟動開一個新檔** —— 要讀最新結果就找**修改時間最新**的那一個；舊的 `demo-results.csv`（沒有時間）是舊版 App 留下的，不要拿它當這次的結果。欄位含模式、App 版本、profile 版本、gallery digest、失败原因代碼、顯示身份、top1／top2、分數、差距、有效幀／所需幀、標註與時間。**這是明文，且不含任何影像或 embedding**。
 - `~/Downloads/face_sample/_facecore/store/results.csv`：**record 模式**的逐輪摘要（固定 17 欄）。demo 模式**不會**寫這個檔，既有內容與修改時間都不變。
 - `~/Downloads/face_sample/_facecore/store/`：record 模式下的加密影像與逐幀診斷。解密鍵在同層的 `research_keys/`，**不要隨意複製、上傳或分享這兩個資料夾**。demo 模式不會在這裡留下加密資料。
 - CSV 裡「錯誤」的 `label_kind` 目前記作 `uncertain`：這代表你按了「錯誤」，**不是系統已知道正確身份**。事後請 AI 依你實際測試的人和畫面結果解讀，不要直接把 `uncertain` 當作「未註冊」。
 - CSV 裡 `label_kind` 記作 **`unlabeled`** 的列，表示那一輪你**按了「再次辨識」而沒有標註**。這樣記是為了**不讓已發生的那一輪被靜默丟棄**：輪次、結果、幀數、gallery digest 都留著，只有標註欄留空。解讀時請把 `unlabeled` 的列當作「有跑但沒有答案」，不要當成答錯。
-  - 這個值**只出現在 demo 模式的 `demo-results.csv`**。研究用的 `results.csv` 與 `report.py`／`analysis.py` 的分類**都不認它**（可接受的值只有 `enrolled`／`unenrolled`／`uncertain`）。
+  - 這個值**只出現在 demo 模式的 demo log**。研究用的 `results.csv` 與 `report.py`／`analysis.py` 的分類**都不認它**（可接受的值只有 `enrolled`／`unenrolled`／`uncertain`）。
   - **容易混淆，請注意：** `analysis.py` 裡另有一個**既有**的 `unlabeled` 計數欄，那是統計研究樣本時 `truth_kind` 缺值的填充值，**與本欄同名不同義**。若你在程式中 grep 到 `unlabeled`，那是兩件事。
 - ⚠️ **在「找不到此註冊人員」那一輪按「正確」，記的是「這個人沒有註冊」（`unenrolled`）—— 而這一列的分數可能很高。** 這兩個數字不一致**是資料本身的性質，不是 bug**：那一輪系統說「沒認出」，照 UI 語意按「正確」就是「此人確實未註冊」；但畫面裡那個人的分數可能遠高於門檻（2026-09-30 真機第一輪實測：4 列 `unenrolled` 的 `top1_score` 0.56–0.70、`margin` 0.31–0.43，而門檻是 0.363／0.10）。**UI 不知道誰在註冊組裡，所以它只能照結果記你的判斷。**
   - **如果你其實有註冊、只是這一輪沒認出來，請改按「錯誤」**（記為 `uncertain`），不要按「正確」。否則這一列會被讀成「此人未註冊」。
@@ -88,7 +88,7 @@ uv run --extra research-ui python -m facecore.research.cli live \
 
 你的測試會產生**兩個不同的數字**，它們不一樣是正常的：
 
-| 名稱 | 意思 | 怎麼從 `demo-results.csv` 算 |
+| 名稱 | 意思 | 怎麼從 demo log 算 |
 |---|---|---|
 | **已執行輪次** | 真的跑過、產生了結果的輪數 | CSV 的**資料列數**（不含標題列） |
 | **已標註輪次** | 你按過「正確／錯誤」、有答案的輪數 | `label_kind` **不是** `unlabeled` 的列數 |
@@ -123,7 +123,7 @@ uv run --extra research-ui python -m facecore.research.cli live \
 | `timeout_ms` | **35 欄**（W3 之後、W1 之前） |
 | `gallery_rejected` | **38 欄**（W1 之後，**最新的**） |
 
-- **找不到 `demo-results.csv` → 不要手動建立**，照 [`w0a-diagnostic-run-runbook.md`](w0a-diagnostic-run-runbook.md) 第 0 步的「如果沒有這個檔案」，完成一輪並由 App 保存，再確認。
+- **找不到 `demo-results-` 開頭的檔案 → 不要手動建立**，照 [`w0a-diagnostic-run-runbook.md`](w0a-diagnostic-run-runbook.md) 第 0 步的「如果沒有這個檔案」，完成一輪並由 App 保存，再確認。
 - **是 23 欄 → 那是舊檔**，請照同一份手冊的第 0 步換成新的（**只重跑沒有用**，必須先把舊檔改名移走，表頭才會重建）。
 - **是 35 欄或 38 欄 → 那是新的**，可以直接用，也可以照同一份手冊讀懂每一輪。**⚠️ 兩者差在最後三欄**，那三欄怎麼讀請看手冊第 0 步的「第 36–38 欄：gallery 可見性」；**它們不影響上面那兩條公式**。
 
@@ -135,7 +135,7 @@ uv run --extra research-ui python -m facecore.research.cli live \
 
 **回報時請兩個數都寫。** 只報「已標註」會低估你實際做了多少；只報「已執行」會把沒答案的輪次算成有答案。差額就是 `unlabeled` 的列數。
 
-- 影像與紀錄設定的保存期限為 **30 天**；不要等到期限到了才請 AI 分析。可以在本機對 AI 說：「我完成 G3 測試。請先唯讀分析 `~/Downloads/face_sample/_facecore/store/demo-results.csv`（若我用的是研究錄製則是 `results.csv`），告訴我每輪是否正確、錯誤型態與下一步；**不要開相機、修改資料、把照片上傳或拿測試結果調門檻**。」
+- 影像與紀錄設定的保存期限為 **30 天**；不要等到期限到了才請 AI 分析。可以在本機對 AI 說：「我完成 G3 測試。請先唯讀分析 `~/Downloads/face_sample/_facecore/store/` 裡**修改時間最新**的 `demo-results-<啟動時間>.csv`（若我用的是研究錄製則是 `results.csv`），告訴我每輪是否正確、錯誤型態與下一步；**不要開相機、修改資料、把照片上傳或拿測試結果調門檻**。」
 
 ## D4 驗收矩陣（請直接填這一節）
 
@@ -154,7 +154,7 @@ uv run --extra research-ui python -m facecore.research.cli live \
 | 6b | **Cancel**（辨識途中） | 停止本輪、關鏡頭、回待開始 | Start 後立刻按 Cancel | | | | |
 | 6c | **關窗** | 一定釋放相機（燈號不殘留） | 直接關視窗 | | | | |
 | 6d | **重開**：關窗後再雙擊 | 一切如初，不殘留上一輪狀態 | 重新雙擊 | | | | |
-| 7 | **無錄製模式** | `demo-results.csv` 增加一列；`results.csv` 的**修改時間不變**；`store/` 不出現新的 `.enc` | 跑一輪後檢查檔案 | | | | |
+| 7 | **無錄製模式** | 這次啟動的 `demo-results-<啟動時間>.csv` 增加一列；`results.csv` 的**修改時間不變**；`store/` 不出現新的 `.enc` | 跑一輪後檢查檔案 | | | | |
 
 **第 4b／4c 現場難以重現時，請填「待驗」並說明原因，不要用合成影格或猜測代替。**
 
@@ -190,7 +190,7 @@ uv run --extra research-ui python -m facecore.research.cli live \
 | 「找不到相機」、下拉選單空白 | 確認 macOS「系統設定 → 隱私權與安全性 → 相機」已允許 Terminal。關閉其他佔用相機的 App 後重開。 |
 | 按 Start 沒反應 | 先確認已選相機（「請選擇相機」會擋下 Start）與兩個同意勾選；相機被別的 App 佔用時會顯示中文原因，關掉佔用的 App 再按一次。 |
 | 註冊組建構失敗或模型載入失敗 | 不必自己更換照片或模型；保留 Terminal 錯誤供團隊判斷。不要把照片傳進對話。 |
-| 找不到結果 | 先確認這輪按了「正確／錯誤」或「再次辨識」，再看 `store/demo-results.csv`（雙擊 App）或 `store/results.csv`（研究錄製）。標註按鍵後若畫面顯示「紀錄寫入失敗」，不要繼續下一輪，回報錯誤。 |
+| 找不到結果 | 先確認這輪按了「正確／錯誤」或「再次辨識」，再看 `store/` 裡**最新修改**的 `demo-results-<啟動時間>.csv`（雙擊 App）或 `store/results.csv`（研究錄製）。標註按鍵後若畫面顯示「紀錄寫入失敗」，不要繼續下一輪 —— 那則訊息會告訴你原因，**照它說的下一步做，並把訊息回報團隊**。 |
 | 按「再次辨識」但下一輪沒反應 | 確認相機仍開著（結果階段預覽還在更新即為正常）。若畫面已回到待開始、鏡頭已關，就按 **Start** 開始新的一輪 —— 這是正常的：停止相機後不會自動續跑。 |
 
 **界線：** 這是本機原型的單人測試，不是認證、考勤、部署或多人排隊驗收；分數與少量試驗不能證明真實誤認率。首次真機操作的結果（包含出現的權限彈窗與相機名稱）仍需你實測回報。

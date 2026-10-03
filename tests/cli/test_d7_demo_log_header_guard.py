@@ -182,16 +182,36 @@ class TestSameCountDifferentOrder:
         with pytest.raises(OSError):
             _append(target)
 
-    def test_the_count_is_identical_so_a_length_check_would_miss_it(
+    def test_the_fixture_is_what_case_two_cannot_catch(
         self, tmp_path: Path,
     ) -> None:
-        """States the premise the refusal above depends on.
+        """States the premise the refusal above depends on — as two claims
+        that can each go red.
 
-        If a future edit ever changes the column count, these fixtures
-        stop being 'same count' and the tests would pass for the wrong
-        reason (case 2's length check). Pinning it keeps them honest.
+        The first version of this asserted only
+        `len(_renamed_header()) == len(G3_DEMO_RESULTS_CSV_COLUMNS)`, and
+        that equation is a tautology: `_renamed_header` is built by
+        copying COLUMNS and changing one element, so the two can never
+        differ in length. It passed under every mutation, including the
+        one this file exists to prevent.
+
+        So assert the two properties a length check cannot supply:
+        the header really is the SAME LENGTH (a length check would wave it
+        through) and really is DIFFERENT (only a tuple comparison stops
+        it). Each clause fails on its own if a future edit drops a column
+        from the fixture or lets it drift back into equality — which is
+        what makes this a guard rather than a restatement.
         """
-        assert len(self._renamed_header()) == len(G3_DEMO_RESULTS_CSV_COLUMNS)
+        renamed = self._renamed_header()
+        assert len(renamed) == len(G3_DEMO_RESULTS_CSV_COLUMNS), (
+            "no longer the same count: case 2's length check would now "
+            "catch this, so the tests would be passing for the wrong reason"
+        )
+        assert renamed != G3_DEMO_RESULTS_CSV_COLUMNS, (
+            "the fixture drifted back into equality; nothing is being "
+            "refused any more"
+        )
+        assert renamed[0] != G3_DEMO_RESULTS_CSV_COLUMNS[0]
 
     def test_the_renamed_file_is_byte_identical_afterwards(
         self, tmp_path: Path,
