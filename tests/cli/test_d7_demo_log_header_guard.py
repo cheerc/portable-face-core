@@ -383,12 +383,10 @@ class TestTheGuardRunsWhereCiRunsIt:
             import sys
 
             class _BlockQt:
-                def find_module(self, name, path=None):
+                def find_spec(self, name, path=None, target=None):
                     if name == "PySide6" or name.startswith("PySide6."):
-                        return self
+                        raise ImportError("PySide6 blocked by the guard under test")
                     return None
-                def load_module(self, name):
-                    raise ImportError("PySide6 blocked by the guard under test")
 
             sys.meta_path.insert(0, _BlockQt())
             import pytest
