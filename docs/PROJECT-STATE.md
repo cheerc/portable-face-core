@@ -45,7 +45,7 @@ D4 真機第一輪的觀察與 D5 的靜態結果分屬不同協議（見 D0 §1
 
 ## 現場紀錄（此前本檔誤述為「尚無任何真實 session」）
 
-⚠️ **2026-10-03 operator 已刪除 `~/Downloads/face_sample/_facecore/store/demo-results.csv`**（該 32 欄檔因 header drift 而錯位，見 issue **#140**）。**因此本檔下方所有指向「那批 32 列 log」的數字，描述的是「當時發生了什麼」，不是「檔案現在還在」** —— 事實本身不因砍檔而失效，引用時須註明資料檔已刪。
+⚠️ **2026-10-03 operator 已刪除 `~/Downloads/face_sample/_facecore/store/demo-results.csv`**（該 **32 列、23 欄**的舊檔因 header drift 而錯位，見 issue **#140**；當時程式只寫得出 23 欄，W3／W1 之後才擴到 35／38 欄）。**因此本檔下方所有指向「那批 32 列 log」的數字，描述的是「當時發生了什麼」，不是「檔案現在還在」** —— 事實本身不因砍檔而失效，引用時須註明資料檔已刪。
 
 **目前唯一保留的 demo log**（在 repo 外，唯讀，**不得把逐列原始資料抄進 repo**）：
 `~/Downloads/face_sample/_facecore/enroll-24-cross-identity-baseline.csv`，2 列：
