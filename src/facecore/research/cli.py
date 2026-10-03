@@ -519,6 +519,33 @@ class DemoLogHeaderMismatch(OSError):
     """
 
 
+def _second_precision_stamp(started_utc: str) -> str:
+    """An ISO instant as `YYYY-MM-DDTHHMMSS_±HHMM`, dropped to seconds.
+
+    Filesystem-safe because an ISO timestamp contains `:`.
+
+    Parsed, then reformatted, rather than sliced: `2026-10-03T15:30:00+00:00`
+    and `2026-10-03T15:30:00.123456+00:00` describe the same second and must
+    produce the same name — otherwise a caller that happens to omit the
+    microseconds gets a filename the operator has never seen.
+
+    A `Z` suffix is accepted because that is how UTC instants are commonly
+    written, and `Z` is legal in a filename but reads as noise next to the
+    rest of the stamp.
+
+    Unparseable input is sanitized rather than raised on: a filename is
+    not worth crashing a camera run over, and the microseconds-free
+    fallback still gives the operator a per-session file.
+    """
+    text = started_utc.strip()
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text.replace(":", "").replace("+", "_").replace(".", "")
+    moment = moment.replace(microsecond=0)
+    return moment.isoformat().replace(":", "").replace("+", "_")
+
+
 def demo_results_csv_path(store_root: Path, started_utc: str) -> Path:
     """The demo log path for ONE App execution (#141 丙-新).
 
@@ -530,10 +557,22 @@ def demo_results_csv_path(store_root: Path, started_utc: str) -> Path:
     `started_utc` is the App's start time, NOT `session_id` — in this
     codebase `session_id` is per-ROUND (`round_session_id` in `cmd_live`),
     and naming files after it would split one App run into dozens of files.
-    Callers pass their own start instant; the format is trimmed to
-    filesystem-safe characters because an ISO timestamp contains `:`.
+
+    Second precision, and it is PARSED rather than sliced. The earlier
+    version stripped `:`/`+`/`.` out of the string, which left the
+    microseconds in the name: `datetime.now().isoformat()` almost always
+    carries six of them, so a real App produced
+    `demo-results-2026-10-03T090533492749_0000.csv` while every example in
+    the operator's runbook showed six digits. A reader who compared his
+    Finder window against the manual had no way to reconcile the two.
+
+    Slicing the string would have been the wrong fix twice over: a
+    caller passing second precision has no decimal point to cut at, so
+    the cut lands somewhere else entirely, and the timezone offset would
+    be chopped along with it. Parsing makes both inputs land on the same
+    name, which is the property that actually matters here.
     """
-    stamp = started_utc.strip().replace(":", "").replace("+", "_").replace(".", "")
+    stamp = _second_precision_stamp(started_utc)
     return store_root / f"{G3_DEMO_RESULTS_CSV_STEM}-{stamp}.csv"
 
 

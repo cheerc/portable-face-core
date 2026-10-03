@@ -28,13 +28,17 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import os
+import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from facecore.research.cli import (
     G3_DEMO_RESULTS_CSV_COLUMNS,
     append_g3_demo_results_csv,
+    cmd_live,
     demo_results_csv_path,
 )
 
@@ -52,6 +56,15 @@ def _write_header(path: Path, columns: tuple[str, ...]) -> None:
 def _rows(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8") as fh:
         return list(csv.DictReader(fh))
+
+
+@pytest.fixture
+def qt_app() -> Any:
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication as ActualQApplication
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    return ActualQApplication.instance() or ActualQApplication([])
 
 
 # ------------------------------------------------------------------ fixtures
@@ -301,3 +314,156 @@ class TestPerAppExecutionFileName:
         of files, which is exactly what decision (丙-新) ruled out."""
         path = demo_results_csv_path(tmp_path, "2026-10-03T00:00:00Z")
         assert "session" not in path.name.lower()
+
+
+class TestSecondPrecisionFileName:
+    """#145 follow-up: the name carries seconds, not microseconds.
+
+    `datetime.now().isoformat()` almost always carries six microsecond
+    digits, and the earlier implementation only deleted the decimal point
+    — so a real App produced a name twelve digits long while every example
+    in the runbook showed six. An operator comparing his Finder window
+    against the manual had no way to reconcile the two.
+    """
+
+    SECOND = "2026-10-03T15:30:00+00:00"
+    MICROS = "2026-10-03T15:30:00.123456+00:00"
+
+    def test_second_precision_input(self, tmp_path: Path) -> None:
+        assert demo_results_csv_path(tmp_path, self.SECOND).name == (
+            "demo-results-2026-10-03T153000_0000.csv"
+        )
+
+    def test_microsecond_input_is_dropped_to_seconds(self, tmp_path: Path) -> None:
+        assert demo_results_csv_path(tmp_path, self.MICROS).name == (
+            "demo-results-2026-10-03T153000_0000.csv"
+        )
+
+    def test_both_precisions_name_the_same_file(self, tmp_path: Path) -> None:
+        """The property the fix exists for: one instant, one filename.
+
+        Not a length assertion — a length check would also pass if the
+        name kept the microseconds and merely dropped a different pair of
+        characters. Equality between the two inputs is what a reader
+        actually depends on.
+        """
+        assert demo_results_csv_path(tmp_path, self.SECOND) == (
+            demo_results_csv_path(tmp_path, self.MICROS)
+        )
+
+    def test_a_utc_z_suffix_is_accepted(self, tmp_path: Path) -> None:
+        assert demo_results_csv_path(tmp_path, "2026-10-03T15:30:00Z").name == (
+            "demo-results-2026-10-03T153000_0000.csv"
+        )
+
+    def test_the_offset_survives(self, tmp_path: Path) -> None:
+        """Truncating the string would have eaten the timezone with the
+        microseconds; a non-UTC instant must keep its offset."""
+        assert demo_results_csv_path(
+            tmp_path, "2026-10-03T15:30:00+08:00"
+        ).name == "demo-results-2026-10-03T153000_0800.csv"
+
+    def test_different_instants_still_differ(self, tmp_path: Path) -> None:
+        """Second precision must not collapse distinct App runs."""
+        first = demo_results_csv_path(tmp_path, "2026-10-03T15:30:00+00:00")
+        second = demo_results_csv_path(tmp_path, "2026-10-03T15:30:01+00:00")
+        assert first != second
+
+    def test_it_matches_the_name_the_runbook_shows(self, tmp_path: Path) -> None:
+        """The manual's example has to be a name the App can produce.
+
+        Read out of the runbook rather than restated here, so that editing
+        the manual without touching the code turns this red — the drift
+        this follow-up exists to close cannot come back unnoticed.
+        """
+        runbook = (
+            Path(__file__).resolve().parents[2]
+            / "docs"
+            / "w0a-diagnostic-run-runbook.md"
+        )
+        assert runbook.is_file(), runbook
+        examples = set(re.findall(r"demo-results-[\dT:_-]+\.csv", runbook.read_text()))
+        per_app = {n for n in examples if n != "demo-results-old.csv"}
+        assert per_app, "the runbook no longer shows a per-App filename example"
+        produced = demo_results_csv_path(tmp_path, self.SECOND).name
+        assert produced in per_app, (
+            f"the App produces {produced} but the runbook shows {sorted(per_app)}"
+        )
+
+    def test_cmd_live_passes_a_microsecond_instant_and_gets_a_second_precision_name(
+        self, qt_app: Any, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        """Wiring guard: what `cmd_live` actually passes in, and what comes out.
+
+        The original bug was in the CALLER's input, not in the helper:
+        `cmd_live` hands over `now.isoformat()`, which carries six
+        microsecond digits. A test that calls `demo_results_csv_path`
+        with tidy inputs cannot see that at all.
+
+        So run a real `cmd_live` demo session and capture the argument it
+        passes to the path builder. Asserting on the captured value
+        (rather than on a file that only appears after an operator
+        verdict) keeps the assertion on the wire between the two, which
+        is where the defect lived.
+        """
+        import json
+
+        profile = tmp_path / "profile.json"
+        profile.write_text(
+            json.dumps(
+                {
+                    "schema_version": "v1",
+                    "profile_version": "filename-fix",
+                    "timeout_ms": 5000,
+                    "sample_interval_ms": 200,
+                    "max_frames": 26,
+                    "queue_limit": 1,
+                    "required_support": 1,
+                    "min_support_interval_ms": 1,
+                    "match_threshold": 0.10,
+                    "review_threshold": 0.05,
+                    "margin_threshold": 0.01,
+                    "detector_version": "det-fix",
+                    "quality_policy_version": "qual-fix",
+                    "continuity_max_center_delta_ratio": 0.5,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        captured: list[tuple[str, str]] = []
+        real = demo_results_csv_path
+
+        def spy(store_root: Path, started_utc: str) -> Path:
+            produced = real(store_root, started_utc)
+            captured.append((started_utc, produced.name))
+            return produced
+
+        monkeypatch.setattr(
+            "facecore.research.cli.demo_results_csv_path", spy, raising=True
+        )
+
+        rc = cmd_live(
+            profile_path=profile,
+            store=tmp_path / "store",
+            key_dir=tmp_path / "keys",
+            device="fake",
+            session_id="filename-fix",
+            record_consent=False,
+            image_consent=False,
+            mode="demo",
+        )
+
+        assert rc == 0, rc
+        assert captured, "cmd_live never asked for a demo log path"
+        started_utc, name = captured[0]
+        assert re.search(r"\.\d{6}[+-]\d{2}:\d{2}$", started_utc), (
+            f"expected a microsecond-bearing instant, got {started_utc!r}; if "
+            "this stops holding, the premise of the test moved and the "
+            "wiring it guards may no longer be the real one"
+        )
+        stamp = name[len("demo-results-") : -len(".csv")]
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{6}_\d{4}", stamp), (
+            f"cmd_live passed {started_utc} and got {name} — the microsecond "
+            "digits are still in the filename the operator sees"
+        )

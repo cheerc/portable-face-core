@@ -541,7 +541,19 @@ class TestDemoModeLeavesResearchLedgerUntouched:
                 "processing failed: KeyError",
                 "標註失敗：TypeError",
             ]
-            available = 560  # the label's share of the window at default size
+            # Read the width the LAYOUT gave the label, after the window
+            # has been shown and the layout activated. The earlier version
+            # hard-coded 560, which is close to but not equal to the real
+            # value (596 on the reviewer's platform, 562 on mine) — and a
+            # fixed number keeps working after a layout change narrows the
+            # label, reporting "no shift" for a shift that is happening.
+            window.layout().activate()
+            available = label.width()
+            assert available > 0, (
+                "label.width() is 0 — the layout has not run yet, and "
+                "measuring at zero width would make every message look "
+                "identical instead of measuring anything"
+            )
 
             def height(text: str, *, wrap: bool) -> int:
                 label.setWordWrap(wrap)
