@@ -371,6 +371,13 @@ else:
             self._update_enrollment_ui()
             self.status_label = QLabel()
             self.status_label.setObjectName("status")
+            # D7-A #141: the header-mismatch message is several lines long.
+            # A QLabel does not wrap by default, and it renders newlines as
+            # blanks, so without this the five-line explanation collapses
+            # into one unreadable strip that runs past the window edge —
+            # which would leave the operator with the same six characters
+            # the fix was meant to replace.
+            self.status_label.setWordWrap(True)
             remaining_ms = self.desktop.countdown_ms_remaining(self._clock_ns())
             self.countdown_label = QLabel(f"倒數 · countdown: {remaining_ms} ms")
             self.countdown_label.setObjectName("countdown")
@@ -890,7 +897,10 @@ else:
             terminal = self.desktop.terminal
             if terminal is None:
                 return
-            from facecore.research.cli import append_g3_demo_results_csv
+            from facecore.research.cli import (
+                DemoLogHeaderMismatch,
+                append_g3_demo_results_csv,
+            )
 
             round_complete = RoundComplete(
                 session_id=self.desktop.session_id,
@@ -921,10 +931,20 @@ else:
                     profile=self.desktop.profile,
                     gallery_load_report=self.load_report,
                 )
-            except OSError:
+            except OSError as exc:
                 # Fail-closed: a round we cannot record must not look
                 # like a round that was recorded.
-                self._set_status("紀錄寫入失敗")
+                #
+                # D7-A #141: a header mismatch is not a "write failed" —
+                # it names the operator's next step, so the message has to
+                # REACH him. A bare `except OSError:` discarded it and left
+                # six characters on screen that distinguish nothing. Keep
+                # the generic wording for every other OSError (disk full,
+                # permissions): those have no per-file remedy to offer.
+                if isinstance(exc, DemoLogHeaderMismatch):
+                    self._set_status(f"紀錄寫入失敗 · {exc}")
+                else:
+                    self._set_status("紀錄寫入失敗")
                 return
             self.completed_rounds.append(round_complete)
 
@@ -1557,7 +1577,10 @@ else:
                     # commit into. The round still queues so the tail can
                     # count it, and a write failure still refuses the
                     # advance (fail-closed, same as record mode).
-                    from facecore.research.cli import append_g3_demo_results_csv
+                    from facecore.research.cli import (
+                        DemoLogHeaderMismatch,
+                        append_g3_demo_results_csv,
+                    )
 
                     try:
                         append_g3_demo_results_csv(
@@ -1575,8 +1598,13 @@ else:
                             # D7-A W1: the App-startup gallery report.
                             gallery_load_report=self.load_report,
                         )
-                    except OSError:
-                        self._set_status("紀錄寫入失敗")
+                    except OSError as exc:
+                        # D7-A #141: same as the unlabeled path — the
+                        # header-mismatch text is the operator's next step.
+                        if isinstance(exc, DemoLogHeaderMismatch):
+                            self._set_status(f"紀錄寫入失敗 · {exc}")
+                        else:
+                            self._set_status("紀錄寫入失敗")
                         return
                 # Queue the labeled round (committed above when a csv
                 # target exists; otherwise the CLI tail commits on close).

@@ -47,6 +47,8 @@ D4 真機第一輪的觀察與 D5 的靜態結果分屬不同協議（見 D0 §1
 
 ⚠️ **2026-10-03 operator 已刪除 `~/Downloads/face_sample/_facecore/store/demo-results.csv`**（該 **32 列、23 欄**的舊檔因 header drift 而錯位，見 issue **#140**；當時程式只寫得出 23 欄，W3／W1 之後才擴到 35／38 欄）。**因此本檔下方所有指向「那批 32 列 log」的數字，描述的是「當時發生了什麼」，不是「檔案現在還在」** —— 事實本身不因砍檔而失效，引用時須註明資料檔已刪。
 
+⚠️ **同一日 operator 又重新跑出新的 `demo-results.csv`（38 欄，內容持續增加中）**，隨後 PR #145（#141 丙-新）合併後 **App 改為每次啟動開一個新檔 `demo-results-<啟動時間>.csv`**，所以那個固定檔名**不再會被產生**。⚠️ **`tests/cli/test_d7_w3_diagnostic_log_fields.py` 仍讀固定檔名**（`TestDocumentedScopeMatchesTheLog`），它斷言的 32／16／11／5／122 是 2026-09-30 那批資料的實測值 —— **operator 只要重跑 App 而列數不同，那條測試就會紅，且那不是他弄壞的**。該測試與 `cli.py` 欄位註解引用的數字都已過期，處置待裁決。
+
 **目前唯一保留的 demo log**（在 repo 外，唯讀，**不得把逐列原始資料抄進 repo**）：
 `~/Downloads/face_sample/_facecore/enroll-24-cross-identity-baseline.csv`，2 列：
 
