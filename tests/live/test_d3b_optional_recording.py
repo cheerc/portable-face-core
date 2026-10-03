@@ -480,6 +480,87 @@ class TestDemoModeLeavesResearchLedgerUntouched:
         text = window.status_label.text()
         assert "\n" in text, "the message keeps its line structure"
 
+    def test_existing_status_messages_keep_their_height_with_wrapping_on(
+        self, qt_app: Any, tmp_path: Path
+    ) -> None:
+        """#141: word wrap must not shift the layout it was added for.
+
+        `setWordWrap(True)` is set on the shared status label, so it
+        applies to every message the window shows, not just the long
+        refusal. If wrapping changed those heights the whole layout
+        would shift underneath ordinary use.
+
+        Reads the REAL window's label rather than a hand-built QLabel: the
+        first version built its own label per text and stayed green with
+        `setWordWrap` removed from the product — proving nothing about
+        the shipped widget. The comparison here is each text's height on
+        the actual label with wrapping off versus on.
+
+        Height is `heightForWidth`, not `adjustSize()`: sizing a label to
+        its own minimum is not what the window does, and measuring that
+        way reported a false +16px that sent me looking for a layout
+        shift that does not exist.
+        """
+        store = tmp_path / "demo-store"
+        store.mkdir()
+        factory = _RoundFactory(tmp_path, FakeCapture(_face_frames()), _matching_scorer)
+        desktop, consent, _attempt = factory()
+        window = QtResearchWindow(
+            desktop,
+            consent=consent,
+            recorder=None,
+            attempt_id=None,
+            offscreen=True,
+            clock_ns=lambda: 0,
+            next_session=factory,
+            demo_results_csv=store / G3_DEMO_RESULTS_CSV_NAME,
+        )
+        window.show()
+        try:
+            label = window.status_label
+            assert label.wordWrap() is True, (
+                "the window must actually enable wrapping — if this fails, "
+                "every measurement below is about a label nobody ships"
+            )
+            existing = [
+                "紀錄寫入失敗",
+                "已標註 · labeled",
+                "待開始 · ready",
+                "採集中 · collecting",
+                "已刪除 · deleted",
+                "相機已關閉 · camera stopped",
+                "請選擇相機",
+                "已選相機，按 Start 開始",
+                "標註未綁定，無法落盤",
+                "標註需要指定身份，不採用系統預測",
+                "需要 record consent 與 image consent",
+                # the f-string shapes, which are the longest ordinary ones
+                "建輪失敗：ValueError",
+                "相機開啟失敗：RuntimeError",
+                "cancel failed: OSError",
+                "processing failed: KeyError",
+                "標註失敗：TypeError",
+            ]
+            available = 560  # the label's share of the window at default size
+
+            def height(text: str, *, wrap: bool) -> int:
+                label.setWordWrap(wrap)
+                label.setText(text)
+                return label.heightForWidth(available)
+
+            shifted = [
+                text
+                for text in existing
+                if height(text, wrap=True) != height(text, wrap=False)
+            ]
+        finally:
+            window.close()
+
+        assert not shifted, (
+            f"word wrap changed the height of {shifted} — the shared status "
+            "label would shift for messages that have nothing to do with #141"
+        )
+
     def test_demo_verdict_writes_the_plaintext_demo_row(
         self, qt_app: Any, tmp_path: Path
     ) -> None:
