@@ -28,13 +28,17 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import os
+import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from facecore.research.cli import (
     G3_DEMO_RESULTS_CSV_COLUMNS,
     append_g3_demo_results_csv,
+    cmd_live,
     demo_results_csv_path,
 )
 
@@ -52,6 +56,33 @@ def _write_header(path: Path, columns: tuple[str, ...]) -> None:
 def _rows(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8") as fh:
         return list(csv.DictReader(fh))
+
+
+@pytest.fixture
+def qt_app() -> Any:
+    """A real Qt application, for the tests that build a real window.
+
+    `importorskip` is what makes this fixture a trap. The `verify` CI job
+    installs `.[dev]` only — no PySide6 — so a test requesting this
+    fixture there is silently SKIPPED instead of failing. The job stays
+    green and the guard is simply absent from the run.
+
+    That is not hypothetical: the wiring guard below shipped in a form
+    that requested this fixture, passed everywhere it was run, and was
+    executed by no CI job at all. It then reappeared via
+    `@pytest.mark.usefixtures("qt_app")` — a fixture the test's own
+    signature never mentions, so a signature check cannot see it.
+
+    So the guard is `test_this_guard_runs_where_ci_runs_it`, which runs
+    the wiring guard in a subprocess WITHOUT PySide6 and requires it to
+    execute. It looks for all three ways pytest supplies a fixture:
+    the signature, `usefixtures`, and an autouse fixture on the class.
+    """
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication as ActualQApplication
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    return ActualQApplication.instance() or ActualQApplication([])
 
 
 # ------------------------------------------------------------------ fixtures
@@ -301,3 +332,287 @@ class TestPerAppExecutionFileName:
         of files, which is exactly what decision (丙-新) ruled out."""
         path = demo_results_csv_path(tmp_path, "2026-10-03T00:00:00Z")
         assert "session" not in path.name.lower()
+
+
+
+class TestTheGuardRunsWhereCiRunsIt:
+    """The wiring guard must execute in a job without PySide6.
+
+    Kept in its own class rather than inside TestPerAppExecutionFileName:
+    both tests below inspect TestSecondPrecisionFileName, and importing the
+    class they police from inside an unrelated one put a 69-line forward
+    reference in the middle of a file whose ordering then mattered. If
+    that class were ever deleted, the failure would surface as an
+    ImportError pointing at the wrong place.
+    """
+
+    def test_this_guard_runs_where_ci_runs_it(self) -> None:
+        """The wiring guard must execute in a job without PySide6.
+
+        The `verify` CI job installs `.[dev]` only — no PySide6. The
+        `qt_app` fixture uses `importorskip`, so any test that acquires it
+        there is silently skipped rather than failed: the job stays green
+        and the guard proves nothing. `qt-smoke` has PySide6 but never
+        runs `tests/cli/`, so nothing else picks it up.
+
+        That is how this wiring guard shipped in its first form. It then
+        came back through `@pytest.mark.usefixtures("qt_app")` — a fixture
+        the test's own signature never mentions. A signature check cannot
+        see that, which is exactly what the review demonstrated: with the
+        bypass in place the guard passed locally AND the file went back to
+        `27 passed, 1 skipped` in a no-Qt environment. Both at once.
+
+        So run pytest in a subprocess with PySide6 blocked from import,
+        and require the guard to be REPORTED as passed rather than
+        skipped. Collection-time textual checks were tried first and
+        dropped: pytest decorates the function object, so the marker is
+        invisible in the source, and rewriting `sys.modules` in-process
+        cannot undo a fixture another module already resolved.
+        """
+        import subprocess
+        import sys
+        import textwrap
+
+        target = (
+            "tests/cli/test_d7_demo_log_header_guard.py::TestSecondPrecisionFileName"
+        )
+        # -p no:cacheprovider keeps the subprocess from writing to the
+        # repo; the plugin block below is what hides PySide6 from it.
+        program = textwrap.dedent(
+            f"""
+            import sys
+
+            class _BlockQt:
+                def find_spec(self, name, path=None, target=None):
+                    if name == "PySide6" or name.startswith("PySide6."):
+                        raise ImportError("PySide6 blocked by the guard under test")
+                    return None
+
+            sys.meta_path.insert(0, _BlockQt())
+            import pytest
+            sys.exit(
+                pytest.main(["-q", "-p", "no:cacheprovider",
+                             "--no-header", "-rN", "{target}"])
+            )
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", program],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parents[2]),
+        )
+        output = result.stdout + result.stderr
+        assert result.returncode == 0, f"the guarded file failed without Qt:\n{output}"
+        assert "passed" in output, (
+            "the wiring guard did not RUN without PySide6 — nothing was "
+            f"reported as passed:\n{output}"
+        )
+        assert "skipped" not in output, (
+            "a test in this file is skipped without PySide6, so the "
+            f"verify job would stay green without running it:\n{output}"
+        )
+        assert "error" not in output.lower().replace("errorcase", ""), (
+            f"collection or execution error without Qt:\n{output}"
+        )
+
+    def test_no_other_fixture_can_reach_the_wiring_guard(self) -> None:
+        """No route by which a fixture reaches the guard without its signature.
+
+        Belt to the subprocess guard's braces: pytest supplies fixtures
+        three ways, and the signature is only one of them. If a future
+        edit hands the wiring guard a Qt dependency through
+        `usefixtures` or an autouse fixture, the subprocess run above
+        turns red — this makes the reason legible at the point of the
+        change instead of only in CI.
+        """
+        import inspect
+
+        from tests.cli.test_d7_demo_log_header_guard import (
+            TestSecondPrecisionFileName as cls,
+        )
+
+        func = (
+            cls.test_cmd_live_passes_a_microsecond_instant_and_gets_a_second_precision_name
+        )
+        assert "qt_app" not in inspect.signature(func).parameters, (
+            "cmd_live defaults to ui='fake' and needs no Qt; requesting "
+            "qt_app in the signature makes importorskip drop this test in "
+            "the verify job, where a green run would mean the guard never ran"
+        )
+        marks = getattr(func, "pytestmark", [])
+        names = {m.name for m in marks if getattr(m, "name", None)}
+        assert "qt_app" not in names, (
+            f"usefixtures({sorted(names)}) reaches a fixture the signature "
+            "cannot show — the subprocess guard above will catch it, but it "
+            "should not be added here"
+        )
+        autouse = [
+            name
+            for name, f in vars(cls).items()
+            if isinstance(f, type(lambda: None))
+            and getattr(f, "_pytestfixturefunction", None) is not None
+            and getattr(f._pytestfixturefunction, "scope", None)
+        ]
+        assert not autouse, f"autouse fixtures on the class: {autouse}"
+
+
+
+class TestSecondPrecisionFileName:
+    """#145 follow-up: the name carries seconds, not microseconds.
+
+    `datetime.now().isoformat()` almost always carries six microsecond
+    digits, and the earlier implementation only deleted the decimal point
+    — so a real App produced a name twelve digits long while every example
+    in the runbook showed six. An operator comparing his Finder window
+    against the manual had no way to reconcile the two.
+    """
+
+    SECOND = "2026-10-03T15:30:00+00:00"
+    MICROS = "2026-10-03T15:30:00.123456+00:00"
+
+    def test_second_precision_input(self, tmp_path: Path) -> None:
+        assert demo_results_csv_path(tmp_path, self.SECOND).name == (
+            "demo-results-2026-10-03T153000_0000.csv"
+        )
+
+    def test_microsecond_input_is_dropped_to_seconds(self, tmp_path: Path) -> None:
+        assert demo_results_csv_path(tmp_path, self.MICROS).name == (
+            "demo-results-2026-10-03T153000_0000.csv"
+        )
+
+    def test_both_precisions_name_the_same_file(self, tmp_path: Path) -> None:
+        """The property the fix exists for: one instant, one filename.
+
+        Not a length assertion — a length check would also pass if the
+        name kept the microseconds and merely dropped a different pair of
+        characters. Equality between the two inputs is what a reader
+        actually depends on.
+        """
+        assert demo_results_csv_path(tmp_path, self.SECOND) == (
+            demo_results_csv_path(tmp_path, self.MICROS)
+        )
+
+    def test_a_utc_z_suffix_is_accepted(self, tmp_path: Path) -> None:
+        assert demo_results_csv_path(tmp_path, "2026-10-03T15:30:00Z").name == (
+            "demo-results-2026-10-03T153000_0000.csv"
+        )
+
+    def test_the_offset_survives(self, tmp_path: Path) -> None:
+        """Truncating the string would have eaten the timezone with the
+        microseconds; a non-UTC instant must keep its offset."""
+        assert demo_results_csv_path(
+            tmp_path, "2026-10-03T15:30:00+08:00"
+        ).name == "demo-results-2026-10-03T153000_0800.csv"
+
+    def test_different_instants_still_differ(self, tmp_path: Path) -> None:
+        """Second precision must not collapse distinct App runs."""
+        first = demo_results_csv_path(tmp_path, "2026-10-03T15:30:00+00:00")
+        second = demo_results_csv_path(tmp_path, "2026-10-03T15:30:01+00:00")
+        assert first != second
+
+    def test_it_matches_the_name_the_runbook_shows(self, tmp_path: Path) -> None:
+        """The manual's example has to be a name the App can produce.
+
+        Read out of the runbook rather than restated here, so that editing
+        the manual without touching the code turns this red — the drift
+        this follow-up exists to close cannot come back unnoticed.
+        """
+        runbook = (
+            Path(__file__).resolve().parents[2]
+            / "docs"
+            / "w0a-diagnostic-run-runbook.md"
+        )
+        assert runbook.is_file(), runbook
+        examples = set(re.findall(r"demo-results-[\dT:_-]+\.csv", runbook.read_text()))
+        per_app = {n for n in examples if n != "demo-results-old.csv"}
+        assert per_app, "the runbook no longer shows a per-App filename example"
+        produced = demo_results_csv_path(tmp_path, self.SECOND).name
+        assert produced in per_app, (
+            f"the App produces {produced} but the runbook shows {sorted(per_app)}"
+        )
+
+    def test_cmd_live_passes_a_microsecond_instant_and_gets_a_second_precision_name(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        """Wiring guard: what `cmd_live` actually passes in, and what comes out.
+
+        The original bug was in the CALLER's input, not in the helper:
+        `cmd_live` hands over `now.isoformat()`, which carries six
+        microsecond digits. A test that calls `demo_results_csv_path`
+        with tidy inputs cannot see that at all.
+
+        So run a real `cmd_live` demo session and capture the argument it
+        passes to the path builder. Asserting on the captured value
+        (rather than on a file that only appears after an operator
+        verdict) keeps the assertion on the wire between the two, which
+        is where the defect lived.
+
+        Deliberately takes NO `qt_app` fixture: `cmd_live` defaults to
+        `ui="fake"` and never builds a window. An earlier version asked
+        for Qt, and because the fixture uses `importorskip` the whole
+        test vanished from the `verify` job — green run, no guard. The
+        CI config has the same blind spot documented in
+        `test_this_guard_runs_where_ci_runs_it`.
+        """
+        import json
+
+        profile = tmp_path / "profile.json"
+        profile.write_text(
+            json.dumps(
+                {
+                    "schema_version": "v1",
+                    "profile_version": "filename-fix",
+                    "timeout_ms": 5000,
+                    "sample_interval_ms": 200,
+                    "max_frames": 26,
+                    "queue_limit": 1,
+                    "required_support": 1,
+                    "min_support_interval_ms": 1,
+                    "match_threshold": 0.10,
+                    "review_threshold": 0.05,
+                    "margin_threshold": 0.01,
+                    "detector_version": "det-fix",
+                    "quality_policy_version": "qual-fix",
+                    "continuity_max_center_delta_ratio": 0.5,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        captured: list[tuple[str, str]] = []
+        real = demo_results_csv_path
+
+        def spy(store_root: Path, started_utc: str) -> Path:
+            produced = real(store_root, started_utc)
+            captured.append((started_utc, produced.name))
+            return produced
+
+        monkeypatch.setattr(
+            "facecore.research.cli.demo_results_csv_path", spy, raising=True
+        )
+
+        rc = cmd_live(
+            profile_path=profile,
+            store=tmp_path / "store",
+            key_dir=tmp_path / "keys",
+            device="fake",
+            session_id="filename-fix",
+            record_consent=False,
+            image_consent=False,
+            mode="demo",
+        )
+
+        assert rc == 0, rc
+        assert captured, "cmd_live never asked for a demo log path"
+        started_utc, name = captured[0]
+        assert re.search(r"\.\d{6}[+-]\d{2}:\d{2}$", started_utc), (
+            f"expected a microsecond-bearing instant, got {started_utc!r}; if "
+            "this stops holding, the premise of the test moved and the "
+            "wiring it guards may no longer be the real one"
+        )
+        stamp = name[len("demo-results-") : -len(".csv")]
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{6}_\d{4}", stamp), (
+            f"cmd_live passed {started_utc} and got {name} — the microsecond "
+            "digits are still in the filename the operator sees"
+        )
