@@ -435,6 +435,51 @@ class TestDemoModeLeavesResearchLedgerUntouched:
         assert "23" in shown, shown
         assert G3_DEMO_RESULTS_CSV_COLUMNS[-1] in shown, shown
 
+    def test_the_status_label_wraps_so_the_long_message_is_readable(
+        self, qt_app: Any, tmp_path: Path
+    ) -> None:
+        """#141: the message has to FIT, not merely be set.
+
+        The refusal text is five lines and over 230 characters. A QLabel
+        does not wrap by default and renders newlines as blanks, so
+        without setWordWrap the explanation collapses into one strip that
+        runs past the window edge — leaving the operator with the same
+        unreadable six characters the fix was meant to replace.
+
+        Asserted on the widget rather than on the message string: the
+        message was already correct before this, and only the label's
+        layout decides whether the operator can read it.
+        """
+        store = tmp_path / "demo-store"
+        store.mkdir()
+        demo_csv = store / G3_DEMO_RESULTS_CSV_NAME
+        demo_csv.write_text(
+            ",".join(G3_DEMO_RESULTS_CSV_COLUMNS[:23]) + "\n", encoding="utf-8"
+        )
+
+        factory = _RoundFactory(tmp_path, FakeCapture(_face_frames()), _matching_scorer)
+        desktop, consent, _attempt = factory()
+        window = QtResearchWindow(
+            desktop,
+            consent=consent,
+            recorder=None,
+            attempt_id=None,
+            offscreen=True,
+            clock_ns=lambda: 0,
+            next_session=factory,
+            demo_results_csv=demo_csv,
+        )
+        window.show()
+        window.enter_ready()
+        window.start_clicked()
+        window.process_until_terminal(max_steps=200)
+        window.press_correct()
+        window.close()
+
+        assert window.status_label.wordWrap() is True
+        text = window.status_label.text()
+        assert "\n" in text, "the message keeps its line structure"
+
     def test_demo_verdict_writes_the_plaintext_demo_row(
         self, qt_app: Any, tmp_path: Path
     ) -> None:

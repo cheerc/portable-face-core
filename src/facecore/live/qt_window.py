@@ -371,6 +371,13 @@ else:
             self._update_enrollment_ui()
             self.status_label = QLabel()
             self.status_label.setObjectName("status")
+            # D7-A #141: the header-mismatch message is several lines long.
+            # A QLabel does not wrap by default, and it renders newlines as
+            # blanks, so without this the five-line explanation collapses
+            # into one unreadable strip that runs past the window edge —
+            # which would leave the operator with the same six characters
+            # the fix was meant to replace.
+            self.status_label.setWordWrap(True)
             remaining_ms = self.desktop.countdown_ms_remaining(self._clock_ns())
             self.countdown_label = QLabel(f"倒數 · countdown: {remaining_ms} ms")
             self.countdown_label.setObjectName("countdown")
