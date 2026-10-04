@@ -1359,6 +1359,32 @@ class TestDocumentedScopeMatchesTheLog:
             "reason code is missing from the counter, so W4's implementer "
             "cannot tell what the sum drops"
         )
+        # `assert named` above is an EXISTENCE quantifier: it says
+        # nothing about WHICH reasons may appear alongside. A counter-
+        # visible reason mixed into the list is the dangerous version of
+        # this — it reads as "the counter misses this too", which is
+        # exactly false, and it would mislead W4's implementer about what
+        # the sum drops. Two mutations (keep the six correct ones, add
+        # one of the two visible reasons) survived the existence check
+        # and a full-repo run, so the exclusion needs its own assertion.
+        #
+        # The slice must be the ENUMERATED LIST, not the whole ② section:
+        # ② legitimately names both visible reasons to explain that they
+        # are visible. Slicing from "② THE COUNTER IS BLIND" instead makes
+        # the UNMUTATED comment red, which would have passed a reviewer
+        # checking only that mutations go red. These two markers are the
+        # list's own delimiters, each appearing exactly once.
+        list_block = text.split(
+            "empties the window without moving the counter:"
+        )[1].split("Summing it in")[0]
+        visible_leaked = [
+            r for r in ("score_below_threshold", "margin_below_threshold")
+            if r in list_block
+        ]
+        assert not visible_leaked, (
+            "the counter-invisible list must not name a reason the counter "
+            f"CAN see: {visible_leaked}"
+        )
         # (4) BOTH harms, because they fail in opposite directions and a
         # reader who keeps only one still gets a wrong summary: keeping
         # only the over-count half under-reports clears, keeping only the
