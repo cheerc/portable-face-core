@@ -452,15 +452,29 @@ G3_DEMO_RESULTS_CSV_COLUMNS = (
     #    state it outright:
     #      · `interval_skip_count` and `support_clear_reasons` must NOT
     #        be added together — a skipped frame left the window intact.
-    #      · `score_reset_count` and `support_clear_reasons` only PARTIALLY
-    #        overlap — neither is a subset of the other, in EITHER direction.
-    #        Some resets clear nothing (the window was already empty, so
-    #        nothing shrank and the cell does not record it), and some
-    #        clears come from a non-score gate (quality / no-face), which
-    #        the score counter never sees. So summing them double-counts
-    #        AND invents clears that never happened. Report
-    #        `support_clear_reasons`, with `reason_codes`' `support_N_of_3`
-    #        alongside it — the counter alone answers neither direction.
+    #      · `score_reset_count` and `support_clear_reasons` must NOT be
+    #        added together, and neither is a subset of the other in
+    #        EITHER direction — the two directions fail in OPPOSITE ways,
+    #        so neither counter alone can stand in for the reasons:
+    #        ① THE COUNTER OVER-COUNTS. Some resets clear nothing: the
+    #           window was already empty, so `support_after` equals
+    #           `support_before` and no clear reason is recorded. Summing
+    #           it in double-counts a single clear, or invents one.
+    #        ② THE COUNTER IS BLIND TO MOST CLEARS. It reads
+    #           `event_counts()["score_reset"]`, and exactly ONE site emits
+    #           that event — session.py:534, the score/margin gate — so it
+    #           moves for `score_below_threshold` and
+    #           `margin_below_threshold` ONLY. Every other clearing path
+    #           empties the window without moving the counter:
+    #           `continuity_jump_detected`, `quality_rejected: …`,
+    #           `no_face_detected`, `empty_identity_scores`,
+    #           `none_runner_up`, `input_multiple_faces`. Summing it in
+    #           then invents clears that never happened.
+    #        Measured against `profiles/g3-v1.json`, not assumed: driving
+    #        all eight paths leaves six of them invisible to the counter.
+    #        Report `support_clear_reasons`, with `reason_codes`'
+    #        `support_N_of_3` alongside it — the counter alone answers
+    #        neither direction.
     # W0 ground truth. Empty means "not recorded", never a guess: an
     # invented 'target' would silently corrupt the cross-identity counts.
     # ⚠️ CONDITIONALLY RETAINED (D7-A W3 rework 2, R4). These are
