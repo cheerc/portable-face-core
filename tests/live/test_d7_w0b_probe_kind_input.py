@@ -364,36 +364,14 @@ def test_each_round_can_set_its_own_value(app):
     )
 
 
-def test_both_write_paths_forward_the_values() -> None:
-    """Both demo-row writers must carry the ground truth, not just one.
-
-    There are two places a demo row is written: the labeled path
-    (operator pressed 正確／錯誤) and `_record_unlabeled_round`
-    (operator pressed 再次辨識 and declined to label). Omitting the
-    values from either produces the same visible symptom — a row with
-    empty cells — and the rows are indistinguishable afterwards, so the
-    gap is only findable at the call site.
-
-    ⚠️ This assertion exists because the first version of this file did
-    NOT have it, and a mutation that removed the forwarding from the
-    unlabeled path survived. Every other test here goes through
-    `g3_demo_round_row` directly, so none of them can see which writer
-    called it. A guard that only proves 「the row reducer accepts the
-    value」 is not a guard on 「every writer passes the value」.
-    """
-    import inspect
-
-    from facecore.live import qt_window
-
-    tree = inspect.getsource(qt_window)
-    kind_calls = tree.count("probe_kind=self._probe_kind_value()")
-    identity_calls = tree.count("presenting_identity=self._presenting_identity_value()")
-    assert kind_calls >= 2, (
-        "BOTH demo write paths must read probe_kind at write time — the "
-        "labeled path and _record_unlabeled_round. Found "
-        f"{kind_calls}; a path is recording empty ground truth."
-    )
-    assert identity_calls >= 2, (
-        "presenting_identity must be forwarded from both paths too, "
-        f"found {identity_calls}"
-    )
+# The 「both writers forward the values」 guard used to live here, counting
+# the literal `probe_kind=self._probe_kind_value()` and asserting >= 2. It
+# moved to tests/live/test_d7_w0b_writer_wiring.py, which parses the AST
+# instead, for two reasons that a count cannot handle:
+#
+#   · a third writer that omits the columns leaves the count at 2, so the
+#     guard stayed green while a new path recorded empty ground truth;
+#   · one mention inside a comment satisfies the count even when both real
+#     writers are broken.
+#
+# It also lost its PySide6 requirement there, so it runs in `verify` as well.

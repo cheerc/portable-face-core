@@ -163,7 +163,7 @@ jobs:
           # D7-A W0-b: `probe_kind` / `presenting_identity` are ground
           # truth the operator picks in the Qt demo window, and the guard
           # on that input path needs the window to exist — same argument
-          # as every file above. Without a job running this one, the six
+          # as every file above. Without a job running this one, the
           # assertions that the operator's pick reaches the CSV row, and
           # that each round can set its own value, would exist only on a
           # contributor's machine — which is exactly how the previous
