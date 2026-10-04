@@ -452,9 +452,29 @@ G3_DEMO_RESULTS_CSV_COLUMNS = (
     #    state it outright:
     #      · `interval_skip_count` and `support_clear_reasons` must NOT
     #        be added together — a skipped frame left the window intact.
-    #      · `score_reset_count` is a SUBSET of `support_clear_reasons`
-    #        (every `score_reset` also lands in that cell), so summing
-    #        them double-counts. Report `support_clear_reasons`.
+    #      · `score_reset_count` and `support_clear_reasons` must NOT be
+    #        added together, and neither is a subset of the other in
+    #        EITHER direction — the two directions fail in OPPOSITE ways,
+    #        so neither counter alone can stand in for the reasons:
+    #        ① THE COUNTER OVER-COUNTS. Some resets clear nothing: the
+    #           window was already empty, so `support_after` equals
+    #           `support_before` and no clear reason is recorded. Summing
+    #           it in double-counts a single clear, or invents one.
+    #        ② THE COUNTER IS BLIND TO MOST CLEARS. It reads
+    #           `event_counts()["score_reset"]`, and exactly ONE site emits
+    #           that event — session.py:534, the score/margin gate — so it
+    #           moves for `score_below_threshold` and
+    #           `margin_below_threshold` ONLY. Every other clearing path
+    #           empties the window without moving the counter:
+    #           `continuity_jump_detected`, `quality_rejected: …`,
+    #           `no_face_detected`, `empty_identity_scores`,
+    #           `none_runner_up`, `input_multiple_faces`. Summing it in
+    #           then invents clears that never happened.
+    #        Measured against `profiles/g3-v1.json`, not assumed: driving
+    #        all eight paths leaves six of them invisible to the counter.
+    #        Report `support_clear_reasons`, with `reason_codes`'
+    #        `support_N_of_3` alongside it — the counter alone answers
+    #        neither direction.
     # W0 ground truth. Empty means "not recorded", never a guess: an
     # invented 'target' would silently corrupt the cross-identity counts.
     # ⚠️ CONDITIONALLY RETAINED (D7-A W3 rework 2, R4). These are
@@ -462,8 +482,14 @@ G3_DEMO_RESULTS_CSV_COLUMNS = (
     # reports that the round has no ground truth, which is the operator's
     # actual state today — that is information, not noise. (Contrast
     # `score_p50`, deleted because it measured a biased subset and invited
-    # a wrong inference.) No input path exists yet — nothing in the CLI
-    # writes them — so until W0-a adds one they are always empty.
+    # a wrong inference.) No input path exists — nothing in the CLI
+    # writes them — so as the code stands they are ALWAYS empty, and no
+    # amount of rerunning rounds changes that. What would change it is a
+    # decision, not a missing edit: whether the W0-b run (cross-identity
+    # plus non-target rotation, which is operator's open question and is
+    # NOT scheduled) needs an input path added. If W0-b's scheduling
+    # finds one is needed, adding it is that run's work item, not this
+    # file's. Do not read the empty cells as "target" or as a guess.
     # REVIEW CONDITION (reviewers' wording, not a deadline): if W0-b is
     # not scheduled, delete these columns. W0-b's scheduling is the
     # operator's open decision — it needs the operator present to drive
