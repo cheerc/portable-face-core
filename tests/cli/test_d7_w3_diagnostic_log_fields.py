@@ -44,6 +44,7 @@ from __future__ import annotations
 import csv
 import importlib.util
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -1206,38 +1207,94 @@ class TestQualityReasonsAreTruncatedInTheCSV:
         assert row["support_clear_reasons"] == "score_below_threshold:1"
 
 
-class TestDocumentedScopeMatchesTheLog:
-    """The scope note quotes real numbers, so it can rot like code can.
+class _RetiredFigure:
+    """One figure from the deleted batch, and how to recognise it.
 
-    `support_clear_reasons`'s field comment states that 16 of the 32 demo
-    rounds have `frames_usable == 0`, summing to frames_sampled=122 /
-    frames_usable=0. Those are facts about a CSV that lives OUTSIDE the
-    repo, so nothing in the suite would notice them going stale — the
-    exact 「a comment becomes a fact by being written down」 shape.
+    A bare-digit scan is not enough, and the reason is visible in the
+    note itself: `11` occurs twice today as 「D4 §11 item 18b」 — a spec
+    section number, not the retired count of 11 rounds. A rule that
+    flagged every `11` would send the next editor chasing a figure they
+    never wrote. So each figure carries the spec-reference form that
+    must be exempt, rather than relying on the reader to notice.
 
-    This pins the three claims against the CSV when it is present, and
-    SKIPS when it is not: a contributor without operator data still gets
-    the rest of the file. When the file is missing the assertions cannot
-    run, and this test says so out loud rather than passing silently.
+    Spelled-out numerals are recognised too. A guard that only matches
+    digits is defeated by 「sixteen of the rounds」, which states the
+    same retired fact in wording no digit-scan can catch — the failure
+    mode this whole guard exists to prevent, reached through a different
+    spelling.
     """
-    CSV = Path(
-        "~/Downloads/face_sample/_facecore/store/demo-results.csv"
-    ).expanduser()
 
-    def test_the_scope_note_numbers_are_the_csv_actual(self) -> None:
-        if not self.CSV.is_file():
-            pytest.skip(
-                f"operator demo log not present at {self.CSV}; the scope "
-                "note's numbers cannot be re-checked here"
-            )
-        rows = list(csv.DictReader(self.CSV.open(encoding="utf-8")))
-        zero = [r for r in rows if int(r["frames_usable"]) == 0]
-        assert len(rows) == 32
-        assert len(zero) == 16, "the comment says 16 rounds have no usable frame"
-        assert sum(1 for r in zero if int(r["frames_sampled"]) == 0) == 11
-        assert sum(1 for r in zero if int(r["frames_sampled"]) > 0) == 5
-        assert sum(int(r["frames_sampled"]) for r in zero) == 122
-        assert sum(int(r["frames_usable"]) for r in zero) == 0
+    def __init__(self, value: str, spelled: str | None = None,
+                 exempt: tuple[str, ...] = ()) -> None:
+        self.value = value
+        self.spelled = spelled
+        self.exempt = exempt
+
+    def mentions(self, note: str) -> bool:
+        """True when this figure appears as a batch statistic.
+
+        A figure counts only where it is NOT part of a spec citation:
+        `§11` is section 11 of D4, `11 rounds` is eleven rounds. The
+        exemption is spelled out per figure so an unrelated new spec
+        citation cannot silently start passing or failing.
+        """
+        pattern = rf"(?<![\w.]){self.value}(?![\w.])"
+        for match in re.finditer(pattern, note):
+            window = note[max(0, match.start() - 2):match.end() + 8]
+            if any(cite in window for cite in self.exempt):
+                continue
+            return True
+        # Spelled-out form. A retired figure written as a word states
+        # the same thing as the digit, and no digit-only guard sees it.
+        word = self.spelled
+        if word and re.search(rf"(?<![\w]){word}(?![\w])", note, re.IGNORECASE):
+            return True
+        return False
+
+
+# Only the figures that were distinctive in the deleted batch. `5` is
+# deliberately absent: as a bare word or digit it appears constantly in
+# unrelated prose, so pinning it would make the guard fire on ordinary
+# sentences — and a guard that cries wolf is not a guard.
+RETIRED_FIGURES = (
+    _RetiredFigure("16", spelled="sixteen"),
+    _RetiredFigure("11", spelled="eleven", exempt=("§11", "§ 11")),
+    _RetiredFigure("122"),
+    _RetiredFigure("32", spelled="thirty-two"),
+)
+
+# A commit reference: the hex prefix of a real SHA. Deliberately strict —
+# accepting bare words like "previously" would make the rule unfalsifiable
+# again, which is the shape this whole guard exists to prevent.
+_COMMIT_REF = re.compile(
+    r"\b(?:see |in |removed in |per )\bcommit\b|\b[0-9a-f]{7,40}\b"
+)
+
+
+class TestDocumentedScopeMatchesTheLog:
+    """The scope note must not rot into quoting a batch that is gone.
+
+    `support_clear_reasons`'s field comment used to state figures from
+    one operator batch — how many rounds had no usable frame, and their
+    summed frame count. Those are facts about a CSV that lives OUTSIDE
+    the repo, so nothing in the suite would have noticed them going
+    stale — the exact 「a comment becomes a fact by being written down」
+    shape. They did go stale: that batch was deleted and the log
+    refilled, leaving the note describing data that no longer existed.
+
+    ⚠️ The deleted test is worth recording. It read the operator's CSV
+    and asserted the note's figures against it, skipping when the file
+    was absent. On CI that skip is permanent, so the guard only ever ran
+    on one contributor's machine — and it reported green there while
+    asserting numbers about a batch that had been deleted. That is the
+    「exists but no job runs it → silent」 shape, one level up: it DID run,
+    just never where the rot happened. A guard whose input is a mutable
+    file outside version control cannot outlast that file's contents.
+
+    What replaces it is the part that is actually true of the repo: the
+    note must not restate a deleted batch, and must say where the live
+    numbers live instead.
+    """
 
     def _scope_note(self) -> str:
         """The comment block immediately above the column declaration.
@@ -1266,24 +1323,44 @@ class TestDocumentedScopeMatchesTheLog:
             note.append(line)
         return "\n".join(reversed(note))
 
-    def test_the_comment_actually_states_those_numbers(self) -> None:
-        """Binds the prose to the facts, so editing one alone is caught.
+    def test_the_comment_does_not_restate_the_deleted_batch(self) -> None:
+        """A retired figure needs a commit reference; nothing else does.
 
-        Each figure is matched in the phrase that states it, not as a bare
-        substring. A bare `"16" in note` check passed even after the
-        figure was edited to 14, because the note also says 「16 sum to …」
-        and 「those 122 frames」 — every mutation of the headline numbers
-        survived. Matching the phrase makes the edit detectable.
+        The rule is semantic rather than a list of banned strings. An
+        earlier version pinned six literal phrases and its docstring
+        claimed re-adding any of them "in any wording" would fail. That
+        claim was false in both directions, and both failures were found
+        by mutation rather than by reading:
+
+        - `those 122 frames` — the deleted comment's SECOND mention of
+          the frame count, named in that same docstring — was not in the
+          list, so re-adding it passed.
+        - a legitimate historical citation (`the old 122 figure was
+          removed, see commit 491034b`) was blocked, because the pin
+          matched the digits rather than the intent.
+
+        So: quoting a retired figure is allowed only when the note also
+        cites the commit that retired it. That distinguishes the two
+        cases for what they are. A literal pin list cannot, and any
+        list added to fix one gap becomes the next gap.
         """
         note = self._scope_note()
-        for phrase in (
-            "frames_usable == 0",
-            "16 rounds have",
-            "11 of them with",
-            "5 with",
-            "frames_sampled=122",
-        ):
-            assert phrase in note, f"scope note lost the phrasing {phrase!r}"
+        cited = bool(_COMMIT_REF.search(note))
+        restated = [f.value for f in RETIRED_FIGURES if f.mentions(note)]
+        assert not (restated and not cited), (
+            f"the scope note restates retired figures {restated} with no "
+            "commit reference. Those counts came from an operator batch "
+            "that was deleted; per-batch counts go stale the moment the "
+            "operator reruns the App, which appends to the log. Either "
+            "state the reasoning alone, or — if the history genuinely "
+            "belongs here — cite the commit that retired the figure so a "
+            "reader can tell a citation from a live claim"
+        )
+        # The replacement has to be actionable, or 「stop quoting numbers」
+        # reads as 「the answer went away」.
+        assert "w0a-diagnostic-run-runbook.md" in note, (
+            "the note must say where the live numbers live"
+        )
         assert "W2" in note, "the note must say where 18b's answer does live"
 
     def test_the_w4_combination_rules_are_stated(self) -> None:
