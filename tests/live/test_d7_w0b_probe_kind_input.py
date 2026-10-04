@@ -67,7 +67,9 @@ def _gallery(identities: list[str]) -> Any:
 
     class _Gallery:
         def __init__(self) -> None:
-            self.embeddings = {name: np.zeros(128, dtype="float32") for name in identities}
+            self.embeddings = {
+                name: np.zeros(128, dtype="float32") for name in identities
+            }
 
     return _Gallery()
 
@@ -211,7 +213,8 @@ def test_identity_candidates_are_the_gallery_keys(app):
     assert "enroll-07" in values, "loaded identities must be offered"
     # Anything that is not a loaded identity would defeat the point.
     assert values == ["", "enroll-07", "enroll-23"], (
-        f"identity options must be exactly gallery keys plus the unset item, got {values}"
+        "identity options must be exactly gallery keys plus the unset "
+        f"item, got {values}"
     )
 
 
@@ -284,8 +287,6 @@ def test_the_value_reaches_the_csv_row(app, tmp_path: Path):
     through `append_g3_demo_results_csv` so the assertion is on the file
     the operator opens, not on an internal attribute.
     """
-    from facecore.research.cli import g3_demo_round_row
-
     path, widths = _round_row(tmp_path)
     assert widths == {38}, f"header must stay 38 columns, got {widths}"
 
@@ -318,7 +319,6 @@ def test_each_round_can_set_its_own_value(app):
     value TWICE with different picks and requires different cells.
     """
     from facecore.research.cli import g3_demo_round_row
-    from facecore.live.qt_window import RoundComplete
 
     win = _window(app, gallery=_gallery(["enroll-23", "enroll-24"]))
 
@@ -394,5 +394,6 @@ def test_both_write_paths_forward_the_values() -> None:
         f"{kind_calls}; a path is recording empty ground truth."
     )
     assert identity_calls >= 2, (
-        f"presenting_identity must be forwarded from both paths too, found {identity_calls}"
+        "presenting_identity must be forwarded from both paths too, "
+        f"found {identity_calls}"
     )
