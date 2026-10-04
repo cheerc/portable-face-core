@@ -44,6 +44,7 @@ from __future__ import annotations
 import csv
 import importlib.util
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -1206,17 +1207,80 @@ class TestQualityReasonsAreTruncatedInTheCSV:
         assert row["support_clear_reasons"] == "score_below_threshold:1"
 
 
+class _RetiredFigure:
+    """One figure from the deleted batch, and how to recognise it.
+
+    A bare-digit scan is not enough, and the reason is visible in the
+    note itself: `11` occurs twice today as 「D4 §11 item 18b」 — a spec
+    section number, not the retired count of 11 rounds. A rule that
+    flagged every `11` would send the next editor chasing a figure they
+    never wrote. So each figure carries the spec-reference form that
+    must be exempt, rather than relying on the reader to notice.
+
+    Spelled-out numerals are recognised too. A guard that only matches
+    digits is defeated by 「sixteen of the rounds」, which states the
+    same retired fact in wording no digit-scan can catch — the failure
+    mode this whole guard exists to prevent, reached through a different
+    spelling.
+    """
+
+    def __init__(self, value: str, spelled: str | None = None,
+                 exempt: tuple[str, ...] = ()) -> None:
+        self.value = value
+        self.spelled = spelled
+        self.exempt = exempt
+
+    def mentions(self, note: str) -> bool:
+        """True when this figure appears as a batch statistic.
+
+        A figure counts only where it is NOT part of a spec citation:
+        `§11` is section 11 of D4, `11 rounds` is eleven rounds. The
+        exemption is spelled out per figure so an unrelated new spec
+        citation cannot silently start passing or failing.
+        """
+        pattern = rf"(?<![\w.]){self.value}(?![\w.])"
+        for match in re.finditer(pattern, note):
+            window = note[max(0, match.start() - 2):match.end() + 8]
+            if any(cite in window for cite in self.exempt):
+                continue
+            return True
+        # Spelled-out form. A retired figure written as a word states
+        # the same thing as the digit, and no digit-only guard sees it.
+        word = self.spelled
+        if word and re.search(rf"(?<![\w]){word}(?![\w])", note, re.IGNORECASE):
+            return True
+        return False
+
+
+# Only the figures that were distinctive in the deleted batch. `5` is
+# deliberately absent: as a bare word or digit it appears constantly in
+# unrelated prose, so pinning it would make the guard fire on ordinary
+# sentences — and a guard that cries wolf is not a guard.
+RETIRED_FIGURES = (
+    _RetiredFigure("16", spelled="sixteen"),
+    _RetiredFigure("11", spelled="eleven", exempt=("§11", "§ 11")),
+    _RetiredFigure("122"),
+    _RetiredFigure("32", spelled="thirty-two"),
+)
+
+# A commit reference: the hex prefix of a real SHA. Deliberately strict —
+# accepting bare words like "previously" would make the rule unfalsifiable
+# again, which is the shape this whole guard exists to prevent.
+_COMMIT_REF = re.compile(
+    r"\b(?:see |in |removed in |per )\bcommit\b|\b[0-9a-f]{7,40}\b"
+)
+
+
 class TestDocumentedScopeMatchesTheLog:
     """The scope note must not rot into quoting a batch that is gone.
 
-    `support_clear_reasons`'s field comment used to state that 16 of the
-    32 demo rounds have `frames_usable == 0`, summing to
-    frames_sampled=122 / frames_usable=0. Those are facts about a CSV
-    that lives OUTSIDE the repo, so nothing in the suite would have
-    noticed them going stale — the exact 「a comment becomes a fact by
-    being written down」 shape. They did go stale: that batch was
-    deleted and the log refilled, leaving the note describing data that
-    no longer existed.
+    `support_clear_reasons`'s field comment used to state figures from
+    one operator batch — how many rounds had no usable frame, and their
+    summed frame count. Those are facts about a CSV that lives OUTSIDE
+    the repo, so nothing in the suite would have noticed them going
+    stale — the exact 「a comment becomes a fact by being written down」
+    shape. They did go stale: that batch was deleted and the log
+    refilled, leaving the note describing data that no longer existed.
 
     ⚠️ The deleted test is worth recording. It read the operator's CSV
     and asserted the note's figures against it, skipping when the file
@@ -1228,8 +1292,8 @@ class TestDocumentedScopeMatchesTheLog:
     file outside version control cannot outlast that file's contents.
 
     What replaces it is the part that is actually true of the repo: the
-    note must carry no per-batch figures at all, and must say where the
-    live numbers live instead.
+    note must not restate a deleted batch, and must say where the live
+    numbers live instead.
     """
 
     def _scope_note(self) -> str:
@@ -1259,31 +1323,39 @@ class TestDocumentedScopeMatchesTheLog:
             note.append(line)
         return "\n".join(reversed(note))
 
-    def test_the_comment_states_no_per_batch_numbers(self) -> None:
-        """The note carries the reasoning, not a snapshot of one run.
+    def test_the_comment_does_not_restate_the_deleted_batch(self) -> None:
+        """A retired figure needs a commit reference; nothing else does.
 
-        Each retired figure is pinned by the phrase it used to sit in, so
-        re-adding any of them — in any wording — fails. The phrasing
-        matters for the same reason it did when these were live: a bare
-        `"16" in note` check passed even after the figure was edited to
-        14, because the note also said 「16 sum to …」 and 「those 122
-        frames」, so every mutation of the headline numbers survived.
+        The rule is semantic rather than a list of banned strings. An
+        earlier version pinned six literal phrases and its docstring
+        claimed re-adding any of them "in any wording" would fail. That
+        claim was false in both directions, and both failures were found
+        by mutation rather than by reading:
+
+        - `those 122 frames` — the deleted comment's SECOND mention of
+          the frame count, named in that same docstring — was not in the
+          list, so re-adding it passed.
+        - a legitimate historical citation (`the old 122 figure was
+          removed, see commit 491034b`) was blocked, because the pin
+          matched the digits rather than the intent.
+
+        So: quoting a retired figure is allowed only when the note also
+        cites the commit that retired it. That distinguishes the two
+        cases for what they are. A literal pin list cannot, and any
+        list added to fix one gap becomes the next gap.
         """
         note = self._scope_note()
-        for figure in (
-            "16 rounds have",
-            "11 of them with",
-            "5 with",
-            "frames_sampled=122",
-            "32-round",
-            "the 32 demo",
-        ):
-            assert figure not in note, (
-                f"the scope note still quotes {figure!r} — figures from a "
-                "deleted operator batch. Per-batch counts go stale the "
-                "moment the operator reruns the App, which appends to the "
-                "log; state the reasoning and point at the runbook instead"
-            )
+        cited = bool(_COMMIT_REF.search(note))
+        restated = [f.value for f in RETIRED_FIGURES if f.mentions(note)]
+        assert not (restated and not cited), (
+            f"the scope note restates retired figures {restated} with no "
+            "commit reference. Those counts came from an operator batch "
+            "that was deleted; per-batch counts go stale the moment the "
+            "operator reruns the App, which appends to the log. Either "
+            "state the reasoning alone, or — if the history genuinely "
+            "belongs here — cite the commit that retired the figure so a "
+            "reader can tell a citation from a live claim"
+        )
         # The replacement has to be actionable, or 「stop quoting numbers」
         # reads as 「the answer went away」.
         assert "w0a-diagnostic-run-runbook.md" in note, (
