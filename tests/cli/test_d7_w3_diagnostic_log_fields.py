@@ -1207,37 +1207,30 @@ class TestQualityReasonsAreTruncatedInTheCSV:
 
 
 class TestDocumentedScopeMatchesTheLog:
-    """The scope note quotes real numbers, so it can rot like code can.
+    """The scope note must not rot into quoting a batch that is gone.
 
-    `support_clear_reasons`'s field comment states that 16 of the 32 demo
-    rounds have `frames_usable == 0`, summing to frames_sampled=122 /
-    frames_usable=0. Those are facts about a CSV that lives OUTSIDE the
-    repo, so nothing in the suite would notice them going stale — the
-    exact 「a comment becomes a fact by being written down」 shape.
+    `support_clear_reasons`'s field comment used to state that 16 of the
+    32 demo rounds have `frames_usable == 0`, summing to
+    frames_sampled=122 / frames_usable=0. Those are facts about a CSV
+    that lives OUTSIDE the repo, so nothing in the suite would have
+    noticed them going stale — the exact 「a comment becomes a fact by
+    being written down」 shape. They did go stale: that batch was
+    deleted and the log refilled, leaving the note describing data that
+    no longer existed.
 
-    This pins the three claims against the CSV when it is present, and
-    SKIPS when it is not: a contributor without operator data still gets
-    the rest of the file. When the file is missing the assertions cannot
-    run, and this test says so out loud rather than passing silently.
+    ⚠️ The deleted test is worth recording. It read the operator's CSV
+    and asserted the note's figures against it, skipping when the file
+    was absent. On CI that skip is permanent, so the guard only ever ran
+    on one contributor's machine — and it reported green there while
+    asserting numbers about a batch that had been deleted. That is the
+    「exists but no job runs it → silent」 shape, one level up: it DID run,
+    just never where the rot happened. A guard whose input is a mutable
+    file outside version control cannot outlast that file's contents.
+
+    What replaces it is the part that is actually true of the repo: the
+    note must carry no per-batch figures at all, and must say where the
+    live numbers live instead.
     """
-    CSV = Path(
-        "~/Downloads/face_sample/_facecore/store/demo-results.csv"
-    ).expanduser()
-
-    def test_the_scope_note_numbers_are_the_csv_actual(self) -> None:
-        if not self.CSV.is_file():
-            pytest.skip(
-                f"operator demo log not present at {self.CSV}; the scope "
-                "note's numbers cannot be re-checked here"
-            )
-        rows = list(csv.DictReader(self.CSV.open(encoding="utf-8")))
-        zero = [r for r in rows if int(r["frames_usable"]) == 0]
-        assert len(rows) == 32
-        assert len(zero) == 16, "the comment says 16 rounds have no usable frame"
-        assert sum(1 for r in zero if int(r["frames_sampled"]) == 0) == 11
-        assert sum(1 for r in zero if int(r["frames_sampled"]) > 0) == 5
-        assert sum(int(r["frames_sampled"]) for r in zero) == 122
-        assert sum(int(r["frames_usable"]) for r in zero) == 0
 
     def _scope_note(self) -> str:
         """The comment block immediately above the column declaration.
@@ -1266,24 +1259,36 @@ class TestDocumentedScopeMatchesTheLog:
             note.append(line)
         return "\n".join(reversed(note))
 
-    def test_the_comment_actually_states_those_numbers(self) -> None:
-        """Binds the prose to the facts, so editing one alone is caught.
+    def test_the_comment_states_no_per_batch_numbers(self) -> None:
+        """The note carries the reasoning, not a snapshot of one run.
 
-        Each figure is matched in the phrase that states it, not as a bare
-        substring. A bare `"16" in note` check passed even after the
-        figure was edited to 14, because the note also says 「16 sum to …」
-        and 「those 122 frames」 — every mutation of the headline numbers
-        survived. Matching the phrase makes the edit detectable.
+        Each retired figure is pinned by the phrase it used to sit in, so
+        re-adding any of them — in any wording — fails. The phrasing
+        matters for the same reason it did when these were live: a bare
+        `"16" in note` check passed even after the figure was edited to
+        14, because the note also said 「16 sum to …」 and 「those 122
+        frames」, so every mutation of the headline numbers survived.
         """
         note = self._scope_note()
-        for phrase in (
-            "frames_usable == 0",
+        for figure in (
             "16 rounds have",
             "11 of them with",
             "5 with",
             "frames_sampled=122",
+            "32-round",
+            "the 32 demo",
         ):
-            assert phrase in note, f"scope note lost the phrasing {phrase!r}"
+            assert figure not in note, (
+                f"the scope note still quotes {figure!r} — figures from a "
+                "deleted operator batch. Per-batch counts go stale the "
+                "moment the operator reruns the App, which appends to the "
+                "log; state the reasoning and point at the runbook instead"
+            )
+        # The replacement has to be actionable, or 「stop quoting numbers」
+        # reads as 「the answer went away」.
+        assert "w0a-diagnostic-run-runbook.md" in note, (
+            "the note must say where the live numbers live"
+        )
         assert "W2" in note, "the note must say where 18b's answer does live"
 
     def test_the_w4_combination_rules_are_stated(self) -> None:

@@ -420,16 +420,23 @@ G3_DEMO_RESULTS_CSV_COLUMNS = (
     # it would be a column that is always 0 — plan v8 §8.
     "frames_rejected",
     # ⚠️ SCOPE: this column answers 「why the support window was cleared」,
-    #    which is NOT all of D4 §11 item 18b. Measured on the 32-round
-    #    demo log: 16 rounds have `frames_usable == 0` (11 of them with
-    #    `frames_sampled == 0`, 5 with `frames_sampled > 0`), and those
-    #    16 sum to frames_sampled=122 / frames_usable=0. Every one of
-    #    those 122 frames was turned away by the quality gate, so the
-    #    support window never opened in any of them and 「why it was
-    #    cleared」 cannot explain them at all. 18b's real answer is in the
-    #    gap between frames_sampled and frames_usable (24 vs 3, for one),
+    #    which is NOT all of D4 §11 item 18b. A round with no usable
+    #    frame at all is the extreme case this column cannot explain: the
+    #    support window never opened, so nothing was ever cleared and
+    #    there is no clear reason to record. 18b's real answer for those
+    #    is in the gap between `frames_sampled` and `frames_usable`,
     #    which needs a per-gate breakdown of what the quality gate
     #    rejected — that is W2's scope, not this column.
+    #    ⚠️ NO PER-RUN NUMBERS HERE, deliberately. An earlier version
+    #    cited per-round counts from one operator batch, along with a
+    #    total frame count. That batch was deleted and the file refilled,
+    #    so those figures described data that no longer exists — and any
+    #    replacement would go stale the next time the operator runs the
+    #    App, because the log is appended per execution. The reasoning
+    #    above holds for every batch; counts never did. For what the
+    #    operator has accumulated, read the runbook section named below;
+    #    it is maintained against the live log.
+    #    `docs/w0a-diagnostic-run-runbook.md` §「你目前累積了多少資料」
     # D4 §11 item 18b: why the support window was emptied, and how often.
     # `reason:count` pairs joined by `;`, empty when the window was never
     # disturbed. `reset_reason` is the key rather than `event_type`
