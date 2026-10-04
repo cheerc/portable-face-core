@@ -160,6 +160,15 @@ jobs:
           # file, the evidence that every row carries the three columns
           # exists only on a contributor's machine.
           python -m pytest tests/cli/test_d7_w1_gallery_visibility.py -q
+          # D7-A W0-b: `probe_kind` / `presenting_identity` are ground
+          # truth the operator picks in the Qt demo window, and the guard
+          # on that input path needs the window to exist — same argument
+          # as every file above. Without a job running this one, the
+          # assertions that the operator's pick reaches the CSV row, and
+          # that each round can set its own value, would exist only on a
+          # contributor's machine — which is exactly how the previous
+          # batch of guards shipped (see D4-F1 above).
+          python -m pytest tests/live/test_d7_w0b_probe_kind_input.py -q
       - name: Run G3 Start-gated integration (R1 §2/§5, PR-B)
         run: >-
           python -m pytest

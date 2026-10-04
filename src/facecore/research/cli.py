@@ -700,7 +700,14 @@ def g3_demo_round_row(
       Serialised as `reason:count` joined by `;`, and empty when the window
       was never disturbed.
     - `probe_kind` / `presenting_identity` — the W0 runbook's ground
-      truth. Default to empty, never to a guess.
+      truth. `probe_kind`'s domain is closed: `target`／`nontarget`,
+      「沒有第三個值」. `presenting_identity` is a loaded gallery key or
+      empty. Both still default to empty, which the runbook reads as
+      「沒有記錄」 rather than as a value — so a caller that has no
+      operator present must keep leaving them alone rather than guess.
+      D7-A W0-b gives the live App a real input path for both; the
+      `nontarget` identity is still undefined by that task and stays
+      empty (see `docs/w0a-diagnostic-run-runbook.md`).
     - `gallery_load_report` — D7-A W1. The startup `GalleryLoadReport`
       the window already holds, forwarded so the row records which
       gallery the round ran against. Absent (None) renders the three
