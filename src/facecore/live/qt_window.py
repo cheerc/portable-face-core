@@ -419,6 +419,56 @@ else:
             self.preview_label.setMinimumSize(240, 240)
             self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+            # D7-A W0-b: the two ground-truth columns (`probe_kind` /
+            # `presenting_identity`). They used to have no input path at
+            # all, so every row carried an empty string and the runbook
+            # had to tell the operator that empty meant 「沒有記錄」.
+            #
+            # Both are combos, never free text, and that is the whole
+            # point. A typed identity that is one character off
+            # (`enrol-24`) becomes a silent ground-truth error, and these
+            # columns exist precisely to be ground truth.
+            #
+            # `probe_kind`'s domain is closed and defined by the runbook:
+            # `target`（測試者有註冊）／`nontarget`（測試者沒註冊）, and
+            # 「沒有第三個值」. `presenting_identity`'s candidates come
+            # from the loaded gallery's own keys, so a target identity
+            # cannot be spelled wrong.
+            #
+            # The `nontarget` side is deliberately NOT implemented: the
+            # runbook leaves 「沒有註冊的測試者填什麼」 to W0-b scheduling
+            # ("必須在 W0-b 排程時定義"), and this task is that
+            # prerequisite, not the definition. So the non-target row
+            # carries one disabled 「尚未定義」 item rather than a
+            # free-text box: a writable field here would let the operator
+            # invent a value, and an empty one would be indistinguishable
+            # from 「忘了填」. A visible disabled item says 「ask」 instead.
+            self.probe_kind_combo = QComboBox()
+            self.probe_kind_combo.setObjectName("probeKindPicker")
+            self.probe_kind_combo.addItem("（未記錄）", "")
+            self.probe_kind_combo.addItem("target（有註冊）", "target")
+            self.probe_kind_combo.addItem("nontarget（沒註冊）", "nontarget")
+            self.probe_kind_combo.currentIndexChanged.connect(
+                self._probe_kind_changed
+            )
+
+            self.presenting_identity_combo = QComboBox()
+            self.presenting_identity_combo.setObjectName("presentingIdentityPicker")
+            self.presenting_identity_combo.addItem("（未記錄）", "")
+            self._populate_presenting_identities("")
+            # Deliberately NOT wired to `_probe_kind_changed`. That
+            # handler rebuilds the list, and a rebuild clears the
+            # selection — so connecting the identity combo to it made
+            # every pick of an identity immediately erase itself.
+            # Only `probe_kind` drives the rebuild, because only
+            # `probe_kind` changes what the identity list means.
+
+            probe_row = QHBoxLayout()
+            probe_row.addWidget(QLabel("probe_kind"))
+            probe_row.addWidget(self.probe_kind_combo)
+            probe_row.addWidget(QLabel("presenting_identity"))
+            probe_row.addWidget(self.presenting_identity_combo)
+
             consent_row = QHBoxLayout()
             self.record_consent_checkbox = QCheckBox("record consent")
             self.image_consent_checkbox = QCheckBox("image consent")
@@ -484,6 +534,7 @@ else:
             layout.addWidget(self.frames_label)
             layout.addWidget(self.failure_reason_label)
             layout.addWidget(self.camera_combo)
+            layout.addLayout(probe_row)
             layout.addLayout(consent_row)
             layout.addLayout(controls)
             self.setCentralWidget(root)
@@ -498,6 +549,69 @@ else:
             self.stop_camera_button.setVisible(self._next_session is not None)
             self.recognize_again_button.setEnabled(False)
             self.stop_camera_button.setEnabled(False)
+
+        def _populate_presenting_identities(self, probe_kind: str) -> None:
+            """Rebuild the identity candidates for the chosen probe kind.
+
+            The candidate list IS the gallery's own key set, so every
+            option is a real identity by construction — the operator
+            cannot type or select one that isn't loaded.
+
+            For `nontarget` the list is deliberately not populated. The
+            runbook assigns that decision to W0-b scheduling, and this
+            task is only its prerequisite. Leaving the combo on its
+            single disabled item keeps the row honest: the operator sees
+            「尚未定義」 rather than an empty cell they might read as a
+            recorded 「this round had no identity」.
+            """
+            combo = self.presenting_identity_combo
+            combo.blockSignals(True)
+            try:
+                combo.clear()
+                if probe_kind == "nontarget":
+                    combo.addItem("（尚未定義：待 W0-b 排程）", "")
+                    combo.setEnabled(False)
+                    return
+                combo.setEnabled(True)
+                combo.addItem("（未記錄）", "")
+                gallery = getattr(self, "gallery", None)
+                embeddings = getattr(gallery, "embeddings", None) or {}
+                for identity in sorted(embeddings):
+                    combo.addItem(identity, identity)
+            finally:
+                combo.blockSignals(False)
+
+        def _probe_kind_changed(self, _row: int = -1) -> None:
+            """Keep the identity list consistent with the chosen kind.
+
+            The two columns are one fact, not two: `nontarget` means the
+            person is not enrolled, so offering enrolled identities there
+            would invite a contradiction. Switching kind therefore
+            REBUILDS the identity list, which also clears any identity
+            picked under the previous kind — a stale `enroll-23` left in
+            the combo would otherwise be written to the next round.
+            """
+            probe_kind = self.probe_kind_combo.currentData() or ""
+            self._populate_presenting_identities(probe_kind)
+
+        def _probe_kind_value(self) -> str:
+            """The `probe_kind` to record on the next round (empty = 未記錄)."""
+            data = self.probe_kind_combo.currentData()
+            return data if isinstance(data, str) else ""
+
+        def _presenting_identity_value(self) -> str:
+            """The `presenting_identity` to record on the next round.
+
+            Empty whenever the combo is disabled (the `nontarget` side)
+            or unset. That empty string means 「沒有記錄」, not a value —
+            which is why the `nontarget` side shows a visible disabled
+            item instead of a blank cell.
+            """
+            combo = self.presenting_identity_combo
+            if not combo.isEnabled():
+                return ""
+            data = combo.currentData()
+            return data if isinstance(data, str) else ""
 
         def _camera_picked(self, row: int) -> None:
             """G3 R1: a pick only routes the device; nothing opens.
@@ -929,6 +1043,12 @@ else:
                     event_counts=self.desktop.event_counts(),
                     support_clears=self.desktop.support_clear_reasons(),
                     profile=self.desktop.profile,
+                    # D7-A W0-b: the operator's ground truth for this
+                    # round. Read at WRITE time, not at round start, so
+                    # changing the pick before labeling is honoured — the
+                    # unlabeled path below needs it for the same reason.
+                    probe_kind=self._probe_kind_value(),
+                    presenting_identity=self._presenting_identity_value(),
                     gallery_load_report=self.load_report,
                 )
             except OSError as exc:
@@ -1595,6 +1715,13 @@ else:
                             event_counts=self.desktop.event_counts(),
                             support_clears=self.desktop.support_clear_reasons(),
                             profile=self.desktop.profile,
+                            # D7-A W0-b: same ground truth as the
+                            # unlabeled path. Both write demo rows, so
+                            # omitting it here would leave every labeled
+                            # round empty while the unlabeled ones were
+                            # recorded — the two paths must agree.
+                            probe_kind=self._probe_kind_value(),
+                            presenting_identity=self._presenting_identity_value(),
                             # D7-A W1: the App-startup gallery report.
                             gallery_load_report=self.load_report,
                         )
