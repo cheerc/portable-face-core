@@ -433,10 +433,13 @@ G3_DEMO_RESULTS_CSV_COLUMNS = (
     #    so those figures described data that no longer exists — and any
     #    replacement would go stale the next time the operator runs the
     #    App, because the log is appended per execution. The reasoning
-    #    above holds for every batch; counts never did. For what the
-    #    operator has accumulated, read the runbook section named below;
-    #    it is maintained against the live log.
-    #    `docs/w0a-diagnostic-run-runbook.md` §「你目前累積了多少資料」
+    #    above holds for every batch; counts never did. Do not point a
+    #    reader at a runbook section for how much the operator has
+    #    accumulated: the runbook deliberately keeps no such tally,
+    #    because any number written here would go stale the next time
+    #    the operator runs the App. `w0a-diagnostic-run-runbook.md`
+    #    instead explains why a single batch cannot answer the
+    #    cross-identity questions, and where those answers will live.
     # D4 §11 item 18b: why the support window was emptied, and how often.
     # `reason:count` pairs joined by `;`, empty when the window was never
     # disturbed. `reset_reason` is the key rather than `event_type`
