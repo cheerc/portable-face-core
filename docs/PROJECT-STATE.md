@@ -47,7 +47,7 @@ D4 真機第一輪的觀察與 D5 的靜態結果分屬不同協議（見 D0 §1
 
 ⚠️ **2026-10-03 operator 已刪除 `~/Downloads/face_sample/_facecore/store/demo-results.csv`**（該 **32 列、23 欄**的舊檔因 header drift 而錯位，見 issue **#140**；當時程式只寫得出 23 欄，W3／W1 之後才擴到 35／38 欄）。**因此本檔下方所有指向「那批 32 列 log」的數字，描述的是「當時發生了什麼」，不是「檔案現在還在」** —— 事實本身不因砍檔而失效，引用時須註明資料檔已刪。
 
-⚠️ **同一日 operator 又重新跑出新的 `demo-results.csv`（38 欄，內容持續增加中）**，隨後 PR #145（#141 丙-新）合併後 **App 改為每次啟動開一個新檔 `demo-results-<啟動時間>.csv`**，所以那個固定檔名**不再會被產生**。⚠️ **`tests/cli/test_d7_w3_diagnostic_log_fields.py` 仍讀固定檔名**（`TestDocumentedScopeMatchesTheLog`），它斷言的 32／16／11／5／122 是 2026-09-30 那批資料的實測值 —— **operator 只要重跑 App 而列數不同，那條測試就會紅，且那不是他弄壞的**。該測試與 `cli.py` 欄位註解引用的數字都已過期，處置待裁決。
+⚠️ **同一日 operator 又重新跑出新的 `demo-results.csv`（38 欄，內容持續增加中）**，隨後 PR #145（#141 丙-新）合併後 **App 改為每次啟動開一個新檔 `demo-results-<啟動時間>.csv`**，所以那個固定檔名**不再會被產生**。⚠️ **`tests/cli/test_d7_w3_diagnostic_log_fields.py` 的 `TestDocumentedScopeMatchesTheLog` 已不再讀 operator 的 CSV** —— 舊的「讀固定檔名、斷言實測值」寫法已被守護者取代：`RETIRED_FIGURES = (16, 11, 122, 32)`，`assert not (restated and not cited)`（註解重述已刪批次數字且無 commit 引用才紅）。**operator 重跑 App 不會使該測試轉紅**，因其輸入是 repo 內的 `cli.py` 註解，不是 repo 外的可變檔案。
 
 **目前唯一保留的 demo log**（在 repo 外，唯讀，**不得把逐列原始資料抄進 repo**）：
 `~/Downloads/face_sample/_facecore/enroll-24-cross-identity-baseline.csv`，2 列：
@@ -227,9 +227,9 @@ D6 是「用相同 23／13／30 照片集合、固定 detector 與 alignment，�
    - **D7-A 診斷 log 基礎設施進行中**：W3（#138）、W0-a runbook（#139）、W1 gallery 可見性（#142）已合併。**demo log 現為 38 欄。**
    - **D4 真機驗收仍未完成**（board task open，**19 項**待驗，須 operator 在場 —— 見 [SOP D0 §11 對照表](g3-local-test-sop.md)）。
 3. ⚠️ **兩筆 open issue，裁決權在 operator，不在 agent**：
-   - **#140（bug）**：demo CSV header 不隨欄位擴充更新，既有 store 的新列以欄名讀取回傳 None。**程式碼缺陷仍存在，砍檔不使其消失。⚠️ 裁決（甲／乙／丙）operator 尚未回覆 —— 不要把任何方向的建議寫成事實。**
-   - **#141（decision）**：demo 診斷 log 格式重新設計（session 分割 或 sqlite 權威紀錄）。⚠️ **標 `STOP` 待 operator 裁決，不是進行中工作**，不得逕行開工。
-4. **不得把 D7-B（模型選擇）寫成已授權** —— 它的前提是 W0-b 產出跨身分資料，而 **W0-b 尚未排程**（operator 的 key issue，須其在場操作真機）。⚠️ **不得因它未排程而阻擋 W2／W5／W4**；計畫順序為 W3 → W0-a → W1 → W2 → W5 → W4，**W4 必須最後做**（它消費 W3 的欄位形狀）。
+   - **#140（bug，已關閉）**：demo CSV header 不隨欄位擴充更新，既有 store 的新列以欄名讀取回傳 None。**已由 PR #145 修掉（裁決見 decision `d-20261003071803476368-1`，採丙-新）：寫入前比對完整 header tuple，不符則 refuse 並零寫入；另加 per-App-execution 檔名，既有 CSV 永遠不需升級 header。** issue 狀態 CLOSED（`2026-10-04T02:03:07Z`，operator 關閉）。
+   - **#141（decision，已裁決）**：demo 診斷 log 格式重新設計，裁決結果採**丙-新**（decision `d-20261003071803476368-1`）：**維持 CSV 為 operator 主路徑**，加寫入前完整 header tuple 比對與 per-App-execution 檔名，**明確排除 sqlite**。issue 狀態 CLOSED（`2026-10-04T02:03:32Z`，operator 關閉）。**是被裁決了，不是被駁回。**
+4. **不得把 D7-B（模型選擇）寫成已授權 —— 實際上 D7-B 已取消**（decision `d-20261004021722433077-0`：operator「SFace 就是最終選擇」，後續準確度工作皆為校正，不做模型比較）。原前提（W0-b 產出跨身分資料）已不存在，**本條禁令因此不適用，但禁令文字保留** —— 它是給未來讀者的保護，「不適用」與「不存在」效果完全相反。⚠️ **不得因 W0-b 未排程而阻擋 W2／W5／W4**；計畫順序為 W3 → W0-a → W1 → W2 → W5 → W4，**W4 必須最後做**（它消費 W3 的欄位形狀）。
 5. **授權邊界以 decision board 為準，不以本檔為準** —— 本檔若與較新的 decision 衝突，以 decision 為準並修正本檔。
 6. D0–D5 不得偏離 D0 凍結基準（版本、profile g3-v1 門檻 0.363／0.10、gallery 23 張），不得為得到 matched 而直接降門檻或移除三幀確認。**D5／D6 未選定新門檻**——sweep 只作呈現。
 7. **不得把 D5 的靜態結果推論到動態**（三幀規則不適用於單張照片），也**不得把 M1／M5／v3 的歷史 FA 數字與 D5／D6 並列比較**（gate、contract、gallery digest 都不同）。
