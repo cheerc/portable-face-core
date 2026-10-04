@@ -1314,12 +1314,64 @@ class TestDocumentedScopeMatchesTheLog:
         # W0 block further down; `and "add" in text.lower()` passed for
         # the same reason. Both mutations were survivable until the
         # assertions named the sentences they are guarding.
-        assert "`score_reset_count` is a SUBSET of `support_clear_reasons`" in text
+        #
+        # The same hazard applies to the anchors below: `text` spans lines
+        # 444-492, which is the rule block AND the W0 ground-truth block,
+        # so every anchor was checked to occur in the rule half only —
+        # an anchor that also occurred in the W0 half would pass against
+        # a rule that had been deleted.
         assert (
             "`interval_skip_count` and `support_clear_reasons` must NOT"
             in text
         ), "the no-adding rule must be stated explicitly, not implied"
-        assert "double-counts" in text
+        # (1) Both columns named, (2) the consequence stated rather than
+        # the inequality: the rule exists because a reader WILL want to
+        # add them. "neither is a subset of the other" is not actionable;
+        # "must NOT be added" is.
+        assert (
+            "`score_reset_count` and `support_clear_reasons` must NOT be"
+            in text
+        ), "the score/clear rule must be stated as a prohibition, not as a description"
+        # (3) At least one CONCRETE clearing family the counter cannot
+        # see. Naming the category ("a non-score gate (quality /
+        # no-face)") satisfies the sentence while guarding nothing: it
+        # tells the reader no specific path is missing, so an
+        # implementer reading W4 still cannot tell which reason codes
+        # the counter drops. The set is the six paths measured in
+        # `TestSupportClearReasons` to clear the window without emitting
+        # `score_reset`; `score_below_threshold` and
+        # `margin_below_threshold` are deliberately EXCLUDED because the
+        # counter does see those, so naming them would not make the
+        # point.
+        invisible_to_score_counter = (
+            "continuity_jump_detected",
+            "quality_rejected",
+            "no_face_detected",
+            "empty_identity_scores",
+            "none_runner_up",
+            "input_multiple_faces",
+        )
+        named = [r for r in invisible_to_score_counter if r in text]
+        assert named, (
+            "the rule must name a concrete clearing family that "
+            "`score_reset_count` cannot see; a bare category such as "
+            "'quality / no-face' says which GATE fired but not which "
+            "reason code is missing from the counter, so W4's implementer "
+            "cannot tell what the sum drops"
+        )
+        # (4) BOTH harms, because they fail in opposite directions and a
+        # reader who keeps only one still gets a wrong summary: keeping
+        # only the over-count half under-reports clears, keeping only the
+        # blind half over-reports them. Each half is a separate edit the
+        # file can drift into, so each is asserted separately.
+        assert "double-counts" in text, (
+            "the rule must say that summing can double-count — the "
+            "counter moves on a frame that cleared nothing"
+        )
+        assert "invents clears that never happened" in text, (
+            "the rule must say that summing can invent clears — six of "
+            "the eight clearing paths never move the counter"
+        )
 
 
 class TestSameRoundReasonsAreAggregated:
