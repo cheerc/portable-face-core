@@ -433,7 +433,7 @@ support_clear_reasons    （空）    ← 視窗從頭到尾沒裝過東西
 
 **真正要回答「support 為什麼沒到 3」，最可靠的組合是：`reason_codes` 的 `support_N_of_3` ＋ `support_clear_reasons`。** 計數欄當佐證就好。
 
-> **已知待修的程式碼註解：** `src/facecore/research/cli.py` 裡 `interval_skip_count` 那段註解寫著「`score_reset_count` is a SUBSET of `support_clear_reasons`」。**那句話把關係寫成了單向包含，但實際是部分重疊、雙向皆非子集**（上面兩個反例分別否定兩個方向）。程式碼的行為是對的，錯的是那句註解的敘述。**以本手冊為準，不要照抄原始碼註解。** 修正會隨 W3 的跟進工作一起進行。
+> **程式碼註解已於 #147 修正（2026-10-04）：** `src/facecore/research/cli.py` 裡 `interval_skip_count` 那段註解原本寫著「`score_reset_count` is a SUBSET of `support_clear_reasons`」。**那句話把關係寫成了單向包含，但實際是部分重疊、雙向皆非子集**（上面兩個反例分別否定兩個方向）。程式碼的行為是對的，錯的是那句註解的敘述 —— **該註解現已改正，與本手冊一致。** ⚠️ **若你讀到的是舊版 App 產生的說明，以本手冊為準。**
 
 ---
 
@@ -484,7 +484,7 @@ support_clear_reasons    （空）    ← 視窗從頭到尾沒裝過東西
 | 測到哪幾個人 | **`enroll-23`（6 列）、`IMG_5458`（5 列）、`enroll-24`（4 列）** —— **三個不同的人** |
 | 註冊者認對率 | **`label_kind=enrolled` 的 15 列，`top1_identity` 全部等於 `label_identity`（15/15，零誤判）** |
 | 有沒有測過沒註冊的人 | ✅ **測過 4 個。** 4 列 `label_kind=uncertain`，`result` 全部 `timeout`、`top1_score` 全部低於門檻 0.363（最高 0.3431）—— **系統沒把其中任何一人當成註冊者**。⚠️ **另有 1 列已排除、不列入統計**（見下） |
-| 辨識速度 | **14 列在 0.6–1.5 秒、1 列 3.5 秒（影格數是別人 3–4 倍）、4 列約 5 秒（超時）** —— **合計 19 列，即 20 列扣除上面排除的那 1 列** |
+| 辨識速度 | **13 列在 0.6–1.5 秒、1 列 1.52 秒、1 列 3.5 秒（影格數是別人 3–4 倍）、4 列約 5 秒（超時）** —— **合計 19 列，即 20 列扣除上面排除的那 1 列** |
 | `probe_kind` / `presenting_identity` | **20 列全空** —— 沒有輸入路徑可以填（見下一節） |
 
 ⚠️ **所以「只測過一個人」「幾乎沒有可分析的資料」已經不成立。** 你手上有一批跨三個身分的真實資料，而且註冊者零誤判。
@@ -553,7 +553,7 @@ support_clear_reasons    （空）    ← 視窗從頭到尾沒裝過東西
 | 誰填 | **operator**，在每一輪結束後立刻填。事後回填會和實際測試對不上 |
 | 填不進去怎麼辦 | 目前**就是填不進去**，這是 W0-b 的執行前提，不是 W0-a 的缺口 |
 
-> **已知待修的程式碼註解：** `src/facecore/research/cli.py` 中 `probe_kind` 上方有一段註解寫著「until **W0-a** adds one they are always empty」。**這個前提是錯的** —— W0-a 是純文件工作，不動程式碼。實際上這是 **W0-b** 的工作項。**以本手冊為準。**
+> **程式碼註解已於 #147 修正（2026-10-04）：** `src/facecore/research/cli.py` 中 `probe_kind` 上方那段註解原本寫著「until **W0-a** adds one they are always empty」。**那個前提是錯的** —— W0-a 是純文件工作，不動程式碼。實際上這是 **W0-b** 的工作項。**該註解現已改正，與本手冊一致。** ⚠️ **若你讀到的是舊版 App 產生的說明，以本手冊為準。**
 
 ---
 
