@@ -646,9 +646,9 @@ def test_demo_csv_end_to_end_carries_the_new_fields(tmp_path: Path) -> None:
               # judgement is known and `correct` is the right value. It is
               # empty only because P2 added the column and P3 has not wired
               # the button yet. So it sits in this exclusion set on a
-              # deadline, and `test_the_temporary_operator_verdict_exemption_
-              # _is_still_bounded_by_an_observable_state` below is what ends
-              # that deadline. Do not leave it here after P3.
+              # deadline, and `test_the_operator_verdict_exemption_is_
+              # bounded_by_observable_state` below is what ends that
+              # deadline. Do not leave it here after P3.
               "operator_verdict"}]
     assert not blank, f"columns blank in a real scored round: {blank}"
     assert int(row["frames_rejected"]) >= 0
@@ -659,7 +659,7 @@ def test_demo_csv_end_to_end_carries_the_new_fields(tmp_path: Path) -> None:
     assert csv  # keep the import meaningful for readers
 
 
-def test_the_temporary_operator_verdict_exemption_is_still_bounded_by_an_observable_state() -> None:
+def test_the_operator_verdict_exemption_is_bounded_by_observable_state() -> None:
     """The one thing that keeps the exemption above from being permanent.
 
     Every OTHER name in that exclusion set is exempt because the value
@@ -687,7 +687,13 @@ def test_the_temporary_operator_verdict_exemption_is_still_bounded_by_an_observa
     """
     import ast
 
-    source = Path(__file__).resolve().parents[2] / "src" / "facecore" / "live" / "qt_window.py"
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "facecore"
+        / "live"
+        / "qt_window.py"
+    )
     tree = ast.parse(source.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if not (isinstance(node, ast.FunctionDef) and node.name == "_press_key"):
