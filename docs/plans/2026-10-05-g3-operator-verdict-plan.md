@@ -59,8 +59,21 @@ VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
 |---|---|---|---|
 | `tests/live/test_d7_w0b_probe_kind_input.py` | **5 skipped** | **5 passed** | ⚠️ **verify job 對它只報 skip** |
 | `tests/live/test_d7_w0b_writer_wiring.py` | **3 passed** | — | PySide6-free，**verify job 會跑** |
-| `tests/cli/test_d7_w1_gallery_visibility.py` | **17 passed** | 在 qt-smoke 的 `Run offscreen synthetic Qt smoke` 步驟顯式清單內（`grep -n 'test_d7_w1_gallery_visibility.py' .github/workflows/ci.yml` 定位）| 兩處都跑 |
+| `tests/cli/test_d7_w1_gallery_visibility.py` | **16 passed, 1 skipped** | 在 qt-smoke 的 `Run offscreen synthetic Qt smoke` 步驟顯式清單內（`grep -n 'test_d7_w1_gallery_visibility.py' .github/workflows/ci.yml` 定位）| 兩處都跑，⚠️ **但 verify 少一支**（見下）|
 
+
+⚠️ **⚠️ 為什麼 `test_d7_w1_gallery_visibility.py` 在 verify job 少一支**：
+
+⚠️ **它沒有 module-level `skipif`，但有一支測試在函式體內 `pytest.skip`** —— `grep -n 'find_spec("PySide6")' tests/cli/test_d7_w1_gallery_visibility.py` 可定位，⚠️ 該處在 `import PySide6.QtWidgets` 前先 `pytest.skip("needs the Qt demo path")`。
+
+⚠️ **所以 `grep -cE '^\s*def test_'` 給的 17 是「檔案裡有幾支測試」，⚠️ 不是「verify job 會跑幾支」。** ⚠️ **`--collect-only` 也看不出來** —— 函式體內的 skip 在執行期才發生，collect 階段照樣收。⚠️ **要量這件事必須實跑 `-rs` 並看 `SKIPPED` 行。**
+
+⚠️ **兩個直接後果**：
+
+1. ⚠️ **`test_d7_w0b_probe_kind_input.py` 的重寫，證明它被執行只能靠 qt-smoke job。** ⚠️ **用 verify job 的數字證明它是壞證據** —— 該檔在 verify 是 module-level skipif，⚠️ 只會看到 skip 數變化，看不到 pass。
+2. ⚠️ **`writer_wiring` 是 PySide6-free → verify job 就跑它。** ⚠️ **所以它若因 UI 改動轉紅，verify job 立刻抓到，不必等 qt-smoke。** ⚠️ 這是 #154 當初刻意讓它 PySide6-free 的效果。
+
+⚠️ **⚠️ 而第 1 條對 `test_d7_w1_gallery_visibility.py` 不適用** —— ⚠️ 它是函式體內 skip，⚠️ **verify job 會跑其中 16 支**，⚠️ 所以它轉紅時 verify job 看得到（⚠️ 但只會看到 16 支的結果，⚠️ 那支需 Qt demo path 的要等 qt-smoke）。
 
 ⚠️ **本表的計數何時失效、該由誰處理**：
 
@@ -200,7 +213,7 @@ PY
 rm -rf /tmp/venv-verify && uv venv /tmp/venv-verify --python 3.14
 VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
 /tmp/venv-verify/bin/python -m pytest tests/cli/test_d7_w1_gallery_visibility.py -q
-# 預期：17 passed
+# 預期：16 passed, 1 skipped（⚠️ 不是 17 passed —— 見 §1.2；qt-smoke job 才是 17 passed）
 /tmp/venv-verify/bin/python -m pytest tests/live/test_d7_w0b_writer_wiring.py -q
 # 預期：3 passed   ← 這證明 verify job 確實執行它（PySide6-free）
 
