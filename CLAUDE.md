@@ -40,3 +40,13 @@ After reading, inspect live repository state with `git status` and recent commit
 ## Documentation Discipline
 
 Update `docs/PROJECT-STATE.md` whenever an approved decision, current phase, or next-session entry point changes. Record architectural decisions under `docs/decisions/`. Keep research claims linked to primary sources and dated. Mark drafts and unverified claims explicitly.
+
+- **Name the population before naming a file.** When dispatching work or
+  verifying against a named data source, enumerate the population first
+  (e.g. `ls store/`) and state how you confirmed it is the only or the
+  latest one. A named file is a starting point, not a population.
+- **Record provenance, not evidence content.** Status backfills cite the
+  date, path, and SHA-256 or commit; they never cite the numbers
+  themselves — row counts, scores, mtimes, batch aggregates. Provenance
+  survives a batch being deleted or replaced; numbers do not, and numbers
+  still read as plausible after the data is gone.
