@@ -62,18 +62,13 @@ VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
 | `tests/cli/test_d7_w1_gallery_visibility.py` | **17 passed** | 在 qt-smoke 的 `Run offscreen synthetic Qt smoke` 步驟顯式清單內（`grep -n 'test_d7_w1_gallery_visibility.py' .github/workflows/ci.yml` 定位）| 兩處都跑 |
 
 
-⚠️ **⚠️ 本表的數字違反 `CLAUDE.md` 的 `## Documentation Discipline`（「Record provenance, not evidence content」）——**
-⚠️ **passed／skipped 計數是 per-batch 數字，那條規則明文禁止它們進權威文件。** ⚠️ 但這裡有兩種不同的必要性，必須分開：
+⚠️ **本表的計數何時失效、該由誰處理**：
 
-- ⚠️ **這些數字是「階段劃分的依據」，不是「狀態回填」** —— ⚠️ 沒有它們就無法決定 P4 要靠哪個 job 證明自己被執行（⚠️ 那正是 D0 §11 第 15 項記錄過的失效形狀）。
-- ⚠️ **⚠️ 但它們會過期** —— 下一次 `test_d7_w0b_probe_kind_input.py` 重寫之後，`5 skipped`／`5 passed` 就不成立了。
-
-⚠️ **所以本表的讀法是：它是 P1–P4 的量測記錄，不是對現況的永久權威。** ⚠️ P4 完成後本節應標為過期，⚠️ **而 P4 的 PR 正是該做這件事的地方**（⚠️ P4 是唯一會讓這些數字失效的階段）。⚠️ 若 P4 忘了標，本 plan 就變成了它自己反對的那種文件。
-
-⚠️ **兩個直接後果**：
-
-1. ⚠️ **`test_d7_w0b_probe_kind_input.py` 的重寫，證明它被執行只能靠 qt-smoke job。** ⚠️ 用 verify job 的數字證明它是**壞證據**（只會看到 skip 數變化，看不到 pass）。
-2. ⚠️ **`writer_wiring` 是 PySide6-free → verify job 就跑它。** ⚠️ **所以它若因 UI 改動轉紅，verify job 立刻抓到，不必等 qt-smoke。** ⚠️ 這是 #154 當初刻意讓它 PySide6-free 的效果。
+- ⚠️ **計數本身是量測記錄，不是永久權威。** ⚠️ 它們的作用是決定 P4 要靠哪個 job 證明自己被執行，⚠️ **而那正是 D0 §11 第 15 項記錄過的失效形狀**（守護寫了但沒有任何 CI job 執行它，而 repo 仍全綠）。
+- ⚠️ **`test_d7_w0b_probe_kind_input.py` 在 P4 重寫之後，本表的計數全部失效。**
+- ⚠️ **⚠️ P4 必須「刪掉」本表的計數，不是「標為過期」。** ⚠️ 標為過期等於留一個假權威 —— ⚠️ 讀者看到數字加一個「已過期」標記，仍會拿那個數字當基線，⚠️ **而那正是 `PROJECT-STATE.md` 曾出現過的病（同一句既說「已刪除」又保留刪除前的數字，三輪 review 沒抓到）。**
+- ⚠️ **刪掉計數不會讓本節失效**：⚠️ 本節的**命題**是「P4 的重寫只有 `qt-smoke` 會跑、`verify` 只會 skip」—— ⚠️ **那是 CI job 的結構事實，數字刪掉後仍然成立。** ⚠️ **過期的是那兩個計數，不是命題。**
+- ⚠️ ⚠️ **本條不得只存在於本檔** —— ⚠️ 「P4 完成後要刪這些計數」若不寫進 P4 的 dispatch，⚠️ **會隨 session 斷裂而消失。**
 
 ### 1.3 qt-smoke 的執行模型（⚠️ 這是本專案反覆踩坑的地方）
 
