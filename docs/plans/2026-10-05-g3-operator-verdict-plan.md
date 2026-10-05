@@ -59,7 +59,16 @@ VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
 |---|---|---|---|
 | `tests/live/test_d7_w0b_probe_kind_input.py` | **5 skipped** | **5 passed** | ⚠️ **verify job 對它只報 skip** |
 | `tests/live/test_d7_w0b_writer_wiring.py` | **3 passed** | — | PySide6-free，**verify job 會跑** |
-| `tests/cli/test_d7_w1_gallery_visibility.py` | **17 collected** | 在 qt-smoke 的 `Run offscreen synthetic Qt smoke` 步驟顯式清單內（`grep -n 'test_d7_w1_gallery_visibility.py' .github/workflows/ci.yml` 定位）| 兩處都跑 |
+| `tests/cli/test_d7_w1_gallery_visibility.py` | **17 passed** | 在 qt-smoke 的 `Run offscreen synthetic Qt smoke` 步驟顯式清單內（`grep -n 'test_d7_w1_gallery_visibility.py' .github/workflows/ci.yml` 定位）| 兩處都跑 |
+
+
+⚠️ **⚠️ 本表的數字違反 `CLAUDE.md` 的 `## Documentation Discipline`（「Record provenance, not evidence content」）——**
+⚠️ **passed／skipped 計數是 per-batch 數字，那條規則明文禁止它們進權威文件。** ⚠️ 但這裡有兩種不同的必要性，必須分開：
+
+- ⚠️ **這些數字是「階段劃分的依據」，不是「狀態回填」** —— ⚠️ 沒有它們就無法決定 P4 要靠哪個 job 證明自己被執行（⚠️ 那正是 D0 §11 第 15 項記錄過的失效形狀）。
+- ⚠️ **⚠️ 但它們會過期** —— 下一次 `test_d7_w0b_probe_kind_input.py` 重寫之後，`5 skipped`／`5 passed` 就不成立了。
+
+⚠️ **所以本表的讀法是：它是 P1–P4 的量測記錄，不是對現況的永久權威。** ⚠️ P4 完成後本節應標為過期，⚠️ **而 P4 的 PR 正是該做這件事的地方**（⚠️ P4 是唯一會讓這些數字失效的階段）。⚠️ 若 P4 忘了標，本 plan 就變成了它自己反對的那種文件。
 
 ⚠️ **兩個直接後果**：
 
@@ -121,7 +130,7 @@ VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
 ⚠️ **⚠️ 不得動的三處**：
 
 1. ⚠️ **子節 `### 現在的狀態是分側的` 之下、表頭第一欄為 `可達組合` 的那張表**（⚠️ **不給行號** —— 用 `grep -n '^| 可達組合' docs/w0a-diagnostic-run-runbook.md` 定位表頭，向下四列即本體）—— ⚠️ **spec 落地時程式還沒改，那四種組合當下全部存在**；⚠️ 把它們標成「不可能」就是「文件領先於程式」，⚠️ **那是這幾輪反覆修的那型病。留到 P3。**
-2. ⚠️ 該表下方的 `> ⚠️ **本節不再引用 cli.py 的註解作為權威。**` blockquote（`#156` 新增 —— ⚠️ **不給行號**，用 `grep -n '本節不再引用' docs/w0a-diagnostic-run-runbook.md` 定位）—— 已過 review。
+2. ⚠️ 該表下方的 `> ⚠️ **本節不再引用 \`cli.py\` 的註解作為權威。**` blockquote（`#156` 新增 —— ⚠️ **不給行號**，用 `grep -n '本節不再引用' docs/w0a-diagnostic-run-runbook.md` 定位）—— 已過 review。
 3. ⚠️ `runbook` 該節的其他任何段落。
 
 ⚠️ **驗收命令**（本階段是純文件，驗收是「內容正確」而非「測試綠」）：
