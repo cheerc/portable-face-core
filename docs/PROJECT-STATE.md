@@ -45,12 +45,15 @@ D4 真機第一輪的觀察與 D5 的靜態結果分屬不同協議（見 D0 §1
 
 ## 現場紀錄（此前本檔誤述為「尚無任何真實 session」）
 
-⚠️ **2026-10-03 operator 已刪除 `~/Downloads/face_sample/_facecore/store/demo-results.csv`**（該 **32 列、23 欄**的舊檔因 header drift 而錯位，見 issue **#140**；當時程式只寫得出 23 欄，W3／W1 之後才擴到 35／38 欄）。**因此本檔下方所有指向「那批 32 列 log」的數字，描述的是「當時發生了什麼」，不是「檔案現在還在」** —— 事實本身不因砍檔而失效，引用時須註明資料檔已刪。
+⚠️ **2026-10-03 operator 已刪除 `~/Downloads/face_sample/_facecore/store/demo-results.csv`**。該檔是**一份 32 列、23 欄、因 header drift 而錯位的舊檔**（見 issue **#140**；當時程式只寫得出 23 欄，W3／W1 之後才擴到 35／38 欄）—— ⚠️ **那組列數／欄數只描述「該檔在被刪除之前是什麼形狀」，檔案本身已不存在，不得當成現存的檔案特徵引用。** ⚠️ **因此本檔下方所有指向「那批 32 列 log」的數字，描述的是「當時發生了什麼」，不是「檔案現在還在」** —— 事實本身不因砍檔而失效，引用時須註明資料檔已刪。
 
 ⚠️ **同一日 operator 又重新跑出新的 `demo-results.csv`（38 欄，內容持續增加中）**，隨後 PR #145（#141 丙-新）合併後 **App 改為每次啟動開一個新檔 `demo-results-<啟動時間>.csv`**，所以那個固定檔名**不再會被產生**。⚠️ **`tests/cli/test_d7_w3_diagnostic_log_fields.py` 的 `TestDocumentedScopeMatchesTheLog` 已不再讀 operator 的 CSV** —— 舊的「讀固定檔名、斷言實測值」寫法已被守護者取代：`RETIRED_FIGURES = (16, 11, 122, 32)`，`assert not (restated and not cited)`（註解重述已刪批次數字且無 commit 引用才紅）。**operator 重跑 App 不會使該測試轉紅**，因其輸入是 repo 內的 `cli.py` 註解，不是 repo 外的可變檔案。
 
-**目前唯一保留的 demo log**（在 repo 外，唯讀，**不得把逐列原始資料抄進 repo**）：
-`~/Downloads/face_sample/_facecore/enroll-24-cross-identity-baseline.csv`，2 列：
+**demo log 的存放位置是 `store/` 目錄**（在 repo 外，唯讀，**不得把逐列原始資料抄進 repo**）。⚠️ **不要依賴某一份檔案是「唯一」的那份** —— 實測該目錄下同時存在固定檔名與 `demo-results-<啟動時間>.csv` 兩種產物，operator 重跑會持續新增；**要問「當時有哪一份」就去列目錄，不要引用本檔的列舉**。
+
+⚠️ **例外：`~/Downloads/face_sample/_facecore/enroll-24-cross-identity-baseline.csv` 不在 `store/` 裡**（它在 `_facecore/` 根目錄），是 operator 另跑出、另存的一份跨身分基準檔，本節以下逐列記錄的是它：
+
+該檔（1341 bytes）2 列：
 
 - r1 `invalid_input`／`all_frames_rejected_no_face|deadline_exceeded`，sampled 25／usable 0／rejected 24，證據段 5175ms
 - r3 `matched`，top1 `enroll-24` @ 0.5226、top2 `enroll-17` @ 0.3206、margin 0.2021，sampled 23／**usable 3**／rejected 20，證據段 4895ms
