@@ -162,7 +162,7 @@ def _window(app, *, gallery=None):
 
 
 def _round_row(tmp_path: Path) -> tuple[Path, dict[str, int]]:
-    """A demo CSV with the real 38-column header and zero data rows."""
+    """A demo CSV with the real header and zero data rows."""
     from facecore.research.cli import (
         G3_DEMO_RESULTS_CSV_COLUMNS,
         demo_results_csv_path,

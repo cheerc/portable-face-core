@@ -562,6 +562,14 @@ class TestForbiddenFields:
             "expected_count",
             "loaded_count",
             "gallery_rejected",
+            # G3-w: the operator's own verdict on the round, `correct` /
+            # `incorrect` / empty. Not one of the D7-A additions, so it has
+            # no vetting file of its own yet; the allow-set entry is what
+            # this guard is FOR — the name had to be reviewed and listed
+            # here rather than slipping in unnoticed. See
+            # docs/specs/2026-10-05-g3-operator-verdict-ground-truth.md §5.1
+            # for the value domain and the reason it is appended last.
+            "operator_verdict",
         }, f"unvetted new columns: {sorted(set(extra) - set(SNAPSHOT_ALLOWED))}"
 
 
