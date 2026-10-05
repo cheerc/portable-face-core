@@ -120,7 +120,7 @@ VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
 
 ⚠️ **⚠️ 不得動的三處**：
 
-1. ⚠️ **子節 `### 現在的狀態是分側的` 之下、表頭第一欄為 `可達組合` 的那張表**（`:530-535`）—— ⚠️ **spec 落地時程式還沒改，那四種組合當下全部存在**；⚠️ 把它們標成「不可能」就是「文件領先於程式」，⚠️ **那是這幾輪反覆修的那型病。留到 P3。**
+1. ⚠️ **子節 `### 現在的狀態是分側的` 之下、表頭第一欄為 `可達組合` 的那張表**（⚠️ **不給行號** —— 用 `grep -n '^| 可達組合' docs/w0a-diagnostic-run-runbook.md` 定位表頭，向下四列即本體）—— ⚠️ **spec 落地時程式還沒改，那四種組合當下全部存在**；⚠️ 把它們標成「不可能」就是「文件領先於程式」，⚠️ **那是這幾輪反覆修的那型病。留到 P3。**
 2. ⚠️ 該表下方的 `> ⚠️ **本節不再引用 cli.py 的註解作為權威。**` blockquote（`#156` 新增 —— ⚠️ **不給行號**，用 `grep -n '本節不再引用' docs/w0a-diagnostic-run-runbook.md` 定位）—— 已過 review。
 3. ⚠️ `runbook` 該節的其他任何段落。
 
@@ -222,7 +222,7 @@ git archive origin/main | (mkdir -p /tmp/mut && tar -x -C /tmp/mut)
 |---|---|
 | `src/facecore/live/qt_window.py` | 移除 `probe_kind_combo` ＋ `presenting_identity_combo`；新增 ✓／✗ 按鈕與展開區；`_press_key` 改為走新流程；`operator_verdict` 寫入 row |
 | `src/facecore/research/cli.py` | `g3_demo_round_row` 加 `operator_verdict` 參數 |
-| `docs/w0a-diagnostic-run-runbook.md` | ⚠️ **「可達組合」表（`:530-535`）在本階段更新** —— 程式改了，四種組合的存廢才成立 |
+| `docs/w0a-diagnostic-run-runbook.md` | ⚠️ **「可達組合」表（⚠️ **不給行號** —— 用 `grep -n '^| 可達組合' docs/w0a-diagnostic-run-runbook.md` 定位）在本階段更新** —— 程式改了，四種組合的存廢才成立 |
 | `.github/workflows/ci.yml` | ⚠️ **僅在本階段確實需要新測試檔時改**，且必須用 §1.1 隔離 venv 證明新檔被 collect |
 
 ⚠️ **不得動的**：`label_kind` 三值契約與 `_press_key` 的既有映射（spec §5.2）· 門檻值（`match_threshold`／`margin`／`required_support`）· 品質門 · 三幀規則 · support 視窗。
@@ -234,7 +234,7 @@ git archive origin/main | (mkdir -p /tmp/mut && tar -x -C /tmp/mut)
 | `_probe_kind_value` | ⚠️ 它不再讀 combo，但**守護保護的性質是「write-time read」而非「讀 combo」** —— 改成讀按鈕狀態後，那個性質仍成立 |
 | `_presenting_identity_value` | 同上 |
 
-⚠️ **⚠️ 改名會讓 `writer_wiring` 的 `test_no_writer_passes_a_constant_ground_truth` 轉紅** —— ⚠️ 那條守護的 `_ACCESSORS`（在 `tests/live/test_d7_w0b_writer_wiring.py` 內 `grep -n '_ACCESSORS = frozenset'` 定位 —— ⚠️ **不要引用行號**）是 **accessor 名字的 frozenset**，`_is_live_read()`（`:124`）回傳 `_callee(value) in _ACCESSORS` ⚠️ —— ⚠️ **它是名字比對，不是行為檢查**。
+⚠️ **⚠️ 改名會讓 `writer_wiring` 的 `test_no_writer_passes_a_constant_ground_truth` 轉紅** —— ⚠️ 那條守護的 `_ACCESSORS`（在 `tests/live/test_d7_w0b_writer_wiring.py` 內 `grep -n '_ACCESSORS = frozenset'` 定位 —— ⚠️ **不要引用行號**）是 **accessor 名字的 frozenset**，`_is_live_read()`（用 `grep -n 'def _is_live_read'` 定位）回傳 `_callee(value) in _ACCESSORS` ⚠️ —— ⚠️ **它是名字比對，不是行為檢查**。
 
 ⚠️ **⚠️ 必須在兩個 accessor 的 docstring 寫明「值來自 operator 的按鈕標註，不是 combo 選取」**（commander 明寫的要求）⚠️ **否則未來讀者會以為它讀 combo 而誤判** —— ⚠️ 那個名字在 (a) 之後是有誤導性的。
 
