@@ -113,7 +113,7 @@ VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
 
 | 附錄 | 內容錨點 | 行號（`12f0bd6`，僅供參考）| 動作 |
 |---|---|---|---|
-| A.1 | 節 `### W0-b 排程時的記錄規則` 的表格中，**第一欄為 `presenting_identity`** 的那一列 | ⚠️ **不給行號** —— 用 `grep -n '^| \`presenting_identity\`' docs/w0a-diagnostic-run-runbook.md` 定位當前那一列 | 改為 `outsider` 已定義的版本 |
+| A.1 | 節 `### W0-b 排程時的記錄規則` 的表格中，**第一欄為 `presenting_identity`** 的那一列 | ⚠️ **不給行號** —— 定位方式：先 `grep -n '### W0-b 排程時的記錄規則' docs/w0a-diagnostic-run-runbook.md` 鎖定子節，⚠️ **⚠️ 不要直接 grep `^| \`presenting_identity\`` —— 它會命中兩行**（另一張表「### 這兩欄是幹嘛的」也有同名的第一欄），⚠️ **要取子節之後的那一行** | 改為 `outsider` 已定義的版本 |
 | A.2 | 同上那張表，**第一欄為 `填不進去怎麼辦`** 的那一列 | ⚠️ **不給行號** —— 用 `grep -n '^| 填不進去怎麼辦'` 定位當前那一列 | 改為「兩側都已可填（spec 實作後）」，並寫明實作前的過渡狀態 |
 
 ⚠️ **A.1 與 A.2 是同一張表的相鄰兩列，必須確認同時改對。**
@@ -395,8 +395,8 @@ VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
 
 ## 7. ⚠️ 本計畫**不解決**的事
 
-⚠️ **不要為了讓計畫能排下去而調整 spec 的意圖** —— ⚠️ 以下四項是 spec 明確載明「不解決」的，實作時若發現它們需要解釋，**回報 commander，不自行裁**：
-
+⚠️ **不要為了讓計畫能排下去而調整 spec 的意圖** —— ⚠️ 以下四項實作時若發現需要解釋，**回報 commander，不自行裁**：
+⚠️ ⚠️ **前兩項出自 spec §8.1「本 spec 不解決」**（格子 3 的歸因維度、無效輪漏了誰）。⚠️ **後兩項不是 spec 載明的**，而是本計畫自己的紀律與範圍外待辦：⚠️ `test_capacity.py` 的計時 flaky 不得以 re-run 綠作為通過理由（執行期紀律）、`cli.py` 裡 `grep -n 'ALWAYS empty'` 那行的過期斷言需另開涵蓋 `src/` 的 task（範圍外）。
 1. ⚠️ 格子 3 的歸因維度（哪一個 non-target 最容易被誤認）—— 真人測試沒有對照表就拿不回來。
 2. ⚠️ 無效輪「漏了誰」—— `invalid_input` + `incorrect` 只有標記，沒有身分。
 3. ⚠️ `test_capacity.py` 的計時 flaky —— ⚠️ **本計畫全程不得以 re-run 綠作為通過理由**。
