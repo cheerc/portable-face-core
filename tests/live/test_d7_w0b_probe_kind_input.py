@@ -288,7 +288,7 @@ def test_the_value_reaches_the_csv_row(app, tmp_path: Path):
     the operator opens, not on an internal attribute.
     """
     path, widths = _round_row(tmp_path)
-    assert widths == {38}, f"header must stay 38 columns, got {widths}"
+    assert widths == {39}, f"header must stay 39 columns, got {widths}"
 
     def _pick(probe_kind: str, identity: str) -> dict[str, Any]:
         from facecore.research.cli import g3_demo_round_row
