@@ -50,8 +50,8 @@ VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
 
 | job | 安裝指令 | 有 PySide6？ |
 |---|---|---|
-| `verify` | `pip install -e .[dev]`（`:28`） | ❌ |
-| `qt-smoke` | `pip install -e .[dev,research-ui]`（`:19`） | ✅ |
+| `verify` | `pip install -e .[dev]` | ❌ |
+| `qt-smoke` | `pip install -e .[dev,research-ui]` | ✅ |
 
 ### 1.2 三支受影響測試的實測結果
 
@@ -59,7 +59,7 @@ VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
 |---|---|---|---|
 | `tests/live/test_d7_w0b_probe_kind_input.py` | **5 skipped** | **5 passed** | ⚠️ **verify job 對它只報 skip** |
 | `tests/live/test_d7_w0b_writer_wiring.py` | **3 passed** | — | PySide6-free，**verify job 會跑** |
-| `tests/cli/test_d7_w1_gallery_visibility.py` | **17 collected** | 在 qt-smoke 的 `Run offscreen synthetic Qt smoke` 步驟顯式清單內（`ci.yml:162`）| 兩處都跑 |
+| `tests/cli/test_d7_w1_gallery_visibility.py` | **17 collected** | 在 qt-smoke 的 `Run offscreen synthetic Qt smoke` 步驟顯式清單內（`grep -n 'test_d7_w1_gallery_visibility.py' .github/workflows/ci.yml` 定位）| 兩處都跑 |
 
 ⚠️ **兩個直接後果**：
 
@@ -87,7 +87,7 @@ VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
 
 ⚠️ **P2 在 P3 之前的理由（比「中間會不一致」更硬）**：
 
-⚠️ `cli.py:894` 是 `writer.writerow({key: row[key] for key in G3_DEMO_RESULTS_CSV_COLUMNS})` —— ⚠️ **它只取 tuple 內的 key。** ⚠️ 所以若 UI 先做而欄位後加，⚠️ **`operator_verdict` 在 tuple 加進去之前根本不會被寫入 row，而那看起來完全正常。**
+⚠️ `cli.py` 裡 `grep -nF 'writer.writerow({key: row[key] for key in G3_DEMO_RESULTS_CSV_COLUMNS})'` 那行是 `writer.writerow({key: row[key] for key in G3_DEMO_RESULTS_CSV_COLUMNS})` —— ⚠️ **它只取 tuple 內的 key。** ⚠️ 所以若 UI 先做而欄位後加，⚠️ **`operator_verdict` 在 tuple 加進去之前根本不會被寫入 row，而那看起來完全正常。**
 
 ⚠️ **這是「靜默失敗」型，比「不一致」更難抓** —— 不一致會讓測試紅，靜默漏寫不會。
 
@@ -113,15 +113,15 @@ VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
 
 | 附錄 | 內容錨點 | 行號（`12f0bd6`，僅供參考）| 動作 |
 |---|---|---|---|
-| A.1 | 節 `### W0-b 排程時的記錄規則` 的表格中，**第一欄為 `presenting_identity`** 的那一列 | `:545` | 改為 `outsider` 已定義的版本 |
-| A.2 | 同上那張表，**第一欄為 `填不進去怎麼辦`** 的那一列 | `:547` | 改為「兩側都已可填（spec 實作後）」，並寫明實作前的過渡狀態 |
+| A.1 | 節 `### W0-b 排程時的記錄規則` 的表格中，**第一欄為 `presenting_identity`** 的那一列 | ⚠️ **不給行號** —— 用 `grep -n '^| \`presenting_identity\`' docs/w0a-diagnostic-run-runbook.md` 定位當前那一列 | 改為 `outsider` 已定義的版本 |
+| A.2 | 同上那張表，**第一欄為 `填不進去怎麼辦`** 的那一列 | ⚠️ **不給行號** —— 用 `grep -n '^| 填不進去怎麼辦'` 定位當前那一列 | 改為「兩側都已可填（spec 實作後）」，並寫明實作前的過渡狀態 |
 
 ⚠️ **A.1 與 A.2 是同一張表的相鄰兩列，必須確認同時改對。**
 
 ⚠️ **⚠️ 不得動的三處**：
 
 1. ⚠️ **子節 `### 現在的狀態是分側的` 之下、表頭第一欄為 `可達組合` 的那張表**（`:530-535`）—— ⚠️ **spec 落地時程式還沒改，那四種組合當下全部存在**；⚠️ 把它們標成「不可能」就是「文件領先於程式」，⚠️ **那是這幾輪反覆修的那型病。留到 P3。**
-2. ⚠️ 該表下方的 `> ⚠️ **本節不再引用 cli.py 的註解作為權威。**` blockquote（`#156` 新增，`:549`）—— 已過 review。
+2. ⚠️ 該表下方的 `> ⚠️ **本節不再引用 cli.py 的註解作為權威。**` blockquote（`#156` 新增 —— ⚠️ **不給行號**，用 `grep -n '本節不再引用' docs/w0a-diagnostic-run-runbook.md` 定位）—— 已過 review。
 3. ⚠️ `runbook` 該節的其他任何段落。
 
 ⚠️ **驗收命令**（本階段是純文件，驗收是「內容正確」而非「測試綠」）：
@@ -170,7 +170,7 @@ assert G3_DEMO_RESULTS_CSV_COLUMNS[-4:] == (*EXPECTED_NEW, "operator_verdict"), 
 
 ⚠️ **為什麼不能用「相對順序不變」** —— ⚠️ 那個版本**守不住位置**：⚠️ 若有人在 index 20 插入一欄，三欄變成 36/37/38，⚠️ **順序不變、斷言會通過、位置變了**。⚠️ 而 `#141`（W1）註解寫的正是「**operator 的試算表公式依賴既有位置**」。
 
-⚠️ **`cli.py` 的 header 一致性驗證（`:874`）不需改程式** —— ⚠️ tuple 改 39 欄即自動一致。
+⚠️ **`cli.py` 的 header 一致性驗證（`grep -nF 'actual_header != G3_DEMO_RESULTS_CSV_COLUMNS'`）不需改程式** —— ⚠️ tuple 改 39 欄即自動一致。
 
 ⚠️ **不得動的**：`label_kind` 三值契約（`enrolled`／`unenrolled`／`uncertain`）· 既有 38 欄的相對順序與索引。
 
@@ -234,7 +234,7 @@ git archive origin/main | (mkdir -p /tmp/mut && tar -x -C /tmp/mut)
 | `_probe_kind_value` | ⚠️ 它不再讀 combo，但**守護保護的性質是「write-time read」而非「讀 combo」** —— 改成讀按鈕狀態後，那個性質仍成立 |
 | `_presenting_identity_value` | 同上 |
 
-⚠️ **⚠️ 改名會讓 `writer_wiring` 的 `test_no_writer_passes_a_constant_ground_truth` 轉紅** —— ⚠️ 那條守護的 `_ACCESSORS`（`:71`）是 **accessor 名字的 frozenset**，`_is_live_read()`（`:124`）回傳 `_callee(value) in _ACCESSORS` ⚠️ —— ⚠️ **它是名字比對，不是行為檢查**。
+⚠️ **⚠️ 改名會讓 `writer_wiring` 的 `test_no_writer_passes_a_constant_ground_truth` 轉紅** —— ⚠️ 那條守護的 `_ACCESSORS`（在 `tests/live/test_d7_w0b_writer_wiring.py` 內 `grep -n '_ACCESSORS = frozenset'` 定位 —— ⚠️ **不要引用行號**）是 **accessor 名字的 frozenset**，`_is_live_read()`（`:124`）回傳 `_callee(value) in _ACCESSORS` ⚠️ —— ⚠️ **它是名字比對，不是行為檢查**。
 
 ⚠️ **⚠️ 必須在兩個 accessor 的 docstring 寫明「值來自 operator 的按鈕標註，不是 combo 選取」**（commander 明寫的要求）⚠️ **否則未來讀者會以為它讀 combo 而誤判** —— ⚠️ 那個名字在 (a) 之後是有誤導性的。
 
@@ -243,9 +243,9 @@ git archive origin/main | (mkdir -p /tmp/mut && tar -x -C /tmp/mut)
 
 ⚠️ **⚠️ 系統結果分支必須用實體值**（spec §4.3）：
 
-⚠️ **`SessionStatus` 的七個值是 `matched`／`review`／`unknown`／`invalid_input`／`timeout`／`cancelled`／`error`** ⚠️ **沒有 `not_found`** ⚠️ **「沒找到此人」在程式裡是 `unknown`**（`session.py:866`／`:875`／`:885`），⚠️ **而標註區要覆蓋 `unknown`／`review`／`timeout` 三值** ⚠️ **`cancelled`／`error` 不進標註流程**（spec §4.4）。
+⚠️ **`SessionStatus` 的七個值是 `matched`／`review`／`unknown`／`invalid_input`／`timeout`／`cancelled`／`error`** ⚠️ **沒有 `not_found`** ⚠️ **「沒找到此人」在程式裡是 `unknown`**（在 `src/facecore/live/session.py` 內 `grep -n 'SessionStatus.unknown'` 看那三個 return 分支），⚠️ **而標註區要覆蓋 `unknown`／`review`／`timeout` 三值** ⚠️ **`cancelled`／`error` 不進標註流程**（spec §4.4）。
 
-⚠️ **⚠️ 靜默失敗警示**：`cli.py:894` 的 `writerow({key: row[key] for key in G3_DEMO_RESULTS_CSV_COLUMNS})` 只取 tuple 內的 key —— ⚠️ **P2 已把 `operator_verdict` 加進 tuple，所以本階段只要把值放進 row 就會被寫出**；⚠️ **若忘了放，該欄會靜默留空，而 `operator_verdict` 空正是「未標註」的合法值** ⚠️ —— ⚠️ **所以驗收必須明確斷言「每輪都有值」，不能只斷言「檔案有這欄」。**
+⚠️ **⚠️ 靜默失敗警示**：`cli.py` 裡 `grep -nF 'writer.writerow({key: row[key] for key in G3_DEMO_RESULTS_CSV_COLUMNS})'` 那行的 `writerow({key: row[key] for key in G3_DEMO_RESULTS_CSV_COLUMNS})` 只取 tuple 內的 key —— ⚠️ **P2 已把 `operator_verdict` 加進 tuple，所以本階段只要把值放進 row 就會被寫出**；⚠️ **若忘了放，該欄會靜默留空，而 `operator_verdict` 空正是「未標註」的合法值** ⚠️ —— ⚠️ **所以驗收必須明確斷言「每輪都有值」，不能只斷言「檔案有這欄」。**
 
 ⚠️ **⚠️ 驗收命令（本階段必須包含紅色變異）**：
 
@@ -377,9 +377,9 @@ VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
 
 | 守護 | 比對對象 | UI 改動後 |
 |---|---|---|
-| `test_both_demo_row_paths_are_present`（`:131`）| **writer 所在函式名**（`_press_key`／`_record_unlabeled_round`）| ✅ 不受影響 |
-| `test_every_writer_forwards_both_ground_truth_columns`（`:151`）| **kwarg 名**（`probe_kind`／`presenting_identity`）| ✅ 不受影響 |
-| `test_no_writer_passes_a_constant_ground_truth`（`:167`）| ⚠️ **accessor 名**（`_ACCESSORS`）| ⚠️ **改名就紅 —— 這就是 D1 存在的原因** |
+| `test_both_demo_row_paths_are_present`（`grep -n 'def test_both_demo_row_paths_are_present'`）| **writer 所在函式名**（`_press_key`／`_record_unlabeled_round`）| ✅ 不受影響 |
+| `test_every_writer_forwards_both_ground_truth_columns`（`grep -n 'def test_every_writer_forwards_both'`）| **kwarg 名**（`probe_kind`／`presenting_identity`）| ✅ 不受影響 |
+| `test_no_writer_passes_a_constant_ground_truth`（`grep -n 'def test_no_writer_passes_a_constant'`）| ⚠️ **accessor 名**（`_ACCESSORS`）| ⚠️ **改名就紅 —— 這就是 D1 存在的原因** |
 
 ### D2 — P3 的 commit 策略
 
@@ -400,4 +400,4 @@ VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
 1. ⚠️ 格子 3 的歸因維度（哪一個 non-target 最容易被誤認）—— 真人測試沒有對照表就拿不回來。
 2. ⚠️ 無效輪「漏了誰」—— `invalid_input` + `incorrect` 只有標記，沒有身分。
 3. ⚠️ `test_capacity.py` 的計時 flaky —— ⚠️ **本計畫全程不得以 re-run 綠作為通過理由**。
-4. ⚠️ `cli.py:496` 的「as the code stands they are ALWAYS empty」在 `#154` 後已過期 —— ⚠️ **不在本 spec 範圍**，需另開一筆涵蓋 `src/` 的 task。
+4. ⚠️ `cli.py` 裡 `grep -n 'ALWAYS empty'` 那行的「as the code stands they are ALWAYS empty」在 `#154` 後已過期 —— ⚠️ **不在本 spec 範圍**，需另開一筆涵蓋 `src/` 的 task。
