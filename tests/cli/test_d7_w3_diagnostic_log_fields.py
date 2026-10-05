@@ -639,7 +639,17 @@ def test_demo_csv_end_to_end_carries_the_new_fields(tmp_path: Path) -> None:
              {"top1_identity", "top1_score", "top2_identity", "top2_score",
               "margin", "label_identity", "probe_kind",
               "presenting_identity", "support_clear_reasons",
-              "expected_count", "loaded_count", "gallery_rejected"}]
+              "expected_count", "loaded_count", "gallery_rejected",
+              # G3-w `operator_verdict`, EXPIRED EXEMPTION. Unlike every
+              # other entry above, this cell is NOT honestly empty: this
+              # window went through press_correct(), so the operator's
+              # judgement is known and `correct` is the right value. It is
+              # empty only because P2 added the column and P3 has not wired
+              # the button yet. So it sits in this exclusion set on a
+              # deadline, and `test_the_temporary_operator_verdict_exemption_
+              # _is_still_bounded_by_an_observable_state` below is what ends
+              # that deadline. Do not leave it here after P3.
+              "operator_verdict"}]
     assert not blank, f"columns blank in a real scored round: {blank}"
     assert int(row["frames_rejected"]) >= 0
     assert row["gallery_rejected"] == "", (
@@ -647,6 +657,60 @@ def test_demo_csv_end_to_end_carries_the_new_fields(tmp_path: Path) -> None:
         "rather than claiming a measured empty gallery"
     )
     assert csv  # keep the import meaningful for readers
+
+
+def test_the_temporary_operator_verdict_exemption_is_still_bounded_by_an_observable_state() -> None:
+    """The one thing that keeps the exemption above from being permanent.
+
+    Every OTHER name in that exclusion set is exempt because the value
+    genuinely does not exist for this window — no gallery, so no
+    `load_report`; no support disturbance, so no clear to count. Their
+    companion assertions hold that exemption to the truth they rest on.
+
+    `operator_verdict` is not that kind of case: press_correct() means the
+    operator DID judge the round, so `correct` is available and the cell
+    must not be blank. The exclusion above is a deliberate, dated hole —
+    P2 shipped the column, P3 does the wiring.
+
+    An exemption nobody can see expire is indistinguishable from a bug, and
+    this repo has already shipped guards that nothing ran. So the hole is
+    tied to an OBSERVABLE state: `_press_key` forwarding a verdict.
+
+    · while `_press_key` does NOT pass one → this passes, hole open
+    · the moment it passes one → this turns RED and stays red until
+      `operator_verdict` is removed from the exclusion set above
+
+    Reading the source with ast rather than counting strings is the same
+    reason `test_d7_w0b_writer_wiring.py` parses instead of greps: a
+    comment or a passing mention can satisfy a string count while nothing
+    is forwarded.
+    """
+    import ast
+
+    source = Path(__file__).resolve().parents[2] / "src" / "facecore" / "live" / "qt_window.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.FunctionDef) and node.name == "_press_key"):
+            continue
+        for call in ast.walk(node):
+            if (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == "append_g3_demo_results_csv"
+            ):
+                assert "operator_verdict" not in {kw.arg for kw in call.keywords}, (
+                    "_press_key now forwards operator_verdict, so this round "
+                    "records the operator's real judgement. Remove "
+                    "`operator_verdict` from the exclusion set in "
+                    "test_demo_csv_end_to_end_carries_the_new_fields — the "
+                    "cell is no longer blank, and leaving it exempted would "
+                    "silently drop the one value the runbook needs."
+                )
+                return
+    raise AssertionError(
+        "_press_key no longer calls append_g3_demo_results_csv; this file's "
+        "view of the demo write path is stale"
+    )
 
 
 @pytest.mark.skipif(
