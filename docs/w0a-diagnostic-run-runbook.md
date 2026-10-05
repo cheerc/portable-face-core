@@ -505,7 +505,7 @@ frames_sampled > 0
 
 ---
 
-## `probe_kind` / `presenting_identity`：兩欄現在一定是空的
+## `probe_kind` / `presenting_identity`：分側狀態（**兩欄不再一律是空的**）
 
 ### 這兩欄是幹嘛的
 
@@ -518,12 +518,21 @@ frames_sampled > 0
 
 **有這兩欄，才能把「系統的判斷」和「實際情況」對起來** —— 這是回答「會不會認錯人」的前提。
 
-### 現在為什麼一定是空的（**這是誠實狀態，不是故障**）
+### 現在的狀態是分側的（**這是誠實狀態，不是故障**）
 
 空字串的意思是「**沒有記錄**」。它**不是**「不是非目標輪」，也**不是**資料壞掉。
 
-- 這兩欄是「接收欄」—— 程式裡有位置收，但**目前沒有任何輸入路徑可以填它們**。demo App 的介面上沒有地方可以輸入，CLI 的 31 個參數也沒有一個能帶它們。
-- 所以每一列都會是空的。**這是誠實反映「這一輪沒有 ground truth」，而 ground truth 只有 operator 知道。**
+- **`target` 側已可填。** `src/facecore/live/qt_window.py`（D7-A W0-b，#154）加了兩個下拉：`probe_kind` 的值域取自下表（`target`／`nontarget`），`presenting_identity` 的候選直接來自 `sorted(gallery.embeddings)` —— **operator 打不出錯字，也選不到沒載入的身分**。兩條 demo 寫入路徑都在寫入那一刻讀值，所以同一個 App session 裡換人只要切一次。
+- **`nontarget` 側的 `presenting_identity` 仍值域未定義，所以仍留空。** 那一側的下拉是一個 disabled 的「（尚未定義：待 W0-b 排程）」項目，不是自由文字 —— 可填會讓 operator 自己發明值，而空白無法與「忘了填」區分。這不是缺陷，是**下表那條規則還沒被定義**。
+
+⚠️ **所以 `presenting_identity` 的空字串現在有兩種來源，兩者意義不同，統計時不可混為一談**（加上 `probe_kind` 整欄未記錄，實際可達的組合有四種）：
+
+| 可達組合 | `presenting_identity` | 意義 |
+| --- | --- | --- |
+| `probe_kind` 整欄留空（未記錄） | 空 | 這一輪沒有 ground truth |
+| `probe_kind` 整欄留空（未記錄） | 有值 | ⚠️ **這是漏填** —— `probe_kind` 留空時身分下拉仍是可選狀態（`（未記錄）` 與已載入身分並列），operator 可以只選身分不選種類。**不可當成 `target` 或 `nontarget`** |
+| `probe_kind=nontarget` | 空（值域未定義） | 這一輪是沒註冊的測試者，但**用哪個標記**還沒定義 |
+| `probe_kind=target` | 空 | ⚠️ **這是漏填，不是合法值** —— target 側下拉是可選的已載入身分，沒有理由空著 |
 
 ⚠️ **不要因為看到空值就去修它，也不要自己猜一個值填進去。** 猜一個 `target` 進去，會污染之後所有的跨身分統計 —— 那比沒有更糟。
 
@@ -535,9 +544,11 @@ frames_sampled > 0
 | `probe_kind` 的合法值 | 只有兩個：`target`、`nontarget`。**沒有第三個值**，也不准空著假裝有值 |
 | `presenting_identity` | 測試者在註冊組裡就填其身分（例如 `enroll-07`）；**沒有註冊的測試者，這欄填什麼必須在 W0-b 排程時定義**（例如 `outsider` 之類的標記），不可留空 |
 | 誰填 | **operator**，在每一輪結束後立刻填。事後回填會和實際測試對不上 |
-| 填不進去怎麼辦 | 目前**就是填不進去**，這是 W0-b 的執行前提，不是 W0-a 的缺口 |
+| 填不進去怎麼辦 | **分側看。** `target` 側的下拉就是填入路徑，#154 之後可直接選。`nontarget` 側的 `presenting_identity` **目前仍填不進去**，因為它的值域還沒定義 —— 那是 W0-b 排程要決定的，不是 W0-a 的缺口，也不要在 App 裡繞過它 |
 
-> **已知待修的程式碼註解：** `src/facecore/research/cli.py` 中 `probe_kind` 上方有一段註解寫著「until **W0-a** adds one they are always empty」。**這個前提是錯的** —— W0-a 是純文件工作，不動程式碼。實際上這是 **W0-b** 的工作項。**以本手冊為準。**
+> ⚠️ **本節不再引用 `cli.py` 的註解作為權威。** 那段「until W0-a adds one they are always empty」的 blockquote，所引用的那段註解**已被 `#147`（`93aba4e`，2026-10-04）移除，早於 #154** —— 可用 `git log -S 'adds one they are always empty' -- src/facecore/research/cli.py` 覆驗：命中 `93aba4e`（刪除行）與更早的 `51bf483`（引入該行的 #138）。`cli.py` 至今**只剩 `:496` 另一處仍在的 `ALWAYS empty` 句子**，與被引用的那一段不是同一處。
+> ⚠️ **但要注意方向**：`cli.py:496` 那句「as the code stands they are ALWAYS empty」**在 #154 之後已經過期** —— 實測 `src/facecore/live/qt_window.py` 有真實輸入路徑（`_probe_kind_value`／`_presenting_identity_value`，兩條 demo 寫入路徑都在讀）。⚠️ **本筆只改 runbook，不動 `src/`。** 該處程式碼註解與本節的落差，列為待裁決項，不在此宣稱已處理。
+> **若兩者衝突，以本手冊為準** —— 這是原文就有的優先序，本筆未改變它。
 
 ---
 
