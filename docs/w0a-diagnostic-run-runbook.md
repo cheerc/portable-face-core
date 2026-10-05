@@ -542,9 +542,9 @@ frames_sampled > 0
 | --- | --- |
 | 哪一輪填什麼 | 每一輪都要填。**不論結果好壞都要填**，漏填的輪次在統計時要單獨標記，不可當成 `nontarget` |
 | `probe_kind` 的合法值 | 只有兩個：`target`、`nontarget`。**沒有第三個值**，也不准空著假裝有值 |
-| `presenting_identity` | 測試者在註冊組裡就填其身分（例如 `enroll-07`）；**沒有註冊的測試者，這欄填什麼必須在 W0-b 排程時定義**（例如 `outsider` 之類的標記），不可留空 |
+| `presenting_identity` | 測試者在註冊組裡就填其身分（例如 `enroll-07`）；**沒有註冊的測試者填 `outsider`** —— 這個值已於 **2026-10-05** 決定（見 `docs/specs/2026-10-05-g3-operator-verdict-ground-truth.md` §2.3）。⚠️ **若 operator 手邊有 non-target 對照表，改填該張照片的檔名 stem**（App 會讀 non-target 資料夾列出候選）。**不可留空。** |
 | 誰填 | **operator**，在每一輪結束後立刻填。事後回填會和實際測試對不上 |
-| 填不進去怎麼辦 | **分側看。** `target` 側的下拉就是填入路徑，#154 之後可直接選。`nontarget` 側的 `presenting_identity` **目前仍填不進去**，因為它的值域還沒定義 —— 那是 W0-b 排程要決定的，不是 W0-a 的缺口，也不要在 App 裡繞過它 |
+| 填不進去怎麼辦 | ⚠️ **兩側都已可填（spec 實作後）。** `target` 側是註冊組下拉；`nontarget` 側是 `outsider` 或 non-target 清單。⚠️ **若 App 尚未實作該 spec，`nontarget` 側仍會是 disabled 的「尚未定義」項目 —— 那是預期狀態，不要在 App 裡繞過它。** |
 
 > ⚠️ **本節不再引用 `cli.py` 的註解作為權威。** 那段「until W0-a adds one they are always empty」的 blockquote，所引用的那段註解**已被 `#147`（`93aba4e`，2026-10-04）移除，早於 #154** —— 可用 `git log -S 'adds one they are always empty' -- src/facecore/research/cli.py` 覆驗：命中 `93aba4e`（刪除行）與更早的 `51bf483`（引入該行的 #138）。`cli.py` 至今**只剩 `:496` 另一處仍在的 `ALWAYS empty` 句子**，與被引用的那一段不是同一處。
 > ⚠️ **但要注意方向**：`cli.py:496` 那句「as the code stands they are ALWAYS empty」**在 #154 之後已經過期** —— 實測 `src/facecore/live/qt_window.py` 有真實輸入路徑（`_probe_kind_value`／`_presenting_identity_value`，兩條 demo 寫入路徑都在讀）。⚠️ **本筆只改 runbook，不動 `src/`。** 該處程式碼註解與本節的落差，列為待裁決項，不在此宣稱已處理。
