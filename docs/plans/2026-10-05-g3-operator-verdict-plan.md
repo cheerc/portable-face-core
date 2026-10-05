@@ -23,7 +23,7 @@
 
 ### 0.2 ⚠️ 每階段的驗收必須是「可執行命令 ＋ 預期輸出」，不是「測試通過」
 
-⚠️ **理由**：`docs/CLAUDE.md`（`#155` merge，`d549a4f9`）的 `## Documentation Discipline` 已立規則 —— **記 provenance，不記證據的數值內容**。⚠️ 而「測試通過」這種驗收既不可重現也不可稽核。
+⚠️ **理由**：`CLAUDE.md`（`#155` merge，`d549a4f9`）的 `## Documentation Discipline` 已立規則 —— **記 provenance，不記證據的數值內容**。⚠️ 而「測試通過」這種驗收既不可重現也不可稽核。
 
 ⚠️ **但反向也成立**：⚠️ **綠色結果在沒有對應紅色變異實驗時不構成守護有效之證據**（本專案 D0 §11 第 15 項記錄過的失效形狀）。⚠️ **所以新增／改寫的守護，該階段的驗收必須包含「把它弄壞 → 確認轉紅」。**
 
@@ -59,7 +59,7 @@ VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
 |---|---|---|---|
 | `tests/live/test_d7_w0b_probe_kind_input.py` | **5 skipped** | **5 passed** | ⚠️ **verify job 對它只報 skip** |
 | `tests/live/test_d7_w0b_writer_wiring.py` | **3 passed** | — | PySide6-free，**verify job 會跑** |
-| `tests/cli/test_d7_w1_gallery_visibility.py` | **17 collected** | 在 qt-smoke 顯式清單內（`ci.yml:54`）| 兩處都跑 |
+| `tests/cli/test_d7_w1_gallery_visibility.py` | **17 collected** | 在 qt-smoke 的 `Run offscreen synthetic Qt smoke` 步驟顯式清單內（`ci.yml:162`）| 兩處都跑 |
 
 ⚠️ **兩個直接後果**：
 
@@ -259,8 +259,16 @@ uv run --extra dev --extra research-ui python -m pytest tests/live/test_qt_windo
 #    → 必須有新測試轉紅（見 P4；P3 完成時該測試還在 P4）
 #    ⚠️ P3 階段此項由 P4 補上，P3 只能靠現有測試 + 靜默失敗的人工確認
 
-# 3. 靜默失敗的手動確認（不可省略）
-#    實際跑一輪 App，確認 CSV 的 operator_verdict 欄不是空字串
+# 3. ⚠️ 靜默失敗的人工確認（不可省略）—— ⚠️ 兩欄都要，且值域要對
+#    ⚠️ operator_verdict 空是「未標註」的**合法值**，所以「非空」不足以證明有寫入；
+#      必須斷言值屬於 {correct, incorrect}。
+#    ⚠️ probe_kind 在「按 ✓ 的零輸入路徑」上同樣可能被漏寫 —— spec §4.2 明寫
+#      「正確的格子仍然要寫 probe_kind —— 程式從系統結果推導」。
+#      ⚠️ **operator_verdict 非空不等於 probe_kind 有值**，兩者是獨立的靜默失敗。
+#    ⚠️ 驗收方式：實際跑一輪 App，對產生的 demo CSV 逐列檢查
+#      - 每列 operator_verdict ∈ {correct, incorrect}（不得為空）
+#      - 每列 probe_kind ∈ {target, nontarget}（不得為空，含按 ✓ 的那一列）
+#      - 若有列為空 → 這是靜默失敗，不是「未標註」
 ```
 
 ⚠️ **⚠️ P3 的驗收弱點（如實記錄）**：⚠️ **P3 沒有自己的新測試**，⚠️ 它靠 P4 的端到端測試來證明。⚠️ **所以 P3 與 P4 必須在同一個 PR loop 內連續驗收**，⚠️ 否則 P3 是「沒有守護的程式改動」—— ⚠️ **這是本計畫已知的弱點，不是遺漏。**
