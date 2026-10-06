@@ -309,14 +309,19 @@ else:
 
 ⚠️ **`presenting_identity` 在 `probe_kind=nontarget` 時一律有值**（`outsider` 或清單檔名，§2.3）。⚠️ **所以「`probe_kind=nontarget` 但身分空」在實作後不可能出現** —— ⚠️ **若有，那是不合法狀態，不是誠實狀態。**
 
-⚠️ **`probe_kind` 空值只有兩種：**
+⚠️ **`operator_verdict` 的三種狀態**（⚠️ **前兩列的 `probe_kind` 空，所以「`probe_kind` 空值」仍只有兩種**；⚠️ **第三列的 `probe_kind` 不空 —— 那是唯一「`probe_kind` 有值而 verdict 空」的情形**）：
 
 | `probe_kind` | `presenting_identity` | `operator_verdict` | 語意 |
 | --- | --- | --- | --- |
 | `target`／`nontarget` | 有值（合法值） | `correct`／`incorrect` | **已標註**，可進統計 |
 | ⚠️ **空** | **空** | **空** | ⚠️ **該輪未進入標註流程** —— §4.6 的 `cancelled`／`error`，或 operator 中途中止 |
+| `target`／`nontarget` | 有值（合法值） | ⚠️ **空** | ⚠️ **operator 刻意略過標註** —— ⚠️ **第三種狀態**：該輪**有** ground truth 欄位、**進了**標註流程，⚠️ **而 operator 選擇不填 verdict**；⚠️ **此列的語意是「刻意略過」，不是「漏寫」或「忘按」** |
 
-⚠️ **「未標註」在實作後只有一個來源**：§4.6 的 `cancelled`／`error`（不顯示標註按鈕）。⚠️ **`matched`／`unknown`／`review`／`timeout`／`invalid_input` 五個值一律會進入標註流程**（§4.6 排除的是 `cancelled`／`error`），⚠️ **所以 `operator_verdict` 不可能空 —— operator 漏按的「髒列」在資料模型上不可產生。**
+⚠️ **⚠️ 第三列與「漏寫／忘按」不同，且下游必須分清這件事**：⚠️ **漏寫（該填卻沒寫）與忘按（按了按鈕但沒存檔）在資料模型上與「刻意略過」長得一模一樣** —— ⚠️ **三者的 CSV 列都是「`probe_kind` 有值 ＋ `presenting_identity` 有值 ＋ `operator_verdict` 空」，沒有任何欄位可以區分。** ⚠️ **所以本 spec 把這一列的語意定為「operator 刻意略過標註」，⚠️ 下游不得從空 verdict 反推「operator 當時是忘了」** —— ⚠️ **空 verdict 在有 ground truth 欄位時，就只代表略過，不代表疏忽。**
+
+⚠️ **⚠️ 「未標註」的第一個來源**：§4.6 的 `cancelled`／`error`（不顯示標註按鈕）。⚠️ **`matched`／`unknown`／`review`／`timeout`／`invalid_input` 五個值一律會進入標註流程**（§4.6 排除的是 `cancelled`／`error`）。
+
+⚠️ **⚠️ 但「五個值一律進入標註流程」只推出「`probe_kind` 空時 `operator_verdict` 必空」，不推出「`operator_verdict` 全表不可能空」** —— ⚠️ **那個推論需要一個前提：每一輪的 ground truth 欄位都被填滿，而這個前提不成立。** ⚠️ **當 `probe_kind`／`presenting_identity` 都有值時，operator 有可能在標註流程中選擇不填 verdict**，⚠️ **此時空 verdict 表示「刻意略過」（第三列），⚠️ 而非「未進入標註流程」，⚠️ 而且憑那兩個已填的欄位就能與之區分。** ⚠️ **所以正確的條件式推論是：「`probe_kind` 空 ⇒ `operator_verdict` 空（該輪未進入標註流程）」，⚠️ 反向不成立 —— ground truth 欄位有值時，空 verdict 是一種合法且可區分的狀態。**
 
 ⚠️ **⚠️ 為什麼這個區分對下游工具是關鍵（第二輪 review 指出）**：⚠️ 若分析工具以為「`probe_kind` 空 = operator 漏按」去設計，它會等一種**永遠不會出現**的列，⚠️ **而真正的 `cancelled`／`error` 列會被它誤判成「不該出現的髒資料」而丟棄** —— ⚠️ **那會靜默吞掉中斷與錯誤的輪次，而那正是診斷 run 最需要保留的失敗紀錄。**
 
@@ -448,7 +453,7 @@ else:
 | `probe_kind` 空值涵蓋哪些值 | ✅ **`unknown`／`review`／`timeout` 三值全含**（§4.3） | operator 看到三者都是「沒找到此人」（都不顯示名字） |
 | `probe_kind_input.py` 重寫範圍 | ✅ **五 helper 留、七測試作廢、併入 ④**（§6.1） | lead 建議，理由採納 |
 | G1 斷言強度 | ✅ **`[-4:]` 逐字版**（§5.1.1） | 「相對順序不變」不等於「位置不變」——lead 駁回第二版 |
-| §5.3 第三列的定義 | ✅ **「該輪未進入標註流程」**（§5.3） | 新 UI 下 `operator_verdict` 不可能空，「漏按」是死列 |
+| §5.3 第三列的定義 | ✅ **「該輪未進入標註流程」＋「operator 刻意略過標註」兩者皆是**（§5.3） | ⚠️ **新 UI 只在 `probe_kind` 為空時使空 verdict 不可能** —— ⚠️ **ground truth 欄位有值時，空 verdict 是「刻意略過」的合法第三種狀態** |
 | ⚠️ **`nontarget` 側值域** | ✅ **決定為 `outsider`，不留空**（§2.3） | ⚠️ **落地時與 `runbook`（#156）交叉比對才發現的衝突** —— runbook 該列寫「不可留空」，spec 初版設計成留空 |
 
 ---
