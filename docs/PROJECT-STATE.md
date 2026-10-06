@@ -16,9 +16,10 @@ PR-A）與 Task 3（baseline 報告，PR-B）亦已交付**，報告見
 | D6 R 報告 | #136 | Facenet512 vs SFace control，兩臂各 43 列 |
 | **D7-A W3** | #138 | demo log 由 23 欄擴為 **35 欄**（第 24–35 欄為診斷欄位） |
 | **D7-A W0-a** | #139 | 診斷 run 操作手冊（operator 可不透過 agent 獨立執行），見 [runbook](w0a-diagnostic-run-runbook.md) |
-| **D7-A W1** | #142 | demo log 再加 **3 欄 → 共 38 欄**（第 36–38 欄 `expected_count`／`loaded_count`／`gallery_rejected`） |
+| **D7-A W1** | #142 | demo log 再加 **3 欄**（第 36–38 欄 `expected_count`／`loaded_count`／`gallery_rejected`） |
+| **G3-w** | #158 | demo log 再加 **1 欄**（第 39 欄 `operator_verdict`，operator 對該輪結果的判定；UI 接線屬 P3） |
 
-⚠️ **demo log 現為 38 欄。** 欄位常數在 `research/cli.py` 的 `G3_DEMO_RESULTS_CSV_COLUMNS`；
+⚠️ **demo log 現為 39 欄。** 欄位常數在 `research/cli.py` 的 `G3_DEMO_RESULTS_CSV_COLUMNS`；
 既有 23 欄位置**不得**變動（operator 試算表公式依賴 `margin` 第 18 欄與 `label_kind` 第 22 欄）。
 
 D4 真機第一輪的觀察與 D5 的靜態結果分屬不同協議（見 D0 §11 第 17、18 項與 D5 報告第 8 節），
@@ -47,7 +48,7 @@ D4 真機第一輪的觀察與 D5 的靜態結果分屬不同協議（見 D0 §1
 
 ⚠️ **2026-10-03 operator 已刪除 `~/Downloads/face_sample/_facecore/store/demo-results.csv`**。該檔是**一份 32 列、23 欄、因 header drift 而錯位的舊檔**（見 issue **#140**；當時程式只寫得出 23 欄，W3／W1 之後才擴到 35／38 欄）—— ⚠️ **那組列數／欄數只描述「該檔在被刪除之前是什麼形狀」，檔案本身已不存在，不得當成現存的檔案特徵引用。** ⚠️ **因此本檔下方所有指向「那批 32 列 log」的數字，描述的是「當時發生了什麼」，不是「檔案現在還在」** —— 事實本身不因砍檔而失效，引用時須註明資料檔已刪。
 
-⚠️ **同一日 operator 又重新跑出新的 `demo-results.csv`（38 欄，內容持續增加中）**，隨後 PR #145（#141 丙-新）合併後 **App 改為每次啟動開一個新檔 `demo-results-<啟動時間>.csv`**，所以那個固定檔名**不再會被產生**。⚠️ **`tests/cli/test_d7_w3_diagnostic_log_fields.py` 的 `TestDocumentedScopeMatchesTheLog` 已不再讀 operator 的 CSV** —— 舊的「讀固定檔名、斷言實測值」寫法已被守護者取代：`RETIRED_FIGURES = (16, 11, 122, 32)`，`assert not (restated and not cited)`（註解重述已刪批次數字且無 commit 引用才紅）。**operator 重跑 App 不會使該測試轉紅**，因其輸入是 repo 內的 `cli.py` 註解，不是 repo 外的可變檔案。
+⚠️ **同一日 operator 又重新跑出新的 `demo-results.csv`（當時是 38 欄，內容持續增加中）**，隨後 PR #145（#141 丙-新）合併後 **App 改為每次啟動開一個新檔 `demo-results-<啟動時間>.csv`**，所以那個固定檔名**不再會被產生**。⚠️ **`tests/cli/test_d7_w3_diagnostic_log_fields.py` 的 `TestDocumentedScopeMatchesTheLog` 已不再讀 operator 的 CSV** —— 舊的「讀固定檔名、斷言實測值」寫法已被守護者取代：`RETIRED_FIGURES = (16, 11, 122, 32)`，`assert not (restated and not cited)`（註解重述已刪批次數字且無 commit 引用才紅）。**operator 重跑 App 不會使該測試轉紅**，因其輸入是 repo 內的 `cli.py` 註解，不是 repo 外的可變檔案。
 
 **demo log 的存放位置是 `store/` 目錄**（在 repo 外，唯讀，**不得把逐列原始資料抄進 repo**）。⚠️ **不要依賴某一份檔案是「唯一」的那份** —— 實測該目錄下同時存在固定檔名與 `demo-results-<啟動時間>.csv` 兩種產物，operator 重跑會持續新增；**要問「當時有哪一份」就去列目錄，不要引用本檔的列舉**。
 
@@ -58,7 +59,7 @@ D4 真機第一輪的觀察與 D5 的靜態結果分屬不同協議（見 D0 §1
 - r1 `invalid_input`／`all_frames_rejected_no_face|deadline_exceeded`，sampled 25／usable 0／rejected 24，證據段 5175ms
 - r3 `matched`，top1 `enroll-24` @ 0.5226、top2 `enroll-17` @ 0.3206、margin 0.2021，sampled 23／**usable 3**／rejected 20，證據段 4895ms
 
-⚠️ **該檔是 35 欄格式，不是最新的 38 欄** —— 它產生於 W1（#142）合併之前，**沒有** `expected_count`／`loaded_count`／`gallery_rejected` 三欄。operator 下次跑出來的檔會是 38 欄。
+⚠️ **該檔是 35 欄格式，不是最新的 39 欄** —— 它產生於 W1（#142）合併之前，**沒有** `expected_count`／`loaded_count`／`gallery_rejected` 三欄。operator 下次跑出來的檔會是 39 欄。
 
 ⚠️ **這是 D7-A 以來第一筆跨身分 ground truth**：operator 新增 `enroll-24` 並成功辨識、按「正確」標註（`label_kind=enrolled`），**但樣本只有 2 列、單一身分、不含 non-target**。**它不足以回答「門檻該不該調」或「會不會認錯人」** —— 那需要 W0-b 的跨身分＋非目標輪替 run，而 W0-b 是 operator 的 key issue、**尚未排程**。
 
@@ -227,7 +228,7 @@ D6 是「用相同 23／13／30 照片集合、固定 detector 與 alignment，�
 1. 讀本檔、[D0 基準](mac-demo-baseline-d0.md)、母規格、ADR 0008／0009；**若要操作本機 App，另讀 [runbook](w0a-diagnostic-run-runbook.md)**；查 git／task／inbox 活源。
 2. **現行主線**：
    - **D0–D4 已完成**；**D5 靜態 baseline 已交付**；**D6 已完成**（PR #136 R 報告、#137 spec 定案；A3 本機 run 2026-10-01 完成，見下方「D6 現況」）。
-   - **D7-A 診斷 log 基礎設施進行中**：W3（#138）、W0-a runbook（#139）、W1 gallery 可見性（#142）已合併。**demo log 現為 38 欄。**
+   - **D7-A 診斷 log 基礎設施進行中**：W3（#138）、W0-a runbook（#139）、W1 gallery 可見性（#142）已合併。**demo log 現為 39 欄**（G3-w，#158）。
    - **D4 真機驗收仍未完成**（board task open，**19 項**待驗，須 operator 在場 —— 見 [SOP D0 §11 對照表](g3-local-test-sop.md)）。
 3. ⚠️ **兩筆 open issue，裁決權在 operator，不在 agent**：
    - **#140（bug，已關閉）**：demo CSV header 不隨欄位擴充更新，既有 store 的新列以欄名讀取回傳 None。**已由 PR #145 修掉（裁決見 decision `d-20261003071803476368-1`，採丙-新）：寫入前比對完整 header tuple，不符則 refuse 並零寫入；另加 per-App-execution 檔名，既有 CSV 永遠不需升級 header。** issue 狀態 CLOSED（`2026-10-04T02:03:07Z`，operator 關閉）。
