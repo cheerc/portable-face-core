@@ -674,11 +674,24 @@ def test_the_operator_verdict_exemption_is_bounded_by_observable_state() -> None
 
     An exemption nobody can see expire is indistinguishable from a bug, and
     this repo has already shipped guards that nothing ran. So the hole is
-    tied to an OBSERVABLE state: `_press_key` forwarding a verdict.
+    tied to an OBSERVABLE state: ANY production writer forwarding a verdict.
 
-    · while `_press_key` does NOT pass one → this passes, hole open
-    · the moment it passes one → this turns RED and stays red until
-      `operator_verdict` is removed from the exclusion set above
+    ⚠️ ANY writer, not one of them by name. There are two — the labeled
+    `_press_key` and the unlabeled `_record_unlabeled_round` — and an
+    earlier version of this companion watched only `_press_key`. Wiring the
+    verdict into the other one left it green: the probe pointed at one path
+    and silently accepted while the exemption ran unbounded. Naming a single
+    writer here is what created that hole, so the check below is scoped to
+    the CALL SITE rather than to any function.
+
+    · while NO writer passes a verdict → this passes, hole open
+    · the moment ANY writer passes one → this turns RED, and stays red
+
+    ⚠️⚠️ That last sentence is not a to-do you can finish by editing this
+    file. Removing `operator_verdict` from the exclusion set will NOT make
+    this go green — it goes green only when P3 takes the exemption back by
+    wiring every writer AND dropping the name in one commit. See the
+    assertion message for why the two halves have to move together.
 
     Reading the source with ast rather than counting strings is the same
     reason `test_d7_w0b_writer_wiring.py` parses instead of greps: a
@@ -695,8 +708,9 @@ def test_the_operator_verdict_exemption_is_bounded_by_observable_state() -> None
         / "qt_window.py"
     )
     tree = ast.parse(source.read_text(encoding="utf-8"))
+    writers: dict[str, bool] = {}
     for node in ast.walk(tree):
-        if not (isinstance(node, ast.FunctionDef) and node.name == "_press_key"):
+        if not isinstance(node, ast.FunctionDef):
             continue
         for call in ast.walk(node):
             if (
@@ -704,18 +718,30 @@ def test_the_operator_verdict_exemption_is_bounded_by_observable_state() -> None
                 and isinstance(call.func, ast.Name)
                 and call.func.id == "append_g3_demo_results_csv"
             ):
-                assert "operator_verdict" not in {kw.arg for kw in call.keywords}, (
-                    "_press_key now forwards operator_verdict, so this round "
-                    "records the operator's real judgement. Remove "
-                    "`operator_verdict` from the exclusion set in "
-                    "test_demo_csv_end_to_end_carries_the_new_fields — the "
-                    "cell is no longer blank, and leaving it exempted would "
-                    "silently drop the one value the runbook needs."
-                )
-                return
-    raise AssertionError(
-        "_press_key no longer calls append_g3_demo_results_csv; this file's "
-        "view of the demo write path is stale"
+                writers[node.name] = "operator_verdict" in {
+                    kw.arg for kw in call.keywords
+                }
+    assert writers, (
+        "no function in qt_window.py calls append_g3_demo_results_csv; this "
+        "file's view of the demo write path is stale"
+    )
+    forwarding = sorted(name for name, has in writers.items() if has)
+    assert not forwarding, (
+        f"{forwarding} now forward(s) operator_verdict, so the operator's real "
+        "judgement reaches the CSV.\n\n"
+        "This is a HANDOFF REMINDER for P3, not an instruction you can finish "
+        "here. Removing `operator_verdict` from the exclusion set in "
+        "test_demo_csv_end_to_end_carries_the_new_fields will NOT turn this "
+        "green — this guard watches whether a writer forwards the value, and "
+        "that stays true after the exemption is dropped.\n\n"
+        "Both halves have to land in ONE commit: wire every production writer, "
+        "and drop the name from the exclusion set. Removing only the exemption "
+        "leaves a blank-cell failure with nothing watching it; removing only "
+        "the wiring leaves a permanently-permanent hole.\n\n"
+        "If you are reading this while trying to make it green by editing "
+        "this assertion — stop. Deleting this guard is the exact failure it "
+        "exists to prevent: every row keeps recording an empty verdict while "
+        "the repo stays green."
     )
 
 
@@ -1664,3 +1690,57 @@ class TestSameRoundReasonsAreAggregated:
         assert self._run([("quality_exposure",)])["support_clear_reasons"] == (
             "quality_rejected:1"
         )
+
+
+# ---------------------------------------------------------------------------
+# 5. The operator-facing docs must know the schema they describe
+# ---------------------------------------------------------------------------
+# Added by G3-w. Appending `operator_verdict` turned neither of these
+# documents red, and that is the whole problem: the runbook's step 0 is
+# the ONLY documented way an operator identifies which log they are
+# holding, and it still stopped at 38 columns. An operator whose file
+# correctly ended in `operator_verdict` would find no matching row,
+# conclude from the paragraph below that they held a stale file, and
+# follow its own remedy — rename it away and re-run. That throws away a
+# correct dataset.
+#
+# The precedent is recorded rather than hypothetical: #138 added twelve
+# columns without touching the docs, #142 added three more and DID update
+# both files, and this guard exists so the next append cannot repeat #138.
+
+
+def test_the_operator_docs_can_identify_a_log_with_the_current_last_column() -> None:
+    """Both docs must list the live last column, at the live width.
+
+    These are documents the operator reads, not code. Nothing else in the
+    suite reads them, so nothing else turns red when they go stale — which
+    is exactly how a stale manual ships.
+
+    The check is deliberately narrow: it looks for a table row naming the
+    current last column and carrying its position. It does not try to
+    parse the tables or keep them in sync with each other, because a
+    cleverer check would be a new place to be wrong.
+    """
+    last = G3_DEMO_RESULTS_CSV_COLUMNS[-1]
+    width = len(G3_DEMO_RESULTS_CSV_COLUMNS)
+    row_prefix = f"| `{last}` |"
+    stale: dict[str, str] = {}
+    for name in ("w0a-diagnostic-run-runbook.md", "g3-local-test-sop.md"):
+        path = Path(__file__).resolve().parents[2] / "docs" / name
+        rows = [
+            line
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.startswith(row_prefix)
+        ]
+        if not rows:
+            stale[name] = f"no row names `{last}`"
+        elif not any(str(width) in row for row in rows):
+            stale[name] = f"`{last}` is listed but not as {width} columns"
+    assert not stale, (
+        f"the operator-facing docs do not describe the current schema: {stale}. "
+        f"The demo log's last column is `{last}` at {width} columns. An "
+        "operator following the runbook's step 0 identifies their file by "
+        "its last column heading; a file that is not in the table reads as "
+        "stale, and the runbook's remedy for a stale file is to discard it "
+        "and re-run — which would throw away a correct dataset."
+    )
