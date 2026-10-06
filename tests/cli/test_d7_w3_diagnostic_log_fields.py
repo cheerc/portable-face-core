@@ -745,17 +745,45 @@ def test_the_operator_verdict_exemption_is_bounded_by_observable_state() -> None
             # Might this call BE the writer? A binding form has to mention the
             # writer's name SOMEWHERE to exist: as the callee itself
             # (`writer(...)`, `c.writer(...)`), as a string argument to
-            # getattr, or on the right-hand side of an assignment
-            # (`_w = writer`). Collecting the assigned names and testing the
-            # callee against that set was my first attempt and it was wrong —
-            # it flagged every call to any name this module ever assigns,
-            # which is the indiscriminate interception this guard exists to
-            # avoid. The test is whether THIS writer's name is written here,
-            # not whether the callee happens to be assignable.
+            # getattr, or in an assignment that BINDS it — `_w = writer` or
+            # `self._w = writer`, whose later call is `w(...)` or
+            # `self._w(...)`. Collecting the assigned names and testing
+            # callees against that set was my first attempt and it was wrong
+            # in the other direction: it flagged every call to any name this
+            # module ever assigns, which is the indiscriminate interception
+            # this guard exists to avoid. So the assigned names collected
+            # here are only the ones an assignment binds TO THE WRITER — a
+            # name is a candidate callee because of what it was assigned,
+            # not because it was assigned something.
+            assigned_to_writer: set[str] = set()
+            for stmt in ast.walk(tree):
+                if not isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+                    continue
+                targets = (
+                    stmt.targets
+                    if isinstance(stmt, ast.Assign)
+                    else [stmt.target]
+                )
+                # `x: int` carries no value, and ast.walk(None) raises —
+                # so read the assignment's right-hand side directly.
+                rhs = stmt.value
+                if isinstance(rhs, ast.Name) and rhs.id == writer_name:
+                    pass
+                elif isinstance(rhs, ast.Attribute) and rhs.attr == writer_name:
+                    pass
+                else:
+                    continue
+                for target in targets:
+                    for sub in ast.walk(target):
+                        if isinstance(sub, ast.Name):
+                            assigned_to_writer.add(sub.id)
+                        elif isinstance(sub, ast.Attribute):
+                            assigned_to_writer.add(sub.attr)
             head = ast.unparse(call.func)
+            callee = head.split(".")[-1].split("(")[0]
             mentions_writer = (
-                head.split(".")[-1] == writer_name
-                or writer_name in head
+                callee == writer_name
+                or callee in assigned_to_writer
                 or any(
                     isinstance(node_, ast.Constant) and node_.value == writer_name
                     for node_ in ast.walk(call)
@@ -794,7 +822,7 @@ def test_the_operator_verdict_exemption_is_bounded_by_observable_state() -> None
             if (
                 unpacked
                 or any(isinstance(arg, ast.Starred) for arg in call.args)
-                or head.split(".")[-1] != writer_name
+                or callee != writer_name
             ):
                 unreadable.append(f"{node.name}() → {head}(...)")
                 continue
