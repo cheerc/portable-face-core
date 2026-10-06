@@ -46,7 +46,7 @@ D4 真機第一輪的觀察與 D5 的靜態結果分屬不同協議（見 D0 §1
 
 ## 現場紀錄（此前本檔誤述為「尚無任何真實 session」）
 
-⚠️ **2026-10-03 operator 已刪除 `~/Downloads/face_sample/_facecore/store/demo-results.csv`**。該檔是**一份 32 列、23 欄、因 header drift 而錯位的舊檔**（見 issue **#140**；當時程式只寫得出 23 欄，W3／W1 之後才擴到 35／38 欄，G3-w 再到 39 欄）—— ⚠️ **那組列數／欄數只描述「該檔在被刪除之前是什麼形狀」，檔案本身已不存在，不得當成現存的檔案特徵引用。** ⚠️ **因此本檔下方所有指向「那批 32 列 log」的數字，描述的是「當時發生了什麼」，不是「檔案現在還在」** —— 事實本身不因砍檔而失效，引用時須註明資料檔已刪。
+⚠️ **2026-10-03 operator 已刪除 `~/Downloads/face_sample/_facecore/store/demo-results.csv`**。該檔是**一份 32 列、23 欄、因 header drift 而錯位的舊檔**（見 issue **#140**；當時程式只寫得出 23 欄，W3／W1 之後才擴到 35／38 欄）—— ⚠️ **那組列數／欄數只描述「該檔在被刪除之前是什麼形狀」，檔案本身已不存在，不得當成現存的檔案特徵引用。** ⚠️ **因此本檔下方所有指向「那批 32 列 log」的數字，描述的是「當時發生了什麼」，不是「檔案現在還在」** —— 事實本身不因砍檔而失效，引用時須註明資料檔已刪。
 
 ⚠️ **同一日 operator 又重新跑出新的 `demo-results.csv`（當時是 38 欄，內容持續增加中）**，隨後 PR #145（#141 丙-新）合併後 **App 改為每次啟動開一個新檔 `demo-results-<啟動時間>.csv`**，所以那個固定檔名**不再會被產生**。⚠️ **`tests/cli/test_d7_w3_diagnostic_log_fields.py` 的 `TestDocumentedScopeMatchesTheLog` 已不再讀 operator 的 CSV** —— 舊的「讀固定檔名、斷言實測值」寫法已被守護者取代：`RETIRED_FIGURES = (16, 11, 122, 32)`，`assert not (restated and not cited)`（註解重述已刪批次數字且無 commit 引用才紅）。**operator 重跑 App 不會使該測試轉紅**，因其輸入是 repo 內的 `cli.py` 註解，不是 repo 外的可變檔案。
 
