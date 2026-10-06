@@ -117,7 +117,7 @@ operator 2026-10-05 裁決（明確）：
 
 ⚠️ **實作上的重要後果**：`#154` 的 `_populate_presenting_identities`（`qt_window.py:560-573`）**刻意讓 `nontarget` 側 disabled**（註解說「待 W0-b 排程定義」）⚠️ **本 spec 落地後那個 disabled 理由消失**，`nontarget` 側必須可填 `outsider`／清單檔名。
 
-⚠️ **⚠️ 這也讓 §5.3「三種留空語意」簡化成兩種** —— 見該節。
+⚠️ **⚠️ 這也影響 §5.3 的值域設計** —— ⚠️ **該節記錄了 `operator_verdict` 各種狀態如何被區分，⚠️ 以及「刻意略過」為何最終採用明確值 `skipped` 而非空值** —— 見該節。
 
 ---
 
@@ -163,13 +163,22 @@ operator 提到的兩種情況裡，**「無臉判成有臉」不會產生 `inva
 
 ```
 辨識結果：enroll-07（0.5226）　邊際 0.2021
-┌──────────────────┬──────────────────┐
-│   ✓ 結果正確      │   ✗ 結果錯誤      │
-└──────────────────┴──────────────────┘
+┌──────────────────┬──────────────────┬──────────┐
+│   ✓ 結果正確      │   ✗ 結果錯誤      │  略過    │
+└──────────────────┴──────────────────┴──────────┘
 ```
 
 - 按「結果正確」→ 直接下一輪，**零輸入**。
 - 按「結果錯誤」→ **下方才展開輸入區**（progressive disclosure：按了才知道要填什麼）。
+- ⚠️ **按「略過」→ operator 選擇不判這一輪，直接下一輪** —— ⚠️ **記 `operator_verdict=skipped`**（§5.1），⚠️ **這是與 ✓／✗ 並列的第三個動作，不是「忘了按」的同義詞**。
+
+⚠️ **「略過」放與 ✓／✗ 同列，理由**：它是**與判定同層級的 operator 選擇**，不是輸入區裡的一個欄位。⚠️ **放在同列才能讓它在「有判斷結果」的標註流程中可用** —— ⚠️ **而若放進「結果錯誤」的展開區，它只在 operator 已選錯之後才出現，⚠️ 那就不是「不判這一輪」，而是「判錯了再補記」，語意不同。**
+
+⚠️ **⚠️ 「略過」不在 `invalid_input` 輪出現 —— §4.5 的兩按鈕例外維持不變** ⚠️ **`invalid_input`（沒偵測到人臉）沒有可判斷的辨識結果：operator 能說的只有「有沒有漏了人」這個旗標，⚠️ 而那不是一個身分，也不是一次對錯判定。** ⚠️ **所以那一輪沿用 §4.5 的 ✓／✗ 兩按鈕，不提供「略過」** —— ⚠️ **理由與 §4.6 的 `cancelled`／`error` 相同：operator 沒有東西可判，略過按鈕只會誘使他亂按。**
+
+⚠️ **⚠️ 所以「略過」的可用範圍是「有判斷結果的標註流程」** —— ⚠️ **`matched`／`unknown`／`review`／`timeout`（§4.3）可用；⚠️ `invalid_input` 不可用（§4.5）；⚠️ `cancelled`／`error` 不可用（§4.6，根本不顯示標註按鈕）。**
+
+⚠️ **⚠️ 「略過」按下去之後 `probe_kind` 與 `presenting_identity` 要怎麼處理，本 spec 未定義** —— ⚠️ **是仍記錄推導值、還是兩欄留空，是實作決定，此處不假定。** ⚠️ **⚠️ 這是本 spec 刻意留下的未解問題：實作時必須回報，不得自行假設。**
 
 ⚠️ **「正確」的格子仍然要寫 `probe_kind`** —— 程式從系統結果推導：認成某人 → `target`；沒找到 → `nontarget`。⚠️ **這是推導而非觀察，所以「沒找到 → `nontarget`」在格子 5 會錯**，而那正是 operator 按「結果錯誤」要改的情況。**推導值一律可被 operator 覆寫。**
 
@@ -193,11 +202,15 @@ operator 提到的兩種情況裡，**「無臉判成有臉」不會產生 `inva
 
 **因此標註區有三種形態：**
 
-| 系統結果 | 問什麼 | 選項 | 自動帶出 |
+⚠️ **⚠️⚠️ 下表是 P3 要實作的目標狀態，不是現況描述** ⚠️ **⚠️ 現行 source 沒有「`invalid_input` 輪把 `probe_kind` 清空」這個機制** —— ⚠️ `_probe_kind_value`／`_presenting_identity_value`（`qt_window.py`）完全對 status 盲目，只讀 combo 的目前選取值，⚠️ 而 `enter_ready` 與每輪流程都不重設那兩個 combo。** ⚠️ **⚠️ 所以實際行為是：operator 選過一次之後，之後每個 `invalid_input` 輪都會寫出那個殘留值 —— 下表 `invalid_input` 那一列的「自動帶出」格描述的是 P3 必須建立的行為，不是現在會發生的事。**
+
+⚠️ **⚠️ 那個殘留問題該怎麼處置（隨 status 清空／保留上一輪值／明確寫空）是 P3 的設計裁量，本 spec 不決定。** ⚠️ **⚠️ 但它必須被裁決**，⚠️ 否則 §5.3 表格的 `invalid_input` 列與 §4.2「`invalid_input` 不提供略過」的判定都建立在「那一輪 `probe_kind` 是空的」這個前提上，⚠️ 而該前提在現行 source 不成立。
+
+| 系統結果 | 問什麼 | 選項 | 自動帶出（⚠️ **目標狀態**） |
 | --- | --- | --- | --- |
 | `matched`（認成某人） | 實際是誰？ | ① 註冊組下拉（gallery keys）<br>② non-target 清單下拉（§4.4）<br>③ **`outsider`（隨機路人，不在以上）** | ① 填身分 ＋ `probe_kind=target`<br>② 填檔名 ＋ `probe_kind=nontarget`<br>③ 填 `outsider` ＋ `probe_kind=nontarget` |
 | `unknown`／`review`／`timeout` | 實際有沒有人註冊？ | ① 註冊組下拉<br>② **`outsider`（沒有）** | ① 填身分 ＋ `probe_kind=target`<br>② 填 `outsider` ＋ `probe_kind=nontarget` |
-| `invalid_input` | **不問是誰** | — | `probe_kind` 空 |
+| `invalid_input` | **不問是誰** | — | `probe_kind` 空（⚠️ **P3 目標狀態；現行 source 會殘留上一輪值，⚠️ 處置未裁決**） |
 
 ⚠️ **選項②／③ 全部填值，沒有「留空」選項** —— 見 §2.3，⚠️ **這是與 `runbook` 該列「不可留空」對齊的結果**。
 
@@ -229,9 +242,36 @@ operator 提到的兩種情況裡，**「無臉判成有臉」不會產生 `inva
 
 ### 4.6 `cancelled`／`error` 不進標註流程
 
+⚠️ **⚠️⚠️ 本節描述的是 P3 必須建立的機制，現行 source 沒有。** ⚠️ 現行 source 的 `cancelled`／`error` 輪**沒有任何寫入路徑**（實測見下段），⚠️ 而「該輪直接記錄為失敗」是 P3 必須建立的行為，⚠️ **現行 source 做不到這件事** —— ⚠️ **下游不可把本節讀成現況描述。**
+
+⚠️ **⚠️ 若 P3 不建立這個機制，後果是：`result=cancelled`／`error` 的那一列在 CSV 中永遠對不上任何資料，`cancelled` 與 `error` 這兩個 `result` 值將無法從 CSV 區分開來。** ⚠️ **⚠️ 而 §5.3 表格中依賴這個前提的那一列也會永遠對不上資料** —— ⚠️ 見 §5.3 該列的標記。
+
 這兩值代表**操作失敗**（operator 中斷、系統錯誤），**不是辨識判斷的結果**。⚠️ **不顯示標註按鈕**，該輪直接記錄為失敗。
 
 ⚠️ **理由**：operator 對這兩種情況沒有「正確／錯誤」可判斷 —— 他沒有看到一個辨識結果。⚠️ 若顯示按鈕，operator 會被迫亂按，污染 `operator_verdict`。
+
+⚠️ **⚠️ 現行機制：`cancelled`／`error` 那一輪也不寫 row。** ⚠️ 實測（AST 枚舉 `qt_window.py` 每個函式的行號區間並搜尋 row-write token）：全域 row-write 只出現在 `_record_unlabeled_round`（`:1034`）與 `_press_key`（`:1687`／`:1706`），而 `cancel_clicked`（`:1245-1270`）與 `_update_terminal`（`:1747-1760`）**零命中**；`_record_unlabeled_round` 的唯一呼叫者是 `recognize_again_clicked`（`:1091`），`_press_key` 的呼叫者只有兩顆標註按鈕。⚠️ record 模式的 `commit_g3_rounds` 在失敗時走 `recorder.abort`，abort 也不寫 row。** ⚠️ **⚠️ 所以「`cancelled` 有列、停止相機沒列」這個對照在現況下不成立** —— ⚠️ 上一版 spec 曾這樣寫，那是**未經量測的斷言，已刪除**。
+
+⚠️ **⚠️ 真正該記的是：§4.6 與 §4.7 在「是否寫 row」上現況相同（都不寫），⚠️ 差別在結束方式與 session 生命週期** —— ⚠️ `cancelled` 是 operator 按 Cancel 走 `cancel_inference()` 結束**那一輪**再回 Ready，session 還在；⚠️ 停止相機是 `stop_camera_clicked` 主動 `detach()`／`close()` **結束整個 session**。
+
+### 4.7 停止相機：⚠️ 現行機制下**不寫 row**
+
+⚠️ **operator 按「停止相機」結束該輪時，那一輪不寫任何 row** —— 不是「寫一列空的」，而是**完全不寫**。
+
+⚠️ **實測依據**：`stop_camera_clicked`（`src/facecore/live/qt_window.py`）走的是關相機 → detach／close → 回 Ready → 清 preview → `_set_status`，⚠️ **其函式體內零次呼叫** `_record_unlabeled_round`／`append_g3_demo_results_csv`／`commit_g3`。⚠️ **所以 §5.3 的表格沒有、也不該有它那一列。**
+
+⚠️ **⚠️ 與 §4.6 的關係：同類，但現況下「都不寫 row」—— 這是本節存在的唯一理由：**
+
+| | §4.6 的 `cancelled`／`error` | 停止相機 |
+| --- | --- | --- |
+| operator 在做什麼 | 沒在判斷那一輪，他結束**那一輪** | 沒在判斷那一輪，他結束**整個 session** |
+| 是否寫 row（**現行實測**） | ⚠️ **不寫**（`cancel_clicked` 零 row-write 呼叫） | ⚠️ **不寫**（`stop_camera_clicked` 零 row-write 呼叫） |
+| session 是否還在 | ✅ 還在，回 Ready 可繼續下一輪 | ❌ 已 `detach`／`close`，session 結束 |
+| `result` 欄有無該輪 | ❌ 無 | ❌ 無 |
+
+⚠️ **⚠️ 所以「每輪都有 row」這個假設，在 `cancelled`／`error` 與停止相機**兩者**上都錯** —— ⚠️ 真實的坑比只處理停止相機更大。⚠️ **⚠️ 而 §5.3 那張表裡的「該輪未進入標註流程」一列（`probe_kind` 空 ＋ verdict 空），⚠️ 在現行機制下對 `cancelled` 也不成立** —— ⚠️ 那正是本節要提醒 P3 與下游的事：**那張表描述的是新規則下的目標狀態，不是現況。**
+
+⚠️ **⚠️ 注意它與「再次辨識」也不同** —— ⚠️ 「再次辨識」會呼叫 `_record_unlabeled_round` 寫一列（§5.3 的略過入口，記 `skipped`），⚠️ 而停止相機連那一列都沒有。
 
 ---
 
@@ -242,11 +282,17 @@ operator 提到的兩種情況裡，**「無臉判成有臉」不會產生 `inva
 | 屬性 | 值 |
 | --- | --- |
 | 欄名 | `operator_verdict` |
-| 值域 | `correct`／`incorrect`／空（未標註） |
+| 值域 | `correct`／`incorrect`／`skipped`／空 |
 | 位置 | ⚠️ **追加為最後一欄（index 38）** |
-| 理由 | ⚠️ **不得插入中間** —— `G3_DEMO_RESULTS_CSV_COLUMNS` 是 38 欄固定順序的 tuple 契約（`src/facecore/research/cli.py:376-545`），`append_g3_demo_results_csv` 用它當 `DictWriter` 的 `fieldnames`（`:891`），`:874` 會驗 header 一致。插中間會破壞既有欄位順序與 header 驗證。 |
+| 理由 | ⚠️ **不得插入中間** —— `G3_DEMO_RESULTS_CSV_COLUMNS` 是 38 欄固定順序的 tuple 契約（`src/facecore/research/cli.py:376-551`），`append_g3_demo_results_csv` 用它當 `DictWriter` 的 `fieldnames`（`:891`），`:874` 會驗 header 一致。插中間會破壞既有欄位順序與 header 驗證。 |
 
-⚠️ **實測欄位數 = 38**（不是某些文件寫的 35 或 50）。`probe_kind` = index 28、`presenting_identity` = index 29。追加後 = **39 欄**。
+⚠️ **⚠️ 「空」的語意已收斂為「該輪未進入標註流程」** —— ⚠️ **即 §4.6 的 `cancelled`／`error`，或 operator 中途中止。** ⚠️ **「空」不再代表「operator 沒標註」這種籠統說法**，⚠️ **刻意不判的場合一律寫明確值 `skipped`（§4.2 的「略過」動作）。** ⚠️ **⚠️⚠️ 而「空」代表什麼，⚠️ 取決於 P3 是否建立 `cancelled`／`error` 的記錄機制** —— ⚠️ **現行 source 那一輪沒有任何寫入路徑（§4.6），⚠️ 若 P3 不建立，⚠️ 這個語意在 CSV 中永遠沒有對應資料。**
+
+⚠️ **⚠️ 為什麼「刻意略過」必須是明確值而不是空** —— ⚠️ **在舊規則下，「刻意略過」「漏寫」「忘按」三者的 CSV tuple 位元組相同，⚠️ 沒有任何欄位可以區分，⚠️ 所以「空 verdict = 刻意略過」只能是推測。** ⚠️ **新增 `skipped` 之後這三種情況不再是同一個 tuple，⚠️ 碰撞消失，「刻意略過」變成可從值直接讀出的事實。**
+
+⚠️ **⚠️ 一個直接後果：ground truth 有值而 `operator_verdict` 空，成為不可達狀態** —— ⚠️ **任何進入標註流程的輪次都會寫 `correct`／`incorrect`／`skipped` 三者之一，⚠️ 而未進入標註流程的輪次 `probe_kind` 是空的。** ⚠️ **所以「`probe_kind` 有值 ＋ `presenting_identity` 有值 ＋ verdict 空」在新規則下是異常，不是合法的第三種狀態**（見 §5.3）。
+
+⚠️ **追加前的欄位數 = 38**（不是某些文件寫的 35 或 50）—— ⚠️ **⚠️ 這是本 spec 追加 `operator_verdict` 之前的實測值（AST 解析）；#158 已把它追加到最末，所以現行 source 的實測值是 39。** `probe_kind` = index 28、`presenting_identity` = index 29。追加後 = **39 欄**。
 
 ### 5.1.1 ⚠️ 追加會打破三條既有守護（本節為 spec review 後新增）
 
@@ -280,7 +326,7 @@ assert G3_DEMO_RESULTS_CSV_COLUMNS[-4:] == (
 
 ⚠️ **這比原版還強一格**：原版 `[-3:]` 只保證三欄占末三；新版 `[-4:]` **同時保證三欄仍在 35/36/37**（因為它們在長度 39 的 tuple 裡若占 `[-4:]` 的前三格，即 index 35/36/37）**且** `operator_verdict` 在最末。
 
-⚠️ **實測現況**（AST 解析）：`len = 38`、`expected_count` → 35、`loaded_count` → 36、`gallery_rejected` → 37。
+⚠️ **實測現況（AST 解析，#158 追加 `operator_verdict` 之後）**：`len = 39`、`expected_count` → 35、`loaded_count` → 36、`gallery_rejected` → 37、`operator_verdict` → 38（末欄）。⚠️ **⚠️ 追加前的實測值是 `len = 38`** —— ⚠️ **本節其餘斷言（`[-4:]` 仍涵蓋 W1 三欄）是以追加後的 39 為前提。**
 
 ⚠️ **⚠️ 本 spec 之前就存在的保證邊界（非本 spec 造成）**：`test_the_23_legacy_columns_keep_their_exact_names_and_order`（`:75-79`）只 pin 住 `[:23]`。⚠️ **index 23–34 那 12 欄目前沒有任何位置守護。** ⚠️ 本 spec 不修（那是獨立的缺口），但**實作者不得順手擴張 §5.1.1 的範圍去動它**。
 
@@ -303,24 +349,58 @@ else:
 
 **這個映射維持不變** —— `operator_verdict` 是**獨立的第五個維度**，不重定義 `label_kind`。
 
-### 5.3 `probe_kind` 空值的兩種語意必須可區分
+### 5.3 `probe_kind` 空值與 `operator_verdict` 值域的組合必須可區分
 
 ⚠️ **⚠️ 本節在與 `runbook`（#156）比對後改寫。** ⚠️ **初版是「三種留空語意」，而現在 `presenting_identity` 不再留空**（§2.3）—— **只有 `probe_kind` 會空**，所以從三種簡化成兩種。
 
+⚠️ **⚠️ 那一個簡化是 §2.3 造成的，不是終點** —— ⚠️ **本節後來又因另一個理由再變一次，與 §2.3 無關**：⚠️ **「刻意略過標註」原本被當成空值的一種，⚠️ 而那個設計無法與漏寫／忘按區分（三者 CSV tuple 位元組相同），⚠️ 所以現在改用明確值 `operator_verdict=skipped`，⚠️ 「刻意略過」不再是空值。** ⚠️ **⚠️ 所以本節現在講的不是「空值語意有幾種」，而是「`operator_verdict` 的值域有幾種」** —— ⚠️ **讀本節時不要回到「兩種空值」的舊讀法，詳見下表。**
+
 ⚠️ **`presenting_identity` 在 `probe_kind=nontarget` 時一律有值**（`outsider` 或清單檔名，§2.3）。⚠️ **所以「`probe_kind=nontarget` 但身分空」在實作後不可能出現** —— ⚠️ **若有，那是不合法狀態，不是誠實狀態。**
 
-⚠️ **`probe_kind` 空值只有兩種：**
+⚠️ **⚠️ `probe_kind` 空值的兩種語意，加上 `operator_verdict` 的值域，構成下表的四列** —— ⚠️ **⚠️ 表格列數不再等於「空值語意」的種類數，⚠️ 那兩件事在不同軸上。**
 
 | `probe_kind` | `presenting_identity` | `operator_verdict` | 語意 |
 | --- | --- | --- | --- |
 | `target`／`nontarget` | 有值（合法值） | `correct`／`incorrect` | **已標註**，可進統計 |
-| ⚠️ **空** | **空** | **空** | ⚠️ **該輪未進入標註流程** —— §4.6 的 `cancelled`／`error`，或 operator 中途中止 |
+| ⚠️ **空** | **空** | **空** | ⚠️ **該輪未進入標註流程** —— §4.6 的 `cancelled`／`error`，或 operator 中途中止 ⚠️ **（⚠️⚠️ **P3 必須建立的機制，現行 source 沒有** —— ⚠️ 現行 `cancelled`／`error` 輪無任何寫入路徑；⚠️ **若 P3 不建立，這一列在 CSV 中永遠對不上任何資料**）** |
+| ⚠️ **待 P3 裁決** | ⚠️ **待 P3 裁決** | ⚠️ **待 P3 裁決** | ⚠️ **`invalid_input` 輪** —— ⚠️ **⚠️ 這一列的 `probe_kind` 與 `presenting_identity` 怎麼處理，本 spec 未定義，⚠️ 不得假設**（見下） |
+| ⚠️ **待 P3 裁決** | ⚠️ **待 P3 裁決** | `skipped` | ⚠️ **operator 刻意略過標註** —— §4.2 的「略過」動作；⚠️ **它是明確值而非空值** |
 
-⚠️ **「未標註」在實作後只有一個來源**：§4.6 的 `cancelled`／`error`（不顯示標註按鈕）。⚠️ **`matched`／`unknown`／`review`／`timeout`／`invalid_input` 五個值一律會進入標註流程**（§4.6 排除的是 `cancelled`／`error`），⚠️ **所以 `operator_verdict` 不可能空 —— operator 漏按的「髒列」在資料模型上不可產生。**
+⚠️ **⚠️ 表格共四列；⚠️ `skipped` 列與 `invalid_input` 列各有不同欄位刻意留白，本 spec 都不定義。** ⚠️ **⚠️ 兩列一律以內容指稱，不以位置指稱 —— 表格改列序時這些指稱不會失效。**
 
-⚠️ **⚠️ 為什麼這個區分對下游工具是關鍵（第二輪 review 指出）**：⚠️ 若分析工具以為「`probe_kind` 空 = operator 漏按」去設計，它會等一種**永遠不會出現**的列，⚠️ **而真正的 `cancelled`／`error` 列會被它誤判成「不該出現的髒資料」而丟棄** —— ⚠️ **那會靜默吞掉中斷與錯誤的輪次，而那正是診斷 run 最需要保留的失敗紀錄。**
+⚠️ **⚠️ `skipped` 列（`operator_verdict=skipped` 那一列）**：`probe_kind` 與 `presenting_identity` 刻意留白 —— 「略過」之後這兩欄寫推導值還是留空，是實作決定，此處不假定。⚠️ **所以 `skipped` 列不宣稱它們有值，也不宣稱它們為空。** ⚠️ **唯一已定義的是 `operator_verdict=skipped`** —— ⚠️ **那正是本裁決要表達的事實：operator 刻意不判，與漏寫、忘按不同。**
 
-⚠️ **區分方式就是這兩個欄位的組合**（空值必然成對出現）。⚠️ **下游分析工具必須依此組合過濾**：不得把「空」當成 `nontarget`，⚠️ **也不得把 `cancelled`／`error` 當成髒資料丟棄**（它們是合法的執行結果紀錄，且 `result` 欄已記錄真實狀態）。
+⚠️ **⚠️ `invalid_input` 列（`probe_kind`／`presenting_identity`／`operator_verdict` 三欄全留白那一列）：三欄全留白，本 spec 不定義其結果** ⚠️ **`probe_kind` 在那一輪怎麼處理（隨 status 清空／保留上一輪值／明確寫空）是 P3 的設計裁量，此處不假定、不預填。**
+
+⚠️ **⚠️ 但 `invalid_input` 列的存在本身必須被記錄**：⚠️ **§4.3 明文規定 `invalid_input` 不問是誰（`probe_kind` 空），⚠️ 而該輪必然進標註流程、operator 按 ✓／✗ 都會寫 verdict，⚠️ 所以「`probe_kind` 空 ＋ verdict 非空」這個組合是必然可達的，⚠️ 而本表原本只有「有值 ＋ verdict」與「全空」兩列 —— ⚠️ 漏掉它等於宣稱它不可達。**
+
+⚠️ **⚠️ 兩列的留白會互相牽動**：⚠️ **`invalid_input` 列的裁決決定了 `invalid_input` 輪的 `probe_kind` 怎麼來，⚠️ 而那正是 §4.2 判定「`invalid_input` 不提供略過」時所依賴的前提 —— ⚠️ 若 `probe_kind` 不再是空的，⚠️ 該判定的前提就需要重驗。** ⚠️ **所以 P3 裁決 `invalid_input` 列時必須連帶回頭檢查 §4.2 的可用範圍。**
+
+⚠️ **⚠️ 下表列出三種已定義情形；⚠️ 未裁決的 `invalid_input` 情形故不在表內，⚠️ 但它的存在不可忽略（見上方 `invalid_input` 列說明）**：
+
+| 情形 | `probe_kind` | `operator_verdict` | 下游如何處置 |
+| --- | --- | --- | --- |
+| 未進入標註流程 | 空 | 空 | ⚠️ **⚠️ P3 必須建立的機制，⚠️ 現行 source 不存在這種列** —— ⚠️ 若 P3 未建立，**這裡沒有任何資料可丟**，⚠️ 而非「不得丟棄一個存在的列」（§4.6） |
+| 刻意略過 | ⚠️ **待 P3 裁決** | `skipped` | ⚠️ **明確的 operator 選擇，不進正確率統計** |
+| 已標註 | 有值 | `correct`／`incorrect` | 可進統計 |
+
+⚠️ **⚠️ 「漏寫／忘按」與「刻意略過」的碰撞已被 `skipped` 消除 —— 這是本節 `skipped` 列存在的理由**：⚠️ **在舊規則下，刻意略過、漏寫、忘按三者的 CSV tuple 位元組相同**（⚠️ **都寫「ground truth 有值 ＋ verdict 空」**，⚠️ **沒有任何欄位能區分**），⚠️ **所以那時無法斷言「空 verdict 就是刻意略過」** —— ⚠️ **而下游若照那個假設設計，⚠️ 就會把真正的漏寫與忘按一併讀成「operator 刻意略過」。**
+
+⚠️ **新規則消除了這個碰撞**：⚠️ **刻意略過寫 `skipped`，⚠️ 而漏寫與忘按仍會留下「ground truth 有值 ＋ verdict 空」這個 tuple。** ⚠️ **所以現在後者可以被偵測出來** —— ⚠️ **⚠️ 而它已不再是合法狀態** ⚠️ **（§5.1）：任何進入標註流程的輪次都會寫三個值之一，未進入的輪次 `probe_kind` 又是空的。** ⚠️ **所以「ground truth 有值 ＋ verdict 空」是資料異常，⚠️ 應被驗證工具標記出來，而不是當成第三種狀態接受。**
+
+⚠️ **⚠️ 「未標註」在實作後只有一個來源**：§4.6 的 `cancelled`／`error`（不顯示標註按鈕）。⚠️ **⚠️⚠️ 而那是 P3 必須建立的記錄機制，⚠️ 現行 source 的 `cancelled`／`error` 輪沒有任何寫入路徑（§4.6）—— ⚠️ 所以「未標註只有一個來源」在現況下連一個來源都沒有，⚠️ 若 P3 不建立，`cancelled`／`error` 輪在 CSV 中完全不可見。** ⚠️ **`matched`／`unknown`／`review`／`timeout`／`invalid_input` 五個值一律會進入標註流程**（§4.6 排除的是 `cancelled`／`error`），⚠️ **所以進入標註流程的輪次必寫 `correct`／`incorrect`／`skipped` 三者之一 —— 空 verdict 在那裡不可產生，operator 漏按的「髒列」在資料模型上不可產生。**
+
+⚠️ **⚠️ 「略過」有兩個入口，兩者都必須寫 `skipped`** ⚠️ **§4.2 標註區的那顆「略過」按鈕是其中一個入口；⚠️ 另一個是標註區之外的「再次辨識」路徑（`qt_window.py` 的 `_record_unlabeled_round`）—— ⚠️ operator 看到一輪結果、選擇不判、往下走，那與 `skipped` 的定義是同一件事，⚠️ 差別只是它今天叫「再次辨識」。**
+
+⚠️ **⚠️ 所以該路徑在新規則下應產出 `operator_verdict=skipped`** —— ⚠️ **⚠️ 這是資料模型的結論，不是要求改「再次辨識」按鈕的行為或位置** ⚠️ **該按鈕**不在** §4.2 的 ✓／✗／略過 那列，⚠️ §4.2 講的同列理由（§4.2）不涵蓋它，⚠️ 而它今天已經具備「不判定就往下走」的語意。** ⚠️ **要改的只是它落盤時寫進 `operator_verdict` 的值。**
+
+⚠️ **⚠️ 這一條是 §5.1「不可達」斷言的必要前提** ⚠️ **現行實作在該路徑傳 `probe_kind` 與 `presenting_identity`，⚠️ 但**不傳** `operator_verdict`（預設空字串，`research/cli.py` 的 `append_g3_demo_results_csv`），⚠️ 因此它今天產生的正是「ground truth 有值 ＋ verdict 空」這個 tuple** —— ⚠️ **⚠️ 而那正是 §5.1「不可達」斷言宣告為資料異常的形狀。** ⚠️ **⚠️ 若該路徑不寫 `skipped`，⚠️ 上面的斷言就是錯的，⚠️ 而下游會開始把「再次辨識」的輪次誤標成漏寫／忘按。**
+
+⚠️ **⚠️ 這個結論成立的前提是「每一輪都寫 `operator_verdict`」** —— ⚠️ **`skipped` 讓它成立，因為 operator 不判定時也有一個明確值可寫；⚠️ 在舊規則下同一個結論會被「刻意略過寫空」這件事推翻。** ⚠️ **⚠️ 但「`operator_verdict` 全表不可能空」仍不成立** —— ⚠️ ⚠️ **⚠️⚠️ 而 §4.6 的 `cancelled`／`error` 輪那一列是 P3 必須建立的機制，⚠️ 現行 source 沒有寫入路徑（§4.6）** —— ⚠️ **⚠️ 所以現況下不是「該保留但可能被丟棄」，⚠️ 而是「今天根本沒有這種列」；⚠️ 若 P3 不建立，⚠️ 這裡沒有任何資料需要保留（見下一段）。**
+
+⚠️ **⚠️ 為什麼這個區分對下游工具是關鍵（第二輪 review 指出）**：⚠️ 若分析工具以為「`probe_kind` 空 = operator 漏按」去設計，它會等一種**永遠不會出現**的列，⚠️ **⚠️ 而 P3 建立後的 `cancelled`／`error` 列會被它誤判成「不該出現的髒資料」而丟棄** —— ⚠️ **⚠️⚠️ 這個危害是條件式的：⚠️ 它在 P3 建立該機制之後才成立，⚠️ 因為現行 source 沒有這種列可丟。⚠️ 若 P3 不建立，下游沒有東西會被誤判；⚠️ 但 P3 一旦建立，這個誤判就會吞掉中斷與錯誤的輪次，⚠️ 而那正是診斷 run 最需要保留的失敗紀錄。**
+
+⚠️ **區分方式就是這兩個欄位的組合**（空值必然成對出現）。⚠️ **下游分析工具必須依此組合過濾**：不得把「空」當成 `nontarget`，⚠️ **也不得把 `cancelled`／`error` 當成髒資料丟棄** —— ⚠️ **⚠️⚠️ 而 `cancelled`／`error` 那一列是 P3 必須建立的機制，⚠️ 現行 source 沒有寫入路徑（§4.6），⚠️ 所以「不要丟棄」的對象在今天的 CSV 裡不存在，⚠️ 但 P3 建立後必須保留它。**
 
 ⚠️ **⚠️ 本 spec 落地時需同步更新 「可達組合」表（`### 現在的狀態是分側的` 子節內）** —— ⚠️ **該表現在列了四種組合**（含「`probe_kind=nontarget` ＋身分空」「漏填」兩列），⚠️ **本 spec 實作後那兩列都不再可能出現**。⚠️ **那是實作 PR 的連帶範圍，不是本 spec 的落地範圍。**
 
@@ -347,7 +427,7 @@ else:
 
 | 守護 | 比對什麼 | 移除下拉後 |
 | --- | --- | --- |
-| `test_both_demo_row_paths_are_present` | **writer 所在的函式名**（`_press_key` / `_record_unlabeled_round`，`_EXPECTED_WRITERS`） | ✅ 不受影響 |
+| `test_both_demo_row_paths_are_present` | **writer 所在的函式名**（`_press_key` / `_record_unlabeled_round`，`_EXPECTED_WRITERS`） | ⚠️ **需追蹤 `_record_unlabeled_round` 的 `operator_verdict` 語意** —— ⚠️ 該 writer 今天不傳 `operator_verdict`，⚠️ 而本 spec 規定它應產出 `skipped`（§5.3），⚠️ **⚠️ 「不受影響」的前提是 verdict 語意不變，⚠️ 而本次變更恰恰改了 verdict 語意。** |
 | `test_every_writer_forwards_both_ground_truth_columns` | **kwarg 名稱**（`probe_kind` / `presenting_identity`） | ✅ 不受影響 |
 | `test_no_writer_passes_a_constant_ground_truth` | ⚠️ **accessor 名稱**（`_ACCESSORS = frozenset({"_probe_kind_value", "_presenting_identity_value"})`，比對方式 `return _callee(value) in _ACCESSORS`） | ⚠️ **名字必須保留** |
 
@@ -388,8 +468,9 @@ else:
 3. 「結果錯誤」路徑的輸入區**只在按了錯誤之後**出現。
 4. non-target 清單由**程式讀資料夾**產生；**換掉資料夾內容不改任何程式碼**即可生效。
 5. `invalid_input` 輪只出現 ✓／✗，不出現身分輸入。
-6. ⚠️ **兩種「空值語意」在下游可依 `probe_kind` ＋ `operator_verdict` 組合區分**（§5.3）。
-   ⚠️ **（本條初版寫「三種留空」，是與 runbook 比對前的舊設計，已隨 §2.3 修正。）**
+6. ⚠️ **「operator 刻意略過標註」由明確值 `operator_verdict=skipped` 記錄，不與空值混用**（§4.2、§5.1）。
+   ⚠️ **空 verdict 只代表「該輪未進入標註流程」（§4.6 的 `cancelled`／`error`，或中途中止），⚠️ 而該情形可由 `probe_kind` 為空辨認。** ⚠️ **⚠️⚠️ 而這一條描述的是 P3 必須建立的機制，⚠️ 現行 source 的 `cancelled`／`error` 輪沒有任何寫入路徑** —— ⚠️ **若 P3 不建立，⚠️ 這個「可辨認」在 CSV 中永遠對不上資料。**
+   ⚠️ **（本條初版寫「兩種空值語意」，⚠️ 那個設計把「刻意略過」當成空值的一種，⚠️ 而空值無法與漏寫／忘按區分。⚠️ 本 spec 後來改採明確值 `skipped`，⚠️ 該混淆已消除 —— ⚠️ 而 §2.3 只處理 `presenting_identity` 不留空，⚠️ 與 `operator_verdict` 的演進無關，⚠️ 不要把本條的修正歸給它。）**
 
 ### 7.2 不破壞
 
@@ -402,7 +483,7 @@ else:
 12. ⚠️ **證明測試被 CI 執行時，必須用該測試實際會跑的 job**（計數或 collect-only 實測，不是只讀 workflow 檔）。
     ⚠️ **（plan 階段實測：該檔在 `verify` job 是 `5 skipped`、在 `qt-smoke` job 是 `5 passed` —— ⚠️ 用 `verify` 的數字證明它是壞證據。）**
 13. ⚠️ **`G1` 的改寫必須保留「W1 三欄位置」的斷言**（`[-4:]` 逐字版）—— ⚠️ **「相對順序不變」已被駁回**（那守不住位置，§5.1.1）。
-14. ⚠️ **`cancelled`／`error` 輪不出現標註按鈕**（§4.6）。
+14. ⚠️ **`cancelled`／`error` 輪不出現標註按鈕**（§4.6）—— ⚠️ **⚠️ 而那一輪是否被記錄是 P3 必須裁決的未解問題**（§8.1），⚠️ **本條只約束「不出現按鈕」，⚠️ 不預設該輪會出現在 CSV 中。**
 
 ### 7.3 禁止事項（operator 既有約束）
 
@@ -423,6 +504,10 @@ else:
 
 - ⚠️ **格子 3 的歸因維度**（哪一個 non-target 最容易被誤認）—— §2.1 已載明失去。需要對照表才拿得回來。
 - ⚠️ **無效輪的漏檢率**有記錄（`operator_verdict=incorrect`），但**漏了誰**沒有 —— §3.1 已載明。
+- ⚠️ **⚠️ `cancelled`／`error` 輪的未解問題（P3 必須回報裁決，不得自行假設）** —— ⚠️ **現行 source 的這一輪在 CSV 裡沒有任何痕跡**（實測見 §4.6），⚠️ 因此：
+  - ⚠️ **⚠️ operator 要怎麼知道「這一輪被取消了」—— 尚未裁決。** ⚠️ 是要在 UI 上提示、還是靜默讓下一輪取代、還是別的機制，⚠️ **本 spec 不決定。** ⚠️ **⚠️ 若不處理，operator 可能以為自己只是漏按了標註按鈕，⚠️ 而實際是那一輪被系統取消。**
+  - ⚠️ **`cancelled`／`error` 輪應不應該被記錄 —— 尚未裁決。** ⚠️ §4.6 與 §5.3 那張表描述的是**目標狀態**，⚠️ 而現行 source 沒有寫入路徑；⚠️ **要寫一列記著失敗（§4.6 的原意），還是完全不寫（與停止相機同）—— 兩者都未被裁決。** ⚠️ **⚠️ 而這個決定會連帶影響 §5.3 表格是否需要那一列。**
+  - ⚠️ **形狀與 §5.3 的 `invalid_input` 列相同**（⚠️ **以內容指稱，⚠️ 不用位置指稱** —— 見 §5.3 該列）：⚠️ **同樣是「存在這個組合但結果未定」，⚠️ 同樣不得由實作者預填。**
 
 ### 8.2 需 operator 在場
 
@@ -448,7 +533,7 @@ else:
 | `probe_kind` 空值涵蓋哪些值 | ✅ **`unknown`／`review`／`timeout` 三值全含**（§4.3） | operator 看到三者都是「沒找到此人」（都不顯示名字） |
 | `probe_kind_input.py` 重寫範圍 | ✅ **五 helper 留、七測試作廢、併入 ④**（§6.1） | lead 建議，理由採納 |
 | G1 斷言強度 | ✅ **`[-4:]` 逐字版**（§5.1.1） | 「相對順序不變」不等於「位置不變」——lead 駁回第二版 |
-| §5.3 第三列的定義 | ✅ **「該輪未進入標註流程」**（§5.3） | 新 UI 下 `operator_verdict` 不可能空，「漏按」是死列 |
+| §5.3 `skipped` 列與 `invalid_input` 列的定義 | ✅ **「該輪未進入標註流程」或「operator 刻意略過（`skipped`）」**（§5.3） | ⚠️ **新 UI 下空 verdict 只在 `probe_kind` 空時可能** —— ⚠️ **`skipped` 是明確值而非空值，⚠️ ground truth 有值而 verdict 空是資料異常，「漏按」不再是死列而是可被偵測的例外** |
 | ⚠️ **`nontarget` 側值域** | ✅ **決定為 `outsider`，不留空**（§2.3） | ⚠️ **落地時與 `runbook`（#156）交叉比對才發現的衝突** —— runbook 該列寫「不可留空」，spec 初版設計成留空 |
 
 ---
@@ -513,7 +598,7 @@ else:
 | --- | --- |
 | `probe_kind=nontarget` ＋ 身分空（值域未定義） | ❌ **不再可能**（值域已定義為 `outsider`） |
 | `probe_kind` 空 ＋ **有值**（「漏填」） | ⚠️ **不再可能**（新 UI 下身分由選項決定，不存在只選身分不選種類） |
-| `probe_kind` 空 ＋ 空（未記錄） | ✅ 仍可能，但**語意收斂為「該輪未進入標註流程」**（§5.3） |
+| `probe_kind` 空 ＋ 空（未記錄） | ✅ 仍可能，但**語意收斂為「該輪未進入標註流程」**（§5.3） ⚠️ **⚠️ 而該機制現行 source 沒有，⚠️ `cancelled`／`error` 輪今天不寫入任何 row；⚠️ 若 P3 不建立，這一列在 CSV 中永遠對不上資料（§4.6）** |
 | `probe_kind=target` ＋ 空（「漏填」） | ⚠️ **新 UI 下不會產生**（`target` 側選項來自已載入身分，無理由空） |
 
 ⚠️ **⚠️ 為什麼落地 PR 不動這張表**：⚠️ **spec 落地時程式還沒改**，⚠️ **那四種組合當下仍然全部存在。** ⚠️ **若落地 PR 就把它們標成「不可能」，`runbook` 會描述一個尚未發生的狀態** —— ⚠️ **那正是這幾輪反覆修的「文件領先於程式」那型病。**
