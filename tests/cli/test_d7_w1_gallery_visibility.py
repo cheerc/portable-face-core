@@ -67,7 +67,10 @@ class TestColumnsExist:
         assert not missing, f"missing demo columns: {missing}"
 
     def test_new_columns_are_appended_after_the_existing_35(self) -> None:
-        assert G3_DEMO_RESULTS_CSV_COLUMNS[-3:] == EXPECTED_NEW, (
+        assert G3_DEMO_RESULTS_CSV_COLUMNS[-4:] == (
+            *EXPECTED_NEW,
+            "operator_verdict",
+        ), (
             "W1 must append, never insert: operator's spreadsheet formulas "
             "depend on the existing positions"
         )

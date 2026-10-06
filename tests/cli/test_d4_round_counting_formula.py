@@ -165,6 +165,14 @@ class TestColumnOrderIsPinnedIndependently:
             "expected_count",
             "loaded_count",
             "gallery_rejected",
+            # G3-w appended one more, again strictly AFTER
+            # `gallery_rejected`. Same rule as W3 and W1, for the same
+            # reason: appending is the only shape permitted, because
+            # positions 1-23 (margin at 18, label_kind at 22) are what the
+            # operator's spreadsheet formulas read. Appended at the end,
+            # so the SOP's column 22 for label_kind still holds — the two
+            # SOP assertions above re-assert that independently.
+            "operator_verdict",
         ]
 
 

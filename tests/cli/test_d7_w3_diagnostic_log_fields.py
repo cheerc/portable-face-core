@@ -562,6 +562,14 @@ class TestForbiddenFields:
             "expected_count",
             "loaded_count",
             "gallery_rejected",
+            # G3-w: the operator's own verdict on the round, `correct` /
+            # `incorrect` / empty. Not one of the D7-A additions, so it has
+            # no vetting file of its own yet; the allow-set entry is what
+            # this guard is FOR — the name had to be reviewed and listed
+            # here rather than slipping in unnoticed. See
+            # docs/specs/2026-10-05-g3-operator-verdict-ground-truth.md §5.1
+            # for the value domain and the reason it is appended last.
+            "operator_verdict",
         }, f"unvetted new columns: {sorted(set(extra) - set(SNAPSHOT_ALLOWED))}"
 
 
@@ -631,7 +639,17 @@ def test_demo_csv_end_to_end_carries_the_new_fields(tmp_path: Path) -> None:
              {"top1_identity", "top1_score", "top2_identity", "top2_score",
               "margin", "label_identity", "probe_kind",
               "presenting_identity", "support_clear_reasons",
-              "expected_count", "loaded_count", "gallery_rejected"}]
+              "expected_count", "loaded_count", "gallery_rejected",
+              # G3-w `operator_verdict`, EXPIRED EXEMPTION. Unlike every
+              # other entry above, this cell is NOT honestly empty: this
+              # window went through press_correct(), so the operator's
+              # judgement is known and `correct` is the right value. It is
+              # empty only because P2 added the column and P3 has not wired
+              # the button yet. So it sits in this exclusion set on a
+              # deadline, and `test_the_operator_verdict_exemption_is_
+              # bounded_by_observable_state` below is what ends that
+              # deadline. Do not leave it here after P3.
+              "operator_verdict"}]
     assert not blank, f"columns blank in a real scored round: {blank}"
     assert int(row["frames_rejected"]) >= 0
     assert row["gallery_rejected"] == "", (
@@ -639,6 +657,274 @@ def test_demo_csv_end_to_end_carries_the_new_fields(tmp_path: Path) -> None:
         "rather than claiming a measured empty gallery"
     )
     assert csv  # keep the import meaningful for readers
+
+
+def test_the_operator_verdict_exemption_is_bounded_by_observable_state() -> None:
+    """The one thing that keeps the exemption above from being permanent.
+
+    Every OTHER name in that exclusion set is exempt because the value
+    genuinely does not exist for this window — no gallery, so no
+    `load_report`; no support disturbance, so no clear to count. Their
+    companion assertions hold that exemption to the truth they rest on.
+
+    `operator_verdict` is not that kind of case: press_correct() means the
+    operator DID judge the round, so `correct` is available and the cell
+    must not be blank. The exclusion above is a deliberate, dated hole —
+    P2 shipped the column, P3 does the wiring.
+
+    An exemption nobody can see expire is indistinguishable from a bug, and
+    this repo has already shipped guards that nothing ran. So the hole is
+    tied to an OBSERVABLE state: ANY production writer forwarding a verdict.
+
+    ⚠️ ANY writer, not one of them by name. There are two — the labeled
+    `_press_key` and the unlabeled `_record_unlabeled_round` — and an
+    earlier version of this companion watched only `_press_key`. Wiring the
+    verdict into the other one left it green: the probe pointed at one path
+    and silently accepted while the exemption ran unbounded. Naming a single
+    writer here is what created that hole, so the check below is scoped to
+    the CALL SITE rather than to any function.
+
+    · while NO writer passes a verdict → this passes, hole open
+    · the moment ANY writer passes one → this turns RED, and stays red
+
+    ⚠️⚠️ That last sentence is not a to-do you can finish by editing this
+    file. Removing `operator_verdict` from the exclusion set will NOT make
+    this go green — it goes green only when P3 takes the exemption back by
+    wiring every writer AND dropping the name in one commit. See the
+    assertion message for why the two halves have to move together.
+
+    Reading the source with ast rather than counting strings is the same
+    reason `test_d7_w0b_writer_wiring.py` parses instead of greps: a
+    comment or a passing mention can satisfy a string count while nothing
+    is forwarded.
+    """
+    import ast
+
+    writer_name = "append_g3_demo_results_csv"
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "facecore"
+        / "live"
+        / "qt_window.py"
+    )
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    # ⚠️ Ask the inverse question.
+    #
+    # Every previous version asked 「can I find the forwarding?」 and grew the
+    # search each time one more binding form turned out to be invisible:
+    # another writer (`_record_unlabeled_round`), then `**kwargs`, then an
+    # import alias, then a plain assignment. Each fix caught its own shape
+    # and each one was the same bug again — the verdict reached the CSV while
+    # the guard reported 「not wired」.
+    #
+    # So the question is inverted: for a call that might be the writer, can
+    # its keywords be read? A call whose forwarding cannot be read is not
+    # evidence of 「no forwarding」 — it is an absence of evidence, and it
+    # fails loud.
+    #
+    # ⚠️⚠️ This is NOT closed, and an earlier version of this comment said
+    # it was — 「the writer's name is a LITERAL in every binding form […]
+    # which is what makes this closed rather than another enumeration」.
+    # That premise is false, and it hid a regression: dropping the import
+    # binding lost the alias shape that the previous version caught. A
+    # binding form is only visible here when the writer's name lands inside
+    # THIS call node, or in a binding whose right-hand side is the writer.
+    # So these shapes are known to slip past:
+    #   · `functools.partial(append_g3_demo_results_csv, …)` then `p(…)`
+    #   · passing the writer through a lambda: `(lambda f: f)(writer)(…)`
+    #   · a conditional expression selecting the writer
+    #   · `[append_g3_demo_results_csv][0](…)` — the writer put in a list
+    #     and called by index
+    #
+    # ⚠️ One shape per bullet, and that is not tidiness. An earlier version
+    # wrote 「`WRITERS['append_g3_demo_results_csv'](…)`, list subscript」
+    # as a single bullet holding two shapes, and deleting the bullet on the
+    # evidence that the first one is caught took the second with it. The
+    # dict form is seen — the name is a string constant inside the call
+    # node — while `[writer][0](…)` is not: nothing in that call mentions
+    # the writer. So a shape removed on someone else's measurement is a
+    # shape this list can no longer warn anyone about.
+    # None of them appears in `src/` today — measured by walking every
+    # `src/**/*.py` for REFERENCES to the writer's name (as `ast.Name`, as
+    # `ast.Attribute`, or as a string `ast.Constant`), not by grepping for
+    # the word 「partial」, which matches unrelated identifiers. ⚠️ The three
+    # node types matter: the first two shapes carry the name as an
+    # `ast.Name`, so a search for string literals would not have found them,
+    # and the measurement has to cover the shapes it claims to cover.
+    # They are listed here so the next reader knows this list is a floor,
+    # not a proof: writing 「closed」 here is what would stop the next person
+    # looking.
+    #
+    # The companion rule is test_d7_w0b_writer_wiring.py::_is_live_read:
+    # recognise what you can, refuse what you cannot, and never treat the
+    # second case as the first.
+    writers: dict[str, bool] = {}
+    unreadable: list[str] = []
+    # Names the module binds the writer to by importing it. `from … import
+    # append_g3_demo_results_csv as _alias` makes the call site `_alias(…)`,
+    # whose own node contains no trace of the writer's name — so without
+    # this the alias shape is invisible, and an earlier version lost it.
+    imported_as: set[str] = set()
+    for stmt in ast.walk(tree):
+        if isinstance(stmt, ast.ImportFrom) and any(
+            alias.name == writer_name for alias in stmt.names
+        ):
+            imported_as.update(
+                alias.asname or alias.name for alias in stmt.names
+            )
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            # Might this call BE the writer? A binding form has to mention the
+            # writer's name SOMEWHERE to exist: as the callee itself
+            # (`writer(...)`, `c.writer(...)`), as a string argument to
+            # getattr, or in an assignment that BINDS it — `_w = writer` or
+            # `self._w = writer`, whose later call is `w(...)` or
+            # `self._w(...)`. Collecting the assigned names and testing
+            # callees against that set was my first attempt and it was wrong
+            # in the other direction: it flagged every call to any name this
+            # module ever assigns, which is the indiscriminate interception
+            # this guard exists to avoid. So the assigned names collected
+            # here are only the ones an assignment binds TO THE WRITER — a
+            # name is a candidate callee because of what it was assigned,
+            # not because it was assigned something.
+            #
+            # ⚠️ The bound forms below are NOT the full set, and the list of
+            # shapes this guard misses is above. A right-hand side that
+            # merely CONTAINS the writer — a call, a conditional, a subscript
+            # — is discarded here, which is the same silence under a
+            # different name: the shape is not recognised, and an absent
+            # observation is not evidence of an absent forwarding. Closing
+            # that would mean enumerating right-hand-side forms, which is
+            # the thing this comment exists to warn against. What the code
+            # below claims is narrower than what the first comment above
+            # lists, deliberately: recognise the direct forms, refuse the
+            # unreadable ones, and leave the rest visible rather than
+            # accounted for.
+            assigned_to_writer: set[str] = set()
+            for stmt in ast.walk(tree):
+                if not isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+                    continue
+                targets = (
+                    stmt.targets
+                    if isinstance(stmt, ast.Assign)
+                    else [stmt.target]
+                )
+                # `x: int` carries no value, and ast.walk(None) raises —
+                # so read the assignment's right-hand side directly.
+                rhs = stmt.value
+                if isinstance(rhs, ast.Name) and rhs.id == writer_name:
+                    pass
+                elif isinstance(rhs, ast.Attribute) and rhs.attr == writer_name:
+                    pass
+                else:
+                    continue
+                for target in targets:
+                    for sub in ast.walk(target):
+                        if isinstance(sub, ast.Name):
+                            assigned_to_writer.add(sub.id)
+                        elif isinstance(sub, ast.Attribute):
+                            assigned_to_writer.add(sub.attr)
+            head = ast.unparse(call.func)
+            callee = head.split(".")[-1].split("(")[0]
+            mentions_writer = (
+                callee == writer_name
+                or callee in assigned_to_writer
+                or callee in imported_as
+                or any(
+                    isinstance(node_, ast.Constant) and node_.value == writer_name
+                    for node_ in ast.walk(call)
+                )
+            )
+            if not mentions_writer:
+                continue
+            # ⚠️ Unresolvable forwarding is NOT "not forwarded".
+            #
+            # `**kwargs` reaches here with arg=None, so the subset test
+            # below would answer 「not forwarded」 for a call that may well
+            # be forwarding it — and it did. Proven by execution, not by
+            # reading: a row written through that path carried
+            # operator_verdict='correct' while this guard stayed green.
+            #
+            # Other shapes reach the same place, so the check is on the
+            # unpacking rather than on `**kwargs` specifically:
+            #   · `*args` / `**kwargs` on the call itself (arg is None)
+            #   · a `**dict` built conditionally a few lines up
+            #   · a walrus in an argument that reassigns the kwargs dict
+            # What they share is that the call's keywords are no longer
+            # a literal list, so 「is my name among them」 has no answer.
+            # A guard that cannot answer must say so rather than pick the
+            # convenient answer — the same rule
+            # test_d7_w0b_writer_wiring.py::_is_live_read follows when it
+            # refuses anything it cannot read as a live read.
+            #
+            # The cost is that P3 is pushed towards explicit keywords,
+            # which is the point: an unverifiable shape that stays silent
+            # is worse than one that interrupts.
+            unpacked = [
+                ast.unparse(arg.value)
+                for arg in call.keywords
+                if arg.arg is None
+            ]
+            if (
+                unpacked
+                or any(isinstance(arg, ast.Starred) for arg in call.args)
+                or callee != writer_name
+            ):
+                unreadable.append(f"{node.name}() → {head}(...)")
+                continue
+            writers[node.name] = "operator_verdict" in {
+                kw.arg for kw in call.keywords
+            }
+    if unreadable:
+        raise AssertionError(
+            "these calls mention the demo writer but their forwarding cannot "
+            "be determined by reading them:\n  "
+            + "\n  ".join(sorted(set(unreadable)))
+            + "\n\n"
+            "This is a handoff blocker, not a style note. Call the writer "
+            "directly with explicit keywords — "
+            "`append_g3_demo_results_csv(..., operator_verdict=...)` — and "
+            "this goes green.\n\n"
+            "⚠️⚠️ But understand what happens next: this guard STAYS RED "
+            "after that, and it is supposed to. It turns green only when "
+            "`operator_verdict` is ALSO removed from the exclusion set in "
+            "test_demo_csv_end_to_end_carries_the_new_fields. Both halves "
+            "belong in ONE commit, which is P3's job — not something you "
+            "can finish from this message, and not something you can "
+            "finish by editing this file.\n\n"
+            "Why it matters: earlier versions of this guard read a call "
+            "like this and concluded 「not wired」, while the round's real "
+            "verdict was sitting in the CSV. That is the one failure this "
+            "guard exists to prevent, and it would have repeated here "
+            "silently."
+        )
+    assert writers, (
+        "no function in qt_window.py calls append_g3_demo_results_csv; this "
+        "file's view of the demo write path is stale"
+    )
+    forwarding = sorted(name for name, has in writers.items() if has)
+    assert not forwarding, (
+        f"{forwarding} now forward(s) operator_verdict, so the operator's real "
+        "judgement reaches the CSV.\n\n"
+        "This is a HANDOFF REMINDER for P3, not an instruction you can finish "
+        "here. Removing `operator_verdict` from the exclusion set in "
+        "test_demo_csv_end_to_end_carries_the_new_fields will NOT turn this "
+        "green — this guard watches whether a writer forwards the value, and "
+        "that stays true after the exemption is dropped.\n\n"
+        "Both halves have to land in ONE commit: wire every production writer, "
+        "and drop the name from the exclusion set. Removing only the exemption "
+        "leaves a blank-cell failure with nothing watching it; removing only "
+        "the wiring leaves a permanently-permanent hole.\n\n"
+        "If you are reading this while trying to make it green by editing "
+        "this assertion — stop. Deleting this guard is the exact failure it "
+        "exists to prevent: every row keeps recording an empty verdict while "
+        "the repo stays green."
+    )
 
 
 @pytest.mark.skipif(
@@ -1586,3 +1872,57 @@ class TestSameRoundReasonsAreAggregated:
         assert self._run([("quality_exposure",)])["support_clear_reasons"] == (
             "quality_rejected:1"
         )
+
+
+# ---------------------------------------------------------------------------
+# 5. The operator-facing docs must know the schema they describe
+# ---------------------------------------------------------------------------
+# Added by G3-w. Appending `operator_verdict` turned neither of these
+# documents red, and that is the whole problem: the runbook's step 0 is
+# the ONLY documented way an operator identifies which log they are
+# holding, and it still stopped at 38 columns. An operator whose file
+# correctly ended in `operator_verdict` would find no matching row,
+# conclude from the paragraph below that they held a stale file, and
+# follow its own remedy — rename it away and re-run. That throws away a
+# correct dataset.
+#
+# The precedent is recorded rather than hypothetical: #138 added twelve
+# columns without touching the docs, #142 added three more and DID update
+# both files, and this guard exists so the next append cannot repeat #138.
+
+
+def test_the_operator_docs_can_identify_a_log_with_the_current_last_column() -> None:
+    """Both docs must list the live last column, at the live width.
+
+    These are documents the operator reads, not code. Nothing else in the
+    suite reads them, so nothing else turns red when they go stale — which
+    is exactly how a stale manual ships.
+
+    The check is deliberately narrow: it looks for a table row naming the
+    current last column and carrying its position. It does not try to
+    parse the tables or keep them in sync with each other, because a
+    cleverer check would be a new place to be wrong.
+    """
+    last = G3_DEMO_RESULTS_CSV_COLUMNS[-1]
+    width = len(G3_DEMO_RESULTS_CSV_COLUMNS)
+    row_prefix = f"| `{last}` |"
+    stale: dict[str, str] = {}
+    for name in ("w0a-diagnostic-run-runbook.md", "g3-local-test-sop.md"):
+        path = Path(__file__).resolve().parents[2] / "docs" / name
+        rows = [
+            line
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.startswith(row_prefix)
+        ]
+        if not rows:
+            stale[name] = f"no row names `{last}`"
+        elif not any(str(width) in row for row in rows):
+            stale[name] = f"`{last}` is listed but not as {width} columns"
+    assert not stale, (
+        f"the operator-facing docs do not describe the current schema: {stale}. "
+        f"The demo log's last column is `{last}` at {width} columns. An "
+        "operator following the runbook's step 0 identifies their file by "
+        "its last column heading; a file that is not in the table reads as "
+        "stale, and the runbook's remedy for a stale file is to discard it "
+        "and re-run — which would throw away a correct dataset."
+    )

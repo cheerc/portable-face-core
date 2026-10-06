@@ -534,6 +534,20 @@ G3_DEMO_RESULTS_CSV_COLUMNS = (
     "expected_count",
     "loaded_count",
     "gallery_rejected",
+    # G3-w: the operator's own verdict on this round — 「結果正確」 or
+    # 「結果錯誤」, rendered as `correct` / `incorrect`, empty when nobody
+    # labelled the round. It is a FIFTH axis beside `label_kind`, never a
+    # new value inside it: `label_kind`'s three-value contract is unchanged.
+    #
+    # APPENDED, never inserted, for the same reason as the three columns
+    # above — the operator's spreadsheet formulas depend on the positions
+    # of the existing ones.
+    #
+    # Empty is a LEGAL value here, 「未標註」, and it is also what a writer
+    # that forgets this column produces. So 「the column exists」 proves
+    # nothing; the guard has to assert the VALUE is in {correct, incorrect}
+    # on a round the operator actually judged.
+    "operator_verdict",
 )
 
 
@@ -675,6 +689,7 @@ def g3_demo_round_row(
     probe_kind: str = "",
     presenting_identity: str = "",
     gallery_load_report: Any | None = None,
+    operator_verdict: str = "",
 ) -> dict[str, object]:
     """Reduce one labeled round to its demo row (D3b decision -11 item 2).
 
@@ -714,6 +729,15 @@ def g3_demo_round_row(
       columns empty rather than zero: zero would claim the gallery held
       zero people, which is a measurement, while empty says no report
       reached this row.
+    - `operator_verdict` — G3-w. The operator's own judgement of this
+      round: `correct` for 「結果正確」, `incorrect` for 「結果錯誤」.
+      Empty means nobody judged it, which is a legal value rather than a
+      missing one, so it defaults to "" exactly like the two ground-truth
+      fields above. It is deliberately NOT folded into `label_kind`, whose
+      three-value contract is unchanged — the verdict is a separate axis of
+      the operator's 2x2 model, not a fourth meaning of the existing one.
+      The window reads it at write time; nothing here derives it, so this
+      function cannot invent a verdict for a round nobody judged.
     """
     from facecore.live.qt_window import RoundComplete as _RC
 
@@ -831,6 +855,7 @@ def g3_demo_round_row(
         "expected_count": expected_str,
         "loaded_count": loaded_str,
         "gallery_rejected": rejected_str,
+        "operator_verdict": operator_verdict,
     }
 
 
@@ -846,6 +871,7 @@ def append_g3_demo_results_csv(
     probe_kind: str = "",
     presenting_identity: str = "",
     gallery_load_report: Any | None = None,
+    operator_verdict: str = "",
 ) -> None:
     """Append one non-recording round to the plaintext demo result file.
 
@@ -859,6 +885,10 @@ def append_g3_demo_results_csv(
     D7-A W1: `gallery_load_report` rides along so every row records which
     gallery it ran against. The append semantics are unchanged — writing a
     row still never touches the header.
+
+    G3-w: `operator_verdict` rides along for the same reason the other
+    per-round ground truths do. It is forwarded verbatim, so the window is
+    the only place that decides what 「結果正確」 means for a round.
 
     D7-A #141: a file whose header is not this build's is REFUSED with
     zero writes. This IS a new branch on the write path, and it is what
@@ -884,6 +914,7 @@ def append_g3_demo_results_csv(
         probe_kind=probe_kind,
         presenting_identity=presenting_identity,
         gallery_load_report=gallery_load_report,
+        operator_verdict=operator_verdict,
     )
     write_header = not demo_csv.is_file()
     demo_csv.parent.mkdir(parents=True, exist_ok=True)
