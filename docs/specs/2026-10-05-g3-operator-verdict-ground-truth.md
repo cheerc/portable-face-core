@@ -388,7 +388,7 @@ else:
 
 ⚠️ **新規則消除了這個碰撞**：⚠️ **刻意略過寫 `skipped`，⚠️ 而漏寫與忘按仍會留下「ground truth 有值 ＋ verdict 空」這個 tuple。** ⚠️ **所以現在後者可以被偵測出來** —— ⚠️ **⚠️ 而它已不再是合法狀態** ⚠️ **（§5.1）：任何進入標註流程的輪次都會寫三個值之一，未進入的輪次 `probe_kind` 又是空的。** ⚠️ **所以「ground truth 有值 ＋ verdict 空」是資料異常，⚠️ 應被驗證工具標記出來，而不是當成第三種狀態接受。**
 
-⚠️ **「未標註」在實作後只有一個來源**：§4.6 的 `cancelled`／`error`（不顯示標註按鈕）。⚠️ **`matched`／`unknown`／`review`／`timeout`／`invalid_input` 五個值一律會進入標註流程**（§4.6 排除的是 `cancelled`／`error`），⚠️ **所以進入標註流程的輪次必寫 `correct`／`incorrect`／`skipped` 三者之一 —— 空 verdict 在那裡不可產生，operator 漏按的「髒列」在資料模型上不可產生。**
+⚠️ **⚠️ 「未標註」在實作後只有一個來源**：§4.6 的 `cancelled`／`error`（不顯示標註按鈕）。⚠️ **⚠️⚠️ 而那是 P3 必須建立的記錄機制，⚠️ 現行 source 的 `cancelled`／`error` 輪沒有任何寫入路徑（§4.6）—— ⚠️ 所以「未標註只有一個來源」在現況下連一個來源都沒有，⚠️ 若 P3 不建立，`cancelled`／`error` 輪在 CSV 中完全不可見。** ⚠️ **`matched`／`unknown`／`review`／`timeout`／`invalid_input` 五個值一律會進入標註流程**（§4.6 排除的是 `cancelled`／`error`），⚠️ **所以進入標註流程的輪次必寫 `correct`／`incorrect`／`skipped` 三者之一 —— 空 verdict 在那裡不可產生，operator 漏按的「髒列」在資料模型上不可產生。**
 
 ⚠️ **⚠️ 「略過」有兩個入口，兩者都必須寫 `skipped`** ⚠️ **§4.2 標註區的那顆「略過」按鈕是其中一個入口；⚠️ 另一個是標註區之外的「再次辨識」路徑（`qt_window.py` 的 `_record_unlabeled_round`）—— ⚠️ operator 看到一輪結果、選擇不判、往下走，那與 `skipped` 的定義是同一件事，⚠️ 差別只是它今天叫「再次辨識」。**
 
@@ -483,7 +483,7 @@ else:
 12. ⚠️ **證明測試被 CI 執行時，必須用該測試實際會跑的 job**（計數或 collect-only 實測，不是只讀 workflow 檔）。
     ⚠️ **（plan 階段實測：該檔在 `verify` job 是 `5 skipped`、在 `qt-smoke` job 是 `5 passed` —— ⚠️ 用 `verify` 的數字證明它是壞證據。）**
 13. ⚠️ **`G1` 的改寫必須保留「W1 三欄位置」的斷言**（`[-4:]` 逐字版）—— ⚠️ **「相對順序不變」已被駁回**（那守不住位置，§5.1.1）。
-14. ⚠️ **`cancelled`／`error` 輪不出現標註按鈕**（§4.6）。
+14. ⚠️ **`cancelled`／`error` 輪不出現標註按鈕**（§4.6）—— ⚠️ **⚠️ 而那一輪是否被記錄是 P3 必須裁決的未解問題**（§8.1），⚠️ **本條只約束「不出現按鈕」，⚠️ 不預設該輪會出現在 CSV 中。**
 
 ### 7.3 禁止事項（operator 既有約束）
 
