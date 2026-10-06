@@ -733,11 +733,14 @@ def test_the_operator_verdict_exemption_is_bounded_by_observable_state() -> None
     # So these shapes are known to slip past:
     #   · `functools.partial(append_g3_demo_results_csv, …)` then `p(…)`
     #   · passing the writer through a lambda: `(lambda f: f)(writer)(…)`
-    #   · `WRITERS['append_g3_demo_results_csv'](…)`, list subscript
     #   · a conditional expression selecting the writer
     # None of them appears in `src/` today — measured by walking every
-    # `src/**/*.py` for string literals equal to the writer's name, not by
-    # grepping for the word 「partial」, which matches unrelated identifiers.
+    # `src/**/*.py` for REFERENCES to the writer's name (as `ast.Name`, as
+    # `ast.Attribute`, or as a string `ast.Constant`), not by grepping for
+    # the word 「partial」, which matches unrelated identifiers. ⚠️ The three
+    # node types matter: the first two shapes carry the name as an
+    # `ast.Name`, so a search for string literals would not have found them,
+    # and the measurement has to cover the shapes it claims to cover.
     # They are listed here so the next reader knows this list is a floor,
     # not a proof: writing 「closed」 here is what would stop the next person
     # looking.
@@ -765,12 +768,6 @@ def test_the_operator_verdict_exemption_is_bounded_by_observable_state() -> None
         for call in ast.walk(node):
             if not isinstance(call, ast.Call):
                 continue
-            # Does this call head mention the writer's name as a literal?
-            # Covers `writer(...)`, `_alias(...)`, `c.writer(...)`,
-            # `getattr(m, "writer")(...)` and `_w(...)` where
-            # `_w = writer` was assigned anywhere in the module — the
-            # assignment is itself a literal mention, which is what makes
-            # this closed rather than another enumeration.
             # Might this call BE the writer? A binding form has to mention the
             # writer's name SOMEWHERE to exist: as the callee itself
             # (`writer(...)`, `c.writer(...)`), as a string argument to
@@ -784,6 +781,19 @@ def test_the_operator_verdict_exemption_is_bounded_by_observable_state() -> None
             # here are only the ones an assignment binds TO THE WRITER — a
             # name is a candidate callee because of what it was assigned,
             # not because it was assigned something.
+            #
+            # ⚠️ The bound forms below are NOT the full set, and the list of
+            # shapes this guard misses is above. A right-hand side that
+            # merely CONTAINS the writer — a call, a conditional, a subscript
+            # — is discarded here, which is the same silence under a
+            # different name: the shape is not recognised, and an absent
+            # observation is not evidence of an absent forwarding. Closing
+            # that would mean enumerating right-hand-side forms, which is
+            # the thing this comment exists to warn against. What the code
+            # below claims is narrower than what the first comment above
+            # lists, deliberately: recognise the direct forms, refuse the
+            # unreadable ones, and leave the rest visible rather than
+            # accounted for.
             assigned_to_writer: set[str] = set()
             for stmt in ast.walk(tree):
                 if not isinstance(stmt, (ast.Assign, ast.AnnAssign)):
