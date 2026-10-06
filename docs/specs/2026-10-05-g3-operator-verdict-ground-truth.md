@@ -202,9 +202,9 @@ operator 提到的兩種情況裡，**「無臉判成有臉」不會產生 `inva
 
 **因此標註區有三種形態：**
 
-⚠️ **⚠️⚠️ 下表是 P3 要實作的目標狀態，不是現況描述** ⚠️ **⚠️ 現行 source 沒有「`invalid_input` 輪把 `probe_kind` 清空」這個機制** —— ⚠️ `_probe_kind_value`／`_presenting_identity_value`（`qt_window.py`）完全對 status 盲目，只讀 combo 的目前選取值，⚠️ 而 `enter_ready` 與每輪流程都不重設那兩個 combo。** ⚠️ **⚠️ 所以實際行為是：operator 選過一次之後，之後每個 `invalid_input` 輪都會寫出那個殘留值 —— 下表最後一列那一格描述的是 P3 必須建立的行為，不是現在會發生的事。**
+⚠️ **⚠️⚠️ 下表是 P3 要實作的目標狀態，不是現況描述** ⚠️ **⚠️ 現行 source 沒有「`invalid_input` 輪把 `probe_kind` 清空」這個機制** —— ⚠️ `_probe_kind_value`／`_presenting_identity_value`（`qt_window.py`）完全對 status 盲目，只讀 combo 的目前選取值，⚠️ 而 `enter_ready` 與每輪流程都不重設那兩個 combo。** ⚠️ **⚠️ 所以實際行為是：operator 選過一次之後，之後每個 `invalid_input` 輪都會寫出那個殘留值 —— 下表 `invalid_input` 那一列的「自動帶出」格描述的是 P3 必須建立的行為，不是現在會發生的事。**
 
-⚠️ **⚠️ 那個殘留問題該怎麼處置（隨 status 清空／保留上一輪值／明確寫空）是 P3 的設計裁量，本 spec 不決定。** ⚠️ **⚠️ 但它必須被裁決**，⚠️ 否則 §5.3 表格的第四列與 §4.2「`invalid_input` 不提供略過」的判定都建立在「那一輪 `probe_kind` 是空的」這個前提上，⚠️ 而該前提在現行 source 不成立。
+⚠️ **⚠️ 那個殘留問題該怎麼處置（隨 status 清空／保留上一輪值／明確寫空）是 P3 的設計裁量，本 spec 不決定。** ⚠️ **⚠️ 但它必須被裁決**，⚠️ 否則 §5.3 表格的 `invalid_input` 列與 §4.2「`invalid_input` 不提供略過」的判定都建立在「那一輪 `probe_kind` 是空的」這個前提上，⚠️ 而該前提在現行 source 不成立。
 
 | 系統結果 | 問什麼 | 選項 | 自動帶出（⚠️ **目標狀態**） |
 | --- | --- | --- | --- |
@@ -265,7 +265,7 @@ operator 提到的兩種情況裡，**「無臉判成有臉」不會產生 `inva
 
 ⚠️ **⚠️ 一個直接後果：ground truth 有值而 `operator_verdict` 空，成為不可達狀態** —— ⚠️ **任何進入標註流程的輪次都會寫 `correct`／`incorrect`／`skipped` 三者之一，⚠️ 而未進入標註流程的輪次 `probe_kind` 是空的。** ⚠️ **所以「`probe_kind` 有值 ＋ `presenting_identity` 有值 ＋ verdict 空」在新規則下是異常，不是合法的第三種狀態**（見 §5.3）。
 
-⚠️ **實測欄位數 = 38**（不是某些文件寫的 35 或 50）。`probe_kind` = index 28、`presenting_identity` = index 29。追加後 = **39 欄**。
+⚠️ **追加前的欄位數 = 38**（不是某些文件寫的 35 或 50）—— ⚠️ **⚠️ 這是本 spec 追加 `operator_verdict` 之前的實測值（AST 解析）；#158 已把它追加到最末，所以現行 source 的實測值是 39。** `probe_kind` = index 28、`presenting_identity` = index 29。追加後 = **39 欄**。
 
 ### 5.1.1 ⚠️ 追加會打破三條既有守護（本節為 spec review 後新增）
 
@@ -299,7 +299,7 @@ assert G3_DEMO_RESULTS_CSV_COLUMNS[-4:] == (
 
 ⚠️ **這比原版還強一格**：原版 `[-3:]` 只保證三欄占末三；新版 `[-4:]` **同時保證三欄仍在 35/36/37**（因為它們在長度 39 的 tuple 裡若占 `[-4:]` 的前三格，即 index 35/36/37）**且** `operator_verdict` 在最末。
 
-⚠️ **實測現況**（AST 解析）：`len = 38`、`expected_count` → 35、`loaded_count` → 36、`gallery_rejected` → 37。
+⚠️ **實測現況（AST 解析，#158 追加 `operator_verdict` 之後）**：`len = 39`、`expected_count` → 35、`loaded_count` → 36、`gallery_rejected` → 37、`operator_verdict` → 38（末欄）。⚠️ **⚠️ 追加前的實測值是 `len = 38`** —— ⚠️ **本節其餘斷言（`[-4:]` 仍涵蓋 W1 三欄）是以追加後的 39 為前提。**
 
 ⚠️ **⚠️ 本 spec 之前就存在的保證邊界（非本 spec 造成）**：`test_the_23_legacy_columns_keep_their_exact_names_and_order`（`:75-79`）只 pin 住 `[:23]`。⚠️ **index 23–34 那 12 欄目前沒有任何位置守護。** ⚠️ 本 spec 不修（那是獨立的缺口），但**實作者不得順手擴張 §5.1.1 的範圍去動它**。
 
@@ -339,17 +339,17 @@ else:
 | ⚠️ **待 P3 裁決** | ⚠️ **待 P3 裁決** | ⚠️ **待 P3 裁決** | ⚠️ **`invalid_input` 輪** —— ⚠️ **⚠️ 這一列的 `probe_kind` 與 `presenting_identity` 怎麼處理，本 spec 未定義，⚠️ 不得假設**（見下） |
 | ⚠️ **待 P3 裁決** | ⚠️ **待 P3 裁決** | `skipped` | ⚠️ **operator 刻意略過標註** —— §4.2 的「略過」動作；⚠️ **它是明確值而非空值** |
 
-⚠️ **⚠️ 表格共四列；⚠️ 第三列（`skipped`）與第四列（`invalid_input`）各有不同欄位刻意留白，本 spec 都不定義。**
+⚠️ **⚠️ 表格共四列；⚠️ `skipped` 列與 `invalid_input` 列各有不同欄位刻意留白，本 spec 都不定義。** ⚠️ **⚠️ 兩列一律以內容指稱，不以位置指稱 —— 表格改列序時這些指稱不會失效。**
 
-⚠️ **⚠️ 第三列（`skipped`）**：`probe_kind` 與 `presenting_identity` 刻意留白 —— 「略過」之後這兩欄寫推導值還是留空，是實作決定，此處不假定。⚠️ **所以第三列不宣稱它們有值，也不宣稱它們為空。** ⚠️ **唯一已定義的是 `operator_verdict=skipped`** —— ⚠️ **那正是本裁決要表達的事實：operator 刻意不判，與漏寫、忘按不同。**
+⚠️ **⚠️ `skipped` 列（`operator_verdict=skipped` 那一列）**：`probe_kind` 與 `presenting_identity` 刻意留白 —— 「略過」之後這兩欄寫推導值還是留空，是實作決定，此處不假定。⚠️ **所以 `skipped` 列不宣稱它們有值，也不宣稱它們為空。** ⚠️ **唯一已定義的是 `operator_verdict=skipped`** —— ⚠️ **那正是本裁決要表達的事實：operator 刻意不判，與漏寫、忘按不同。**
 
-⚠️ **⚠️ 第四列（`invalid_input`）：三欄全留白，本 spec 不定義其結果** ⚠️ **`probe_kind` 在那一輪怎麼處理（隨 status 清空／保留上一輪值／明確寫空）是 P3 的設計裁量，此處不假定、不預填。**
+⚠️ **⚠️ `invalid_input` 列（`probe_kind`／`presenting_identity`／`operator_verdict` 三欄全留白那一列）：三欄全留白，本 spec 不定義其結果** ⚠️ **`probe_kind` 在那一輪怎麼處理（隨 status 清空／保留上一輪值／明確寫空）是 P3 的設計裁量，此處不假定、不預填。**
 
-⚠️ **⚠️ 但第四列的存在本身必須被記錄**：⚠️ **§4.3 明文規定 `invalid_input` 不問是誰（`probe_kind` 空），⚠️ 而該輪必然進標註流程、operator 按 ✓／✗ 都會寫 verdict，⚠️ 所以「`probe_kind` 空 ＋ verdict 非空」這個組合是必然可達的，⚠️ 而本表原本只有「有值 ＋ verdict」與「全空」兩列 —— ⚠️ 漏掉它等於宣稱它不可達。**
+⚠️ **⚠️ 但 `invalid_input` 列的存在本身必須被記錄**：⚠️ **§4.3 明文規定 `invalid_input` 不問是誰（`probe_kind` 空），⚠️ 而該輪必然進標註流程、operator 按 ✓／✗ 都會寫 verdict，⚠️ 所以「`probe_kind` 空 ＋ verdict 非空」這個組合是必然可達的，⚠️ 而本表原本只有「有值 ＋ verdict」與「全空」兩列 —— ⚠️ 漏掉它等於宣稱它不可達。**
 
-⚠️ **⚠️ 兩列的留白會互相牽動**：⚠️ **第四列的裁決決定了 `invalid_input` 輪的 `probe_kind` 怎麼來，⚠️ 而那正是 §4.2 判定「`invalid_input` 不提供略過」時所依賴的前提 —— ⚠️ 若 `probe_kind` 不再是空的，⚠️ 該判定的前提就需要重驗。** ⚠️ **所以 P3 裁決第四列時必須連帶回頭檢查 §4.2 的可用範圍。**
+⚠️ **⚠️ 兩列的留白會互相牽動**：⚠️ **`invalid_input` 列的裁決決定了 `invalid_input` 輪的 `probe_kind` 怎麼來，⚠️ 而那正是 §4.2 判定「`invalid_input` 不提供略過」時所依賴的前提 —— ⚠️ 若 `probe_kind` 不再是空的，⚠️ 該判定的前提就需要重驗。** ⚠️ **所以 P3 裁決 `invalid_input` 列時必須連帶回頭檢查 §4.2 的可用範圍。**
 
-⚠️ **⚠️ 下表列出三種已定義情形；⚠️ 第四種（`invalid_input`）尚未裁決，故不在表內，⚠️ 但它的存在不可忽略（見下方第四列說明）**：
+⚠️ **⚠️ 下表列出三種已定義情形；⚠️ 未裁決的 `invalid_input` 情形故不在表內，⚠️ 但它的存在不可忽略（見上方 `invalid_input` 列說明）**：
 
 | 情形 | `probe_kind` | `operator_verdict` | 下游如何處置 |
 | --- | --- | --- | --- |
@@ -357,7 +357,7 @@ else:
 | 刻意略過 | ⚠️ **待 P3 裁決** | `skipped` | ⚠️ **明確的 operator 選擇，不進正確率統計** |
 | 已標註 | 有值 | `correct`／`incorrect` | 可進統計 |
 
-⚠️ **⚠️ 「漏寫／忘按」與「刻意略過」的碰撞已被 `skipped` 消除 —— 這是本節第三列存在的理由**：⚠️ **在舊規則下，刻意略過、漏寫、忘按三者的 CSV tuple 位元組相同**（⚠️ **都寫「ground truth 有值 ＋ verdict 空」**，⚠️ **沒有任何欄位能區分**），⚠️ **所以那時無法斷言「空 verdict 就是刻意略過」** —— ⚠️ **而下游若照那個假設設計，⚠️ 就會把真正的漏寫與忘按一併讀成「operator 刻意略過」。**
+⚠️ **⚠️ 「漏寫／忘按」與「刻意略過」的碰撞已被 `skipped` 消除 —— 這是本節 `skipped` 列存在的理由**：⚠️ **在舊規則下，刻意略過、漏寫、忘按三者的 CSV tuple 位元組相同**（⚠️ **都寫「ground truth 有值 ＋ verdict 空」**，⚠️ **沒有任何欄位能區分**），⚠️ **所以那時無法斷言「空 verdict 就是刻意略過」** —— ⚠️ **而下游若照那個假設設計，⚠️ 就會把真正的漏寫與忘按一併讀成「operator 刻意略過」。**
 
 ⚠️ **新規則消除了這個碰撞**：⚠️ **刻意略過寫 `skipped`，⚠️ 而漏寫與忘按仍會留下「ground truth 有值 ＋ verdict 空」這個 tuple。** ⚠️ **所以現在後者可以被偵測出來** —— ⚠️ **⚠️ 而它已不再是合法狀態** ⚠️ **（§5.1）：任何進入標註流程的輪次都會寫三個值之一，未進入的輪次 `probe_kind` 又是空的。** ⚠️ **所以「ground truth 有值 ＋ verdict 空」是資料異常，⚠️ 應被驗證工具標記出來，而不是當成第三種狀態接受。**
 
@@ -502,7 +502,7 @@ else:
 | `probe_kind` 空值涵蓋哪些值 | ✅ **`unknown`／`review`／`timeout` 三值全含**（§4.3） | operator 看到三者都是「沒找到此人」（都不顯示名字） |
 | `probe_kind_input.py` 重寫範圍 | ✅ **五 helper 留、七測試作廢、併入 ④**（§6.1） | lead 建議，理由採納 |
 | G1 斷言強度 | ✅ **`[-4:]` 逐字版**（§5.1.1） | 「相對順序不變」不等於「位置不變」——lead 駁回第二版 |
-| §5.3 第三列的定義 | ✅ **「該輪未進入標註流程」或「operator 刻意略過（`skipped`）」**（§5.3） | ⚠️ **新 UI 下空 verdict 只在 `probe_kind` 空時可能** —— ⚠️ **`skipped` 是明確值而非空值，⚠️ ground truth 有值而 verdict 空是資料異常，「漏按」不再是死列而是可被偵測的例外** |
+| §5.3 `skipped` 列與 `invalid_input` 列的定義 | ✅ **「該輪未進入標註流程」或「operator 刻意略過（`skipped`）」**（§5.3） | ⚠️ **新 UI 下空 verdict 只在 `probe_kind` 空時可能** —— ⚠️ **`skipped` 是明確值而非空值，⚠️ ground truth 有值而 verdict 空是資料異常，「漏按」不再是死列而是可被偵測的例外** |
 | ⚠️ **`nontarget` 側值域** | ✅ **決定為 `outsider`，不留空**（§2.3） | ⚠️ **落地時與 `runbook`（#156）交叉比對才發現的衝突** —— runbook 該列寫「不可留空」，spec 初版設計成留空 |
 
 ---
