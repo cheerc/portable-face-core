@@ -246,6 +246,26 @@ operator 提到的兩種情況裡，**「無臉判成有臉」不會產生 `inva
 
 ⚠️ **理由**：operator 對這兩種情況沒有「正確／錯誤」可判斷 —— 他沒有看到一個辨識結果。⚠️ 若顯示按鈕，operator 會被迫亂按，污染 `operator_verdict`。
 
+⚠️ **⚠️ 但 `cancelled`／`error` 那一輪「仍然寫 row」** —— ⚠️ 該列留在 CSV 裡，`result` 欄記錄真實狀態（`cancelled` 或 `error`）。⚠️ **下游可以從那一列知道 run 是怎麼結束的。**
+
+### 4.7 停止相機：**連 row 都不寫**
+
+⚠️ **operator 按「停止相機」結束該輪時，那一輪不寫任何 row** —— 不是「寫一列空的」，而是**完全不寫**。
+
+⚠️ **實測依據**：`stop_camera_clicked`（`src/facecore/live/qt_window.py`）走的是關相機 → detach／close → 回 Ready → 清 preview → `_set_status`，⚠️ **其函式體內零次呼叫** `_record_unlabeled_round`／`append_g3_demo_results_csv`／`commit_g3`。⚠️ **所以 §5.3 的表格沒有、也不該有它那一列。**
+
+⚠️ **⚠️ 與 §4.6 同類，但不同類 —— 這是本節存在的唯一理由：**
+
+| | §4.6 的 `cancelled`／`error` | 停止相機 |
+| --- | --- | --- |
+| operator 在做什麼 | 沒在判斷那一輪，他在**結束整個 session** | 同左 |
+| 是否寫 row | ⚠️ **寫**，且 `result` 欄記錄真實狀態 | ⚠️ **完全不寫** |
+| 下游能否知道 | ✅ 從那一列看得到 | ❌ CSV 裡沒有任何痕跡 |
+
+⚠️ **⚠️ 所以「§5.3 每一種結束方式都有一列」這個假設是錯的** —— ⚠️ **`cancelled`／`error` 有一列，停止相機沒有。** ⚠️ **下游若以「每輪都有 row」為前提推算輪數、算漏檢率、或把缺列當成髒資料丟棄，⚠️ 就會在停止相機這個案例上錯。** ⚠️ **⚠️ 停止相機是本 spec 記錄的第三種結束方式，⚠️ 而它是唯一不留任何紀錄的那一種。**
+
+⚠️ **⚠️ 注意它與「再次辨識」也不同** —— ⚠️ 「再次辨識」會呼叫 `_record_unlabeled_round` 寫一列（§5.3 的略過入口，記 `skipped`），⚠️ 而停止相機連那一列都沒有。
+
 ---
 
 ## 5. 資料模型變更
@@ -257,7 +277,7 @@ operator 提到的兩種情況裡，**「無臉判成有臉」不會產生 `inva
 | 欄名 | `operator_verdict` |
 | 值域 | `correct`／`incorrect`／`skipped`／空 |
 | 位置 | ⚠️ **追加為最後一欄（index 38）** |
-| 理由 | ⚠️ **不得插入中間** —— `G3_DEMO_RESULTS_CSV_COLUMNS` 是 38 欄固定順序的 tuple 契約（`src/facecore/research/cli.py:376-545`），`append_g3_demo_results_csv` 用它當 `DictWriter` 的 `fieldnames`（`:891`），`:874` 會驗 header 一致。插中間會破壞既有欄位順序與 header 驗證。 |
+| 理由 | ⚠️ **不得插入中間** —— `G3_DEMO_RESULTS_CSV_COLUMNS` 是 38 欄固定順序的 tuple 契約（`src/facecore/research/cli.py:376-551`），`append_g3_demo_results_csv` 用它當 `DictWriter` 的 `fieldnames`（`:891`），`:874` 會驗 header 一致。插中間會破壞既有欄位順序與 header 驗證。 |
 
 ⚠️ **⚠️ 「空」的語意已收斂為「該輪未進入標註流程」** —— ⚠️ **即 §4.6 的 `cancelled`／`error`，或 operator 中途中止。** ⚠️ **「空」不再代表「operator 沒標註」這種籠統說法**，⚠️ **刻意不判的場合一律寫明確值 `skipped`（§4.2 的「略過」動作）。**
 
