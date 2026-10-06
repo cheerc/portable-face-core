@@ -246,23 +246,26 @@ operator 提到的兩種情況裡，**「無臉判成有臉」不會產生 `inva
 
 ⚠️ **理由**：operator 對這兩種情況沒有「正確／錯誤」可判斷 —— 他沒有看到一個辨識結果。⚠️ 若顯示按鈕，operator 會被迫亂按，污染 `operator_verdict`。
 
-⚠️ **⚠️ 但 `cancelled`／`error` 那一輪「仍然寫 row」** —— ⚠️ 該列留在 CSV 裡，`result` 欄記錄真實狀態（`cancelled` 或 `error`）。⚠️ **下游可以從那一列知道 run 是怎麼結束的。**
+⚠️ **⚠️ 現行機制：`cancelled`／`error` 那一輪也不寫 row。** ⚠️ 實測（AST 枚舉 `qt_window.py` 每個函式的行號區間並搜尋 row-write token）：全域 row-write 只出現在 `_record_unlabeled_round`（`:1034`）與 `_press_key`（`:1687`／`:1706`），而 `cancel_clicked`（`:1245-1270`）與 `_update_terminal`（`:1747-1760`）**零命中**；`_record_unlabeled_round` 的唯一呼叫者是 `recognize_again_clicked`（`:1091`），`_press_key` 的呼叫者只有兩顆標註按鈕。⚠️ record 模式的 `commit_g3_rounds` 在失敗時走 `recorder.abort`，abort 也不寫 row。** ⚠️ **⚠️ 所以「`cancelled` 有列、停止相機沒列」這個對照在現況下不成立** —— ⚠️ 上一版 spec 曾這樣寫，那是**未經量測的斷言，已刪除**。
 
-### 4.7 停止相機：**連 row 都不寫**
+⚠️ **⚠️ 真正該記的是：§4.6 與 §4.7 在「是否寫 row」上現況相同（都不寫），⚠️ 差別在結束方式與 session 生命週期** —— ⚠️ `cancelled` 是 operator 按 Cancel 走 `cancel_inference()` 結束**那一輪**再回 Ready，session 還在；⚠️ 停止相機是 `stop_camera_clicked` 主動 `detach()`／`close()` **結束整個 session**。
+
+### 4.7 停止相機：⚠️ 現行機制下**不寫 row**
 
 ⚠️ **operator 按「停止相機」結束該輪時，那一輪不寫任何 row** —— 不是「寫一列空的」，而是**完全不寫**。
 
 ⚠️ **實測依據**：`stop_camera_clicked`（`src/facecore/live/qt_window.py`）走的是關相機 → detach／close → 回 Ready → 清 preview → `_set_status`，⚠️ **其函式體內零次呼叫** `_record_unlabeled_round`／`append_g3_demo_results_csv`／`commit_g3`。⚠️ **所以 §5.3 的表格沒有、也不該有它那一列。**
 
-⚠️ **⚠️ 與 §4.6 同類，但不同類 —— 這是本節存在的唯一理由：**
+⚠️ **⚠️ 與 §4.6 的關係：同類，但現況下「都不寫 row」—— 這是本節存在的唯一理由：**
 
 | | §4.6 的 `cancelled`／`error` | 停止相機 |
 | --- | --- | --- |
-| operator 在做什麼 | 沒在判斷那一輪，他在**結束整個 session** | 同左 |
-| 是否寫 row | ⚠️ **寫**，且 `result` 欄記錄真實狀態 | ⚠️ **完全不寫** |
-| 下游能否知道 | ✅ 從那一列看得到 | ❌ CSV 裡沒有任何痕跡 |
+| operator 在做什麼 | 沒在判斷那一輪，他結束**那一輪** | 沒在判斷那一輪，他結束**整個 session** |
+| 是否寫 row（**現行實測**） | ⚠️ **不寫**（`cancel_clicked` 零 row-write 呼叫） | ⚠️ **不寫**（`stop_camera_clicked` 零 row-write 呼叫） |
+| session 是否還在 | ✅ 還在，回 Ready 可繼續下一輪 | ❌ 已 `detach`／`close`，session 結束 |
+| `result` 欄有無該輪 | ❌ 無 | ❌ 無 |
 
-⚠️ **⚠️ 所以「§5.3 每一種結束方式都有一列」這個假設是錯的** —— ⚠️ **`cancelled`／`error` 有一列，停止相機沒有。** ⚠️ **下游若以「每輪都有 row」為前提推算輪數、算漏檢率、或把缺列當成髒資料丟棄，⚠️ 就會在停止相機這個案例上錯。** ⚠️ **⚠️ 停止相機是本 spec 記錄的第三種結束方式，⚠️ 而它是唯一不留任何紀錄的那一種。**
+⚠️ **⚠️ 所以「每輪都有 row」這個假設，在 `cancelled`／`error` 與停止相機**兩者**上都錯** —— ⚠️ 真實的坑比只處理停止相機更大。⚠️ **⚠️ 而 §5.3 那張表裡的「該輪未進入標註流程」一列（`probe_kind` 空 ＋ verdict 空），⚠️ 在現行機制下對 `cancelled` 也不成立** —— ⚠️ 那正是本節要提醒 P3 與下游的事：**那張表描述的是新規則下的目標狀態，不是現況。**
 
 ⚠️ **⚠️ 注意它與「再次辨識」也不同** —— ⚠️ 「再次辨識」會呼叫 `_record_unlabeled_round` 寫一列（§5.3 的略過入口，記 `skipped`），⚠️ 而停止相機連那一列都沒有。
 
