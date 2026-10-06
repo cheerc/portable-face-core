@@ -708,6 +708,29 @@ def test_the_operator_verdict_exemption_is_bounded_by_observable_state() -> None
         / "qt_window.py"
     )
     tree = ast.parse(source.read_text(encoding="utf-8"))
+    # ⚠️ Resolve the import binding instead of matching a literal name.
+    #
+    # Matching `call.func.id == "append_g3_demo_results_csv"` only sees the
+    # calls that spell the name out. `from ... import append_g3_demo_results_csv
+    # as _append_row` makes the call site `_append_row(...)`, the loop never
+    # looks at it, and the guard reports 「not wired」 for a writer that is
+    # wiring — the same silent failure as the `**kwargs` hole, reached through
+    # a different door. It went green specifically when some unrelated
+    # function elsewhere in the file kept a real-name call: the guard read
+    # that one, saw no forwarding, and stopped. The verdict was in the CSV.
+    #
+    # This repo aliases imports in nine places, so a helper that wraps the
+    # writer and renames it is an ordinary thing to write, not a contrived
+    # one. So the names below are every local binding the module gives the
+    # writer, whichever way it was imported.
+    writer_names = {"append_g3_demo_results_csv"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and any(
+            alias.name == "append_g3_demo_results_csv" for alias in node.names
+        ):
+            writer_names.update(
+                alias.asname or alias.name for alias in node.names
+            )
     writers: dict[str, bool] = {}
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef):
@@ -716,7 +739,7 @@ def test_the_operator_verdict_exemption_is_bounded_by_observable_state() -> None
             if (
                 isinstance(call, ast.Call)
                 and isinstance(call.func, ast.Name)
-                and call.func.id == "append_g3_demo_results_csv"
+                and call.func.id in writer_names
             ):
                 # ⚠️ Unresolvable forwarding is NOT "not forwarded".
                 #
@@ -758,12 +781,24 @@ def test_the_operator_verdict_exemption_is_bounded_by_observable_state() -> None
                         "This is a handoff blocker, not a style note. Pass "
                         "every keyword explicitly — "
                         "`append_g3_demo_results_csv(..., operator_verdict=...)` "
-                        "— and this goes green.\n\n"
-                        "Why it matters: an earlier version of this guard read "
-                        "the same call and concluded 「not wired」, while the "
-                        "round's real verdict was sitting in the CSV. That is "
-                        "the one failure this guard exists to prevent, and it "
-                        "would have repeated here silently."
+                        "— and the unpacking problem is gone.\n\n"
+                        "⚠️⚠️ But understand what happens next: this guard "
+                        "STAYS RED after that, and it is supposed to. It "
+                        "turns green only when `operator_verdict` is ALSO "
+                        "removed from the exclusion set in "
+                        "test_demo_csv_end_to_end_carries_the_new_fields. "
+                        "Both halves belong in ONE commit, which is P3's "
+                        "job — not something you can finish from this "
+                        "message, and not something you can finish by "
+                        "editing this file.\n\n"
+                        "Why the distinction matters: an earlier version of "
+                        "this message promised the work would go green once "
+                        "the keywords were explicit. It does not, because the "
+                        "red condition is 「some writer forwards a verdict」 "
+                        "and wiring one is exactly what you just did. If you "
+                        "follow that promise, you wire, you see red again, and "
+                        "the obvious next move — delete this assertion — is "
+                        "the permanent hole this guard exists to prevent."
                     )
                 writers[node.name] = "operator_verdict" in {
                     kw.arg for kw in call.keywords
