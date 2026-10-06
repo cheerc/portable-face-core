@@ -734,6 +734,17 @@ def test_the_operator_verdict_exemption_is_bounded_by_observable_state() -> None
     #   · `functools.partial(append_g3_demo_results_csv, …)` then `p(…)`
     #   · passing the writer through a lambda: `(lambda f: f)(writer)(…)`
     #   · a conditional expression selecting the writer
+    #   · `[append_g3_demo_results_csv][0](…)` — the writer put in a list
+    #     and called by index
+    #
+    # ⚠️ One shape per bullet, and that is not tidiness. An earlier version
+    # wrote 「`WRITERS['append_g3_demo_results_csv'](…)`, list subscript」
+    # as a single bullet holding two shapes, and deleting the bullet on the
+    # evidence that the first one is caught took the second with it. The
+    # dict form is seen — the name is a string constant inside the call
+    # node — while `[writer][0](…)` is not: nothing in that call mentions
+    # the writer. So a shape removed on someone else's measurement is a
+    # shape this list can no longer warn anyone about.
     # None of them appears in `src/` today — measured by walking every
     # `src/**/*.py` for REFERENCES to the writer's name (as `ast.Name`, as
     # `ast.Attribute`, or as a string `ast.Constant`), not by grepping for
