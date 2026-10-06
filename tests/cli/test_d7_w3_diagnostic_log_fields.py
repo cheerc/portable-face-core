@@ -718,6 +718,53 @@ def test_the_operator_verdict_exemption_is_bounded_by_observable_state() -> None
                 and isinstance(call.func, ast.Name)
                 and call.func.id == "append_g3_demo_results_csv"
             ):
+                # ⚠️ Unresolvable forwarding is NOT "not forwarded".
+                #
+                # `**kwargs` reaches here with arg=None, so the subset test
+                # below would answer 「not forwarded」 for a call that may well
+                # be forwarding it — and it did. Proven by execution, not by
+                # reading: a row written through that path carried
+                # operator_verdict='correct' while this guard stayed green.
+                #
+                # Other shapes reach the same place, so the check is on the
+                # unpacking rather than on `**kwargs` specifically:
+                #   · `*args` / `**kwargs` on the call itself (arg is None)
+                #   · a `**dict` built conditionally a few lines up
+                #   · a walrus in an argument that reassigns the kwargs dict
+                # What they share is that the call's keywords are no longer
+                # a literal list, so 「is my name among them」 has no answer.
+                # A guard that cannot answer must say so rather than pick the
+                # convenient answer — the same rule
+                # test_d7_w0b_writer_wiring.py::_is_live_read follows when it
+                # refuses anything it cannot read as a live read.
+                #
+                # The cost is that P3 is pushed towards explicit keywords,
+                # which is the point: an unverifiable shape that stays silent
+                # is worse than one that interrupts.
+                unpacked = [
+                    ast.unparse(arg.value)
+                    for arg in call.keywords
+                    if arg.arg is None
+                ]
+                if unpacked or any(
+                    isinstance(arg, ast.Starred) for arg in call.args
+                ):
+                    raise AssertionError(
+                        f"{node.name}() forwards to "
+                        f"append_g3_demo_results_csv with unpacked arguments "
+                        f"({', '.join(unpacked) or 'a positional *args'}), so "
+                        "whether it forwards `operator_verdict` cannot be "
+                        "determined by reading the call.\n\n"
+                        "This is a handoff blocker, not a style note. Pass "
+                        "every keyword explicitly — "
+                        "`append_g3_demo_results_csv(..., operator_verdict=...)` "
+                        "— and this goes green.\n\n"
+                        "Why it matters: an earlier version of this guard read "
+                        "the same call and concluded 「not wired」, while the "
+                        "round's real verdict was sitting in the CSV. That is "
+                        "the one failure this guard exists to prevent, and it "
+                        "would have repeated here silently."
+                    )
                 writers[node.name] = "operator_verdict" in {
                     kw.arg for kw in call.keywords
                 }
