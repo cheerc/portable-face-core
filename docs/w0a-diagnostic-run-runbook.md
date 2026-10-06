@@ -202,7 +202,7 @@ demo-results-old.csv
 1. 回到第 0 步的 `store` 資料夾，照「有多份檔案時怎麼挑」挑出你剛跑的那一份（**先排除沒有時間戳的那個，再用 CSV 裡的 `started_utc` 對照**）
 2. 用試算表打開它，**看最後一欄的標題** —— 它應該是 `operator_verdict`（39 欄）、`gallery_rejected`（38 欄）或 `timeout_ms`（35 欄）
 
-**最後一欄是 `gallery_rejected` 或 `timeout_ms` = 成功，往下做第 1 步。**
+**最後一欄是 `operator_verdict`、`gallery_rejected` 或 `timeout_ms` = 成功，往下做第 1 步。**
 **畫面顯示「紀錄寫入失敗」= 沒成功**，那則訊息會告訴你原因。**照附錄 G1 把訊息回報團隊，不要繼續往下做** —— 這種檔案**讀不了第 2 步與第 3 步**（它缺第 24 欄之後的欄位）；第 1 步雖然還能看，但**沒有後面兩步的判斷依據**。
 
 > 首次啟動 launcher 會顯示「分支／commit／落後幾個 commit」。**把那個 commit 記下來** —— 之後要看某一列是什麼版本產生的，就靠它。
