@@ -718,18 +718,47 @@ def test_the_operator_verdict_exemption_is_bounded_by_observable_state() -> None
     # and each one was the same bug again — the verdict reached the CSV while
     # the guard reported 「not wired」.
     #
-    # So this does not widen the search. It inverts it: the writer's name is
-    # a LITERAL in every binding form, because you cannot alias or assign a
-    # name without writing it. So find every string literal equal to the
-    # writer's name, and for each one ask whether the call it heads is one
-    # whose keywords can be read. Any that cannot be read is not evidence of
-    # 「no forwarding」 — it is an absence of evidence, and it fails loud.
+    # So the question is inverted: for a call that might be the writer, can
+    # its keywords be read? A call whose forwarding cannot be read is not
+    # evidence of 「no forwarding」 — it is an absence of evidence, and it
+    # fails loud.
+    #
+    # ⚠️⚠️ This is NOT closed, and an earlier version of this comment said
+    # it was — 「the writer's name is a LITERAL in every binding form […]
+    # which is what makes this closed rather than another enumeration」.
+    # That premise is false, and it hid a regression: dropping the import
+    # binding lost the alias shape that the previous version caught. A
+    # binding form is only visible here when the writer's name lands inside
+    # THIS call node, or in a binding whose right-hand side is the writer.
+    # So these shapes are known to slip past:
+    #   · `functools.partial(append_g3_demo_results_csv, …)` then `p(…)`
+    #   · passing the writer through a lambda: `(lambda f: f)(writer)(…)`
+    #   · `WRITERS['append_g3_demo_results_csv'](…)`, list subscript
+    #   · a conditional expression selecting the writer
+    # None of them appears in `src/` today — measured by walking every
+    # `src/**/*.py` for string literals equal to the writer's name, not by
+    # grepping for the word 「partial」, which matches unrelated identifiers.
+    # They are listed here so the next reader knows this list is a floor,
+    # not a proof: writing 「closed」 here is what would stop the next person
+    # looking.
     #
     # The companion rule is test_d7_w0b_writer_wiring.py::_is_live_read:
     # recognise what you can, refuse what you cannot, and never treat the
     # second case as the first.
     writers: dict[str, bool] = {}
     unreadable: list[str] = []
+    # Names the module binds the writer to by importing it. `from … import
+    # append_g3_demo_results_csv as _alias` makes the call site `_alias(…)`,
+    # whose own node contains no trace of the writer's name — so without
+    # this the alias shape is invisible, and an earlier version lost it.
+    imported_as: set[str] = set()
+    for stmt in ast.walk(tree):
+        if isinstance(stmt, ast.ImportFrom) and any(
+            alias.name == writer_name for alias in stmt.names
+        ):
+            imported_as.update(
+                alias.asname or alias.name for alias in stmt.names
+            )
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef):
             continue
@@ -784,6 +813,7 @@ def test_the_operator_verdict_exemption_is_bounded_by_observable_state() -> None
             mentions_writer = (
                 callee == writer_name
                 or callee in assigned_to_writer
+                or callee in imported_as
                 or any(
                     isinstance(node_, ast.Constant) and node_.value == writer_name
                     for node_ in ast.walk(call)
