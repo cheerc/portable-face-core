@@ -700,6 +700,7 @@ def test_the_operator_verdict_exemption_is_bounded_by_observable_state() -> None
     """
     import ast
 
+    writer_name = "append_g3_demo_results_csv"
     source = (
         Path(__file__).resolve().parents[2]
         / "src"
@@ -708,101 +709,121 @@ def test_the_operator_verdict_exemption_is_bounded_by_observable_state() -> None
         / "qt_window.py"
     )
     tree = ast.parse(source.read_text(encoding="utf-8"))
-    # ⚠️ Resolve the import binding instead of matching a literal name.
+    # ⚠️ Ask the inverse question.
     #
-    # Matching `call.func.id == "append_g3_demo_results_csv"` only sees the
-    # calls that spell the name out. `from ... import append_g3_demo_results_csv
-    # as _append_row` makes the call site `_append_row(...)`, the loop never
-    # looks at it, and the guard reports 「not wired」 for a writer that is
-    # wiring — the same silent failure as the `**kwargs` hole, reached through
-    # a different door. It went green specifically when some unrelated
-    # function elsewhere in the file kept a real-name call: the guard read
-    # that one, saw no forwarding, and stopped. The verdict was in the CSV.
+    # Every previous version asked 「can I find the forwarding?」 and grew the
+    # search each time one more binding form turned out to be invisible:
+    # another writer (`_record_unlabeled_round`), then `**kwargs`, then an
+    # import alias, then a plain assignment. Each fix caught its own shape
+    # and each one was the same bug again — the verdict reached the CSV while
+    # the guard reported 「not wired」.
     #
-    # This repo aliases imports in nine places, so a helper that wraps the
-    # writer and renames it is an ordinary thing to write, not a contrived
-    # one. So the names below are every local binding the module gives the
-    # writer, whichever way it was imported.
-    writer_names = {"append_g3_demo_results_csv"}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and any(
-            alias.name == "append_g3_demo_results_csv" for alias in node.names
-        ):
-            writer_names.update(
-                alias.asname or alias.name for alias in node.names
-            )
+    # So this does not widen the search. It inverts it: the writer's name is
+    # a LITERAL in every binding form, because you cannot alias or assign a
+    # name without writing it. So find every string literal equal to the
+    # writer's name, and for each one ask whether the call it heads is one
+    # whose keywords can be read. Any that cannot be read is not evidence of
+    # 「no forwarding」 — it is an absence of evidence, and it fails loud.
+    #
+    # The companion rule is test_d7_w0b_writer_wiring.py::_is_live_read:
+    # recognise what you can, refuse what you cannot, and never treat the
+    # second case as the first.
     writers: dict[str, bool] = {}
+    unreadable: list[str] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef):
             continue
         for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            # Does this call head mention the writer's name as a literal?
+            # Covers `writer(...)`, `_alias(...)`, `c.writer(...)`,
+            # `getattr(m, "writer")(...)` and `_w(...)` where
+            # `_w = writer` was assigned anywhere in the module — the
+            # assignment is itself a literal mention, which is what makes
+            # this closed rather than another enumeration.
+            # Might this call BE the writer? A binding form has to mention the
+            # writer's name SOMEWHERE to exist: as the callee itself
+            # (`writer(...)`, `c.writer(...)`), as a string argument to
+            # getattr, or on the right-hand side of an assignment
+            # (`_w = writer`). Collecting the assigned names and testing the
+            # callee against that set was my first attempt and it was wrong —
+            # it flagged every call to any name this module ever assigns,
+            # which is the indiscriminate interception this guard exists to
+            # avoid. The test is whether THIS writer's name is written here,
+            # not whether the callee happens to be assignable.
+            head = ast.unparse(call.func)
+            mentions_writer = (
+                head.split(".")[-1] == writer_name
+                or writer_name in head
+                or any(
+                    isinstance(node_, ast.Constant) and node_.value == writer_name
+                    for node_ in ast.walk(call)
+                )
+            )
+            if not mentions_writer:
+                continue
+            # ⚠️ Unresolvable forwarding is NOT "not forwarded".
+            #
+            # `**kwargs` reaches here with arg=None, so the subset test
+            # below would answer 「not forwarded」 for a call that may well
+            # be forwarding it — and it did. Proven by execution, not by
+            # reading: a row written through that path carried
+            # operator_verdict='correct' while this guard stayed green.
+            #
+            # Other shapes reach the same place, so the check is on the
+            # unpacking rather than on `**kwargs` specifically:
+            #   · `*args` / `**kwargs` on the call itself (arg is None)
+            #   · a `**dict` built conditionally a few lines up
+            #   · a walrus in an argument that reassigns the kwargs dict
+            # What they share is that the call's keywords are no longer
+            # a literal list, so 「is my name among them」 has no answer.
+            # A guard that cannot answer must say so rather than pick the
+            # convenient answer — the same rule
+            # test_d7_w0b_writer_wiring.py::_is_live_read follows when it
+            # refuses anything it cannot read as a live read.
+            #
+            # The cost is that P3 is pushed towards explicit keywords,
+            # which is the point: an unverifiable shape that stays silent
+            # is worse than one that interrupts.
+            unpacked = [
+                ast.unparse(arg.value)
+                for arg in call.keywords
+                if arg.arg is None
+            ]
             if (
-                isinstance(call, ast.Call)
-                and isinstance(call.func, ast.Name)
-                and call.func.id in writer_names
+                unpacked
+                or any(isinstance(arg, ast.Starred) for arg in call.args)
+                or head.split(".")[-1] != writer_name
             ):
-                # ⚠️ Unresolvable forwarding is NOT "not forwarded".
-                #
-                # `**kwargs` reaches here with arg=None, so the subset test
-                # below would answer 「not forwarded」 for a call that may well
-                # be forwarding it — and it did. Proven by execution, not by
-                # reading: a row written through that path carried
-                # operator_verdict='correct' while this guard stayed green.
-                #
-                # Other shapes reach the same place, so the check is on the
-                # unpacking rather than on `**kwargs` specifically:
-                #   · `*args` / `**kwargs` on the call itself (arg is None)
-                #   · a `**dict` built conditionally a few lines up
-                #   · a walrus in an argument that reassigns the kwargs dict
-                # What they share is that the call's keywords are no longer
-                # a literal list, so 「is my name among them」 has no answer.
-                # A guard that cannot answer must say so rather than pick the
-                # convenient answer — the same rule
-                # test_d7_w0b_writer_wiring.py::_is_live_read follows when it
-                # refuses anything it cannot read as a live read.
-                #
-                # The cost is that P3 is pushed towards explicit keywords,
-                # which is the point: an unverifiable shape that stays silent
-                # is worse than one that interrupts.
-                unpacked = [
-                    ast.unparse(arg.value)
-                    for arg in call.keywords
-                    if arg.arg is None
-                ]
-                if unpacked or any(
-                    isinstance(arg, ast.Starred) for arg in call.args
-                ):
-                    raise AssertionError(
-                        f"{node.name}() forwards to "
-                        f"append_g3_demo_results_csv with unpacked arguments "
-                        f"({', '.join(unpacked) or 'a positional *args'}), so "
-                        "whether it forwards `operator_verdict` cannot be "
-                        "determined by reading the call.\n\n"
-                        "This is a handoff blocker, not a style note. Pass "
-                        "every keyword explicitly — "
-                        "`append_g3_demo_results_csv(..., operator_verdict=...)` "
-                        "— and the unpacking problem is gone.\n\n"
-                        "⚠️⚠️ But understand what happens next: this guard "
-                        "STAYS RED after that, and it is supposed to. It "
-                        "turns green only when `operator_verdict` is ALSO "
-                        "removed from the exclusion set in "
-                        "test_demo_csv_end_to_end_carries_the_new_fields. "
-                        "Both halves belong in ONE commit, which is P3's "
-                        "job — not something you can finish from this "
-                        "message, and not something you can finish by "
-                        "editing this file.\n\n"
-                        "Why the distinction matters: an earlier version of "
-                        "this message promised the work would go green once "
-                        "the keywords were explicit. It does not, because the "
-                        "red condition is 「some writer forwards a verdict」 "
-                        "and wiring one is exactly what you just did. If you "
-                        "follow that promise, you wire, you see red again, and "
-                        "the obvious next move — delete this assertion — is "
-                        "the permanent hole this guard exists to prevent."
-                    )
-                writers[node.name] = "operator_verdict" in {
-                    kw.arg for kw in call.keywords
-                }
+                unreadable.append(f"{node.name}() → {head}(...)")
+                continue
+            writers[node.name] = "operator_verdict" in {
+                kw.arg for kw in call.keywords
+            }
+    if unreadable:
+        raise AssertionError(
+            "these calls mention the demo writer but their forwarding cannot "
+            "be determined by reading them:\n  "
+            + "\n  ".join(sorted(set(unreadable)))
+            + "\n\n"
+            "This is a handoff blocker, not a style note. Call the writer "
+            "directly with explicit keywords — "
+            "`append_g3_demo_results_csv(..., operator_verdict=...)` — and "
+            "this goes green.\n\n"
+            "⚠️⚠️ But understand what happens next: this guard STAYS RED "
+            "after that, and it is supposed to. It turns green only when "
+            "`operator_verdict` is ALSO removed from the exclusion set in "
+            "test_demo_csv_end_to_end_carries_the_new_fields. Both halves "
+            "belong in ONE commit, which is P3's job — not something you "
+            "can finish from this message, and not something you can "
+            "finish by editing this file.\n\n"
+            "Why it matters: earlier versions of this guard read a call "
+            "like this and concluded 「not wired」, while the round's real "
+            "verdict was sitting in the CSV. That is the one failure this "
+            "guard exists to prevent, and it would have repeated here "
+            "silently."
+        )
     assert writers, (
         "no function in qt_window.py calls append_g3_demo_results_csv; this "
         "file's view of the demo write path is stale"
