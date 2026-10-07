@@ -639,17 +639,7 @@ def test_demo_csv_end_to_end_carries_the_new_fields(tmp_path: Path) -> None:
              {"top1_identity", "top1_score", "top2_identity", "top2_score",
               "margin", "label_identity", "probe_kind",
               "presenting_identity", "support_clear_reasons",
-              "expected_count", "loaded_count", "gallery_rejected",
-              # G3-w `operator_verdict`, EXPIRED EXEMPTION. Unlike every
-              # other entry above, this cell is NOT honestly empty: this
-              # window went through press_correct(), so the operator's
-              # judgement is known and `correct` is the right value. It is
-              # empty only because P2 added the column and P3 has not wired
-              # the button yet. So it sits in this exclusion set on a
-              # deadline, and `test_the_operator_verdict_exemption_is_
-              # bounded_by_observable_state` below is what ends that
-              # deadline. Do not leave it here after P3.
-              "operator_verdict"}]
+              "expected_count", "loaded_count", "gallery_rejected"}]
     assert not blank, f"columns blank in a real scored round: {blank}"
     assert int(row["frames_rejected"]) >= 0
     assert row["gallery_rejected"] == "", (
@@ -660,43 +650,17 @@ def test_demo_csv_end_to_end_carries_the_new_fields(tmp_path: Path) -> None:
 
 
 def test_the_operator_verdict_exemption_is_bounded_by_observable_state() -> None:
-    """The one thing that keeps the exemption above from being permanent.
+    """Resident guard: every demo writer must forward `operator_verdict`.
 
-    Every OTHER name in that exclusion set is exempt because the value
-    genuinely does not exist for this window — no gallery, so no
-    `load_report`; no support disturbance, so no clear to count. Their
-    companion assertions hold that exemption to the truth they rest on.
+    P3 wired both writers and dropped the exclusion above in the same
+    commit. This test is the resident form of that handoff: it fails the
+    moment a writer stops forwarding the verdict, so the column can never
+    silently go back to permanently empty.
 
-    `operator_verdict` is not that kind of case: press_correct() means the
-    operator DID judge the round, so `correct` is available and the cell
-    must not be blank. The exclusion above is a deliberate, dated hole —
-    P2 shipped the column, P3 does the wiring.
-
-    An exemption nobody can see expire is indistinguishable from a bug, and
-    this repo has already shipped guards that nothing ran. So the hole is
-    tied to an OBSERVABLE state: ANY production writer forwarding a verdict.
-
-    ⚠️ ANY writer, not one of them by name. There are two — the labeled
-    `_press_key` and the unlabeled `_record_unlabeled_round` — and an
-    earlier version of this companion watched only `_press_key`. Wiring the
-    verdict into the other one left it green: the probe pointed at one path
-    and silently accepted while the exemption ran unbounded. Naming a single
-    writer here is what created that hole, so the check below is scoped to
-    the CALL SITE rather than to any function.
-
-    · while NO writer passes a verdict → this passes, hole open
-    · the moment ANY writer passes one → this turns RED, and stays red
-
-    ⚠️⚠️ That last sentence is not a to-do you can finish by editing this
-    file. Removing `operator_verdict` from the exclusion set will NOT make
-    this go green — it goes green only when P3 takes the exemption back by
-    wiring every writer AND dropping the name in one commit. See the
-    assertion message for why the two halves have to move together.
-
-    Reading the source with ast rather than counting strings is the same
-    reason `test_d7_w0b_writer_wiring.py` parses instead of greps: a
-    comment or a passing mention can satisfy a string count while nothing
-    is forwarded.
+    The observable-state mechanism is kept — the guard still asks the
+    inverse question (can each call's keywords be read?) and still fails
+    loud on unreadable forwarding shapes — but the polarity is now
+    resident: forwarding present is green, forwarding absent is red.
     """
     import ast
 
@@ -908,22 +872,12 @@ def test_the_operator_verdict_exemption_is_bounded_by_observable_state() -> None
         "file's view of the demo write path is stale"
     )
     forwarding = sorted(name for name, has in writers.items() if has)
-    assert not forwarding, (
-        f"{forwarding} now forward(s) operator_verdict, so the operator's real "
-        "judgement reaches the CSV.\n\n"
-        "This is a HANDOFF REMINDER for P3, not an instruction you can finish "
-        "here. Removing `operator_verdict` from the exclusion set in "
-        "test_demo_csv_end_to_end_carries_the_new_fields will NOT turn this "
-        "green — this guard watches whether a writer forwards the value, and "
-        "that stays true after the exemption is dropped.\n\n"
-        "Both halves have to land in ONE commit: wire every production writer, "
-        "and drop the name from the exclusion set. Removing only the exemption "
-        "leaves a blank-cell failure with nothing watching it; removing only "
-        "the wiring leaves a permanently-permanent hole.\n\n"
-        "If you are reading this while trying to make it green by editing "
-        "this assertion — stop. Deleting this guard is the exact failure it "
-        "exists to prevent: every row keeps recording an empty verdict while "
-        "the repo stays green."
+    assert sorted(writers) == sorted(forwarding) and len(forwarding) >= 2, (
+        f"every demo writer must forward operator_verdict; "
+        f"forwarding={forwarding}, all writers={sorted(writers)}. "
+        f"A writer that stops forwarding records empty verdict cells, "
+        f"which read as 「沒有記錄」 — indistinguishable from a round "
+        f"the operator deliberately left unrecorded."
     )
 
 

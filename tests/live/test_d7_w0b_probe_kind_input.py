@@ -210,6 +210,7 @@ def _verdict_window(app, tmp_path: Path, **kwargs: Any) -> Any:
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from facecore.live.qt_window import _QtResearchWindow
+    from tests.live.test_qt_window import _AdvancingClock
 
     store = tmp_path / "store"
     store.mkdir(parents=True, exist_ok=True)
@@ -229,6 +230,7 @@ def _verdict_window(app, tmp_path: Path, **kwargs: Any) -> Any:
 
     desktop, consent = _desktop(matched=True)
     states: list[Any] = [desktop]
+    clock = _AdvancingClock()
 
     win = _QtResearchWindow(
         desktop,
@@ -237,6 +239,8 @@ def _verdict_window(app, tmp_path: Path, **kwargs: Any) -> Any:
         offscreen=True,
         demo_results_csv=demo_csv,
         next_session=_next_session,
+        clock_ns=clock,
+        clock_advance=clock.advance,
         **kwargs,
     )
     win.show()
@@ -249,6 +253,19 @@ def _verdict_window(app, tmp_path: Path, **kwargs: Any) -> Any:
 def _read_verdicts(demo_csv: Path) -> list[dict[str, str]]:
     with demo_csv.open(encoding="utf-8", newline="") as fh:
         return list(csv.DictReader(fh))
+
+
+def _find_ground_truth(win: Any, pair: tuple[str, str]) -> int:
+    """Index of the (probe_kind, identity) option, or -1.
+
+    `QComboBox.findData` does not reliably match tuple payloads
+    (QVariant round-trip), so compare the stored pairs directly.
+    """
+    combo = win.ground_truth_combo
+    for i in range(combo.count()):
+        if combo.itemData(i) == pair:
+            return i
+    return -1
 
 
 def test_press_correct_writes_verdict_correct(app, tmp_path: Path):
@@ -267,19 +284,47 @@ def test_press_correct_writes_verdict_correct(app, tmp_path: Path):
     )
 
 
-def test_press_incorrect_writes_verdict_incorrect(app, tmp_path: Path):
-    """✗ must land `operator_verdict=incorrect` in the written row.
+def test_press_incorrect_discloses_then_writes_incorrect(app, tmp_path: Path):
+    """✗ must first disclose the input area, then write `incorrect`.
 
-    RED on current code: same missing kwarg as the ✓ path.
+    Progressive disclosure (spec §4.2): the first ✗ press only reveals
+    the ground-truth picker — the operator has judged nothing yet, so
+    nothing is written. After picking, confirming writes `incorrect`
+    with the picked pair. An accidental ✗ alone must never record a
+    wrong identity.
     """
     win, demo_csv = _verdict_window(app, tmp_path)
     assert win._mode == win._MODE_RESULT, "round must reach Result first"
     win.press_incorrect()
+    assert _read_verdicts_len(demo_csv) == 0, "disclosure must not write"
+    assert win.disclosure_widget.isVisible(), "input area must appear"
+    idx = _find_ground_truth(win, ("target", "enroll-07"))
+    assert idx >= 0, "gallery identity must be offered"
+    # Route through the real signal: move away first so the pick always
+    # fires even when the target is already the current row.
+    win.ground_truth_combo.setCurrentIndex(
+        (idx + 1) % win.ground_truth_combo.count()
+    )
+    win.ground_truth_combo.setCurrentIndex(idx)
+    win.confirm_incorrect()
     rows = _read_verdicts(demo_csv)
     assert len(rows) == 1, f"exactly one row must be written, got {len(rows)}"
     assert rows[0]["operator_verdict"] == "incorrect", (
         f"✗ must write incorrect, got {rows[0]['operator_verdict']!r}"
     )
+    assert rows[0]["probe_kind"] == "target", (
+        f"✗ must write the picked kind, got {rows[0]['probe_kind']!r}"
+    )
+    assert rows[0]["presenting_identity"] == "enroll-07", (
+        "✗ must write the picked identity, "
+        f"got {rows[0]['presenting_identity']!r}"
+    )
+
+
+def _read_verdicts_len(demo_csv: Path) -> int:
+    if not demo_csv.is_file():
+        return 0
+    return len(_read_verdicts(demo_csv))
 
 
 def test_rerun_path_writes_verdict_skipped(app, tmp_path: Path):
@@ -313,6 +358,13 @@ def test_each_round_can_set_its_own_verdict(app, tmp_path: Path):
     win.process_until_terminal(max_steps=200)
     assert win._mode == win._MODE_RESULT, "round 2 must reach Result"
     win.press_incorrect()
+    idx2 = _find_ground_truth(win, ("nontarget", "outsider"))
+    assert idx2 >= 0, "outsider must be offered without a folder"
+    win.ground_truth_combo.setCurrentIndex(
+        (idx2 + 1) % win.ground_truth_combo.count()
+    )
+    win.ground_truth_combo.setCurrentIndex(idx2)
+    win.confirm_incorrect()
     rows = _read_verdicts(demo_csv)
     assert len(rows) == 2, f"two rows must be written, got {len(rows)}"
     assert (rows[0]["operator_verdict"], rows[1]["operator_verdict"]) == (
@@ -322,6 +374,83 @@ def test_each_round_can_set_its_own_verdict(app, tmp_path: Path):
         "round 2 must record its own verdict, not round 1's: "
         f"got {[r['operator_verdict'] for r in rows]}"
     )
+    assert rows[1]["probe_kind"] == "nontarget", (
+        "round 2 must not inherit round 1's kind: "
+        f"got {rows[1]['probe_kind']!r}"
+    )
+
+
+def test_skip_button_writes_verdict_skipped(app, tmp_path: Path):
+    """略過 must write `operator_verdict=skipped` with empty ground truth.
+
+    Skip is a peer of ✓／✗ (spec §4.2), not a disclosure option. Per
+    decision, the recommended skip leaves `probe_kind` /
+    `presenting_identity` empty and never rewrites stored CSVs — so the
+    row carries empty ground truth plus the explicit value.
+    """
+    win, demo_csv = _verdict_window(app, tmp_path)
+    assert win._mode == win._MODE_RESULT, "round must reach Result first"
+    assert win.skip_button.isVisible(), "skip must be offered here"
+    win.press_skip()
+    rows = _read_verdicts(demo_csv)
+    assert len(rows) == 1, f"exactly one row must be written, got {len(rows)}"
+    assert rows[0]["operator_verdict"] == "skipped", (
+        f"略過 must write skipped, got {rows[0]['operator_verdict']!r}"
+    )
+    assert rows[0]["probe_kind"] == "", "skip must not invent a kind"
+    assert rows[0]["presenting_identity"] == "", "skip must not invent a who"
+
+
+def test_invalid_input_round_has_no_skip(app, tmp_path: Path):
+    """`invalid_input` rounds offer only ✓／✗ (spec §4.5).
+
+    There is no identification to decline there — only the missed-person
+    flag the two buttons record — so a skip button would invite random
+    presses that pollute `operator_verdict`.
+    """
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from facecore.live.qt_window import _QtResearchWindow
+    from tests.live.test_qt_window import _AdvancingClock
+
+    from facecore.research.cli import demo_results_csv_path
+
+    store = tmp_path / "store"
+    store.mkdir(parents=True, exist_ok=True)
+    demo_csv = demo_results_csv_path(store, "2026-10-05T00:00:00+00:00")
+    clock = _AdvancingClock()
+
+    def _next_session():
+        desktop2, consent2 = _desktop(session_id="w0b-ii")
+        desktop2.configure_demo_label_persistence(
+            demo_csv, actor_ref="qt-operator"
+        )
+        return desktop2, consent2, None
+
+    desktop, consent = _desktop()
+    win = _QtResearchWindow(
+        desktop,
+        consent=consent,
+        gallery=_gallery(["enroll-23", "enroll-07"]),
+        offscreen=True,
+        demo_results_csv=demo_csv,
+        next_session=_next_session,
+        clock_ns=clock,
+        clock_advance=clock.advance,
+    )
+    win.show()
+    win.enter_ready()
+    win.start_clicked()
+    win.process_until_terminal(max_steps=200)
+    assert win._mode == win._MODE_RESULT, "round must reach Result first"
+    assert win.desktop.terminal is not None
+    assert win.desktop.terminal.status.value == "invalid_input", (
+        "this fixture must land invalid_input, "
+        f"got {win.desktop.terminal.status.value}"
+    )
+    assert not win.skip_button.isVisible(), "skip must be hidden here"
+    assert not win.skip_button.isEnabled(), "skip must be disabled here"
 
 
 # The 「both writers forward the values」 guard used to live here, counting

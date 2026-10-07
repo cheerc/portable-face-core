@@ -419,55 +419,42 @@ else:
             self.preview_label.setMinimumSize(240, 240)
             self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-            # D7-A W0-b: the two ground-truth columns (`probe_kind` /
-            # `presenting_identity`). They used to have no input path at
-            # all, so every row carried an empty string and the runbook
-            # had to tell the operator that empty meant 「沒有記錄」.
-            #
-            # Both are combos, never free text, and that is the whole
-            # point. A typed identity that is one character off
-            # (`enrol-24`) becomes a silent ground-truth error, and these
-            # columns exist precisely to be ground truth.
-            #
-            # `probe_kind`'s domain is closed and defined by the runbook:
-            # `target`（測試者有註冊）／`nontarget`（測試者沒註冊）, and
-            # 「沒有第三個值」. `presenting_identity`'s candidates come
-            # from the loaded gallery's own keys, so a target identity
-            # cannot be spelled wrong.
-            #
-            # The `nontarget` side is deliberately NOT implemented: the
-            # runbook leaves 「沒有註冊的測試者填什麼」 to W0-b scheduling
-            # ("必須在 W0-b 排程時定義"), and this task is that
-            # prerequisite, not the definition. So the non-target row
-            # carries one disabled 「尚未定義」 item rather than a
-            # free-text box: a writable field here would let the operator
-            # invent a value, and an empty one would be indistinguishable
-            # from 「忘了填」. A visible disabled item says 「ask」 instead.
-            self.probe_kind_combo = QComboBox()
-            self.probe_kind_combo.setObjectName("probeKindPicker")
-            self.probe_kind_combo.addItem("（未記錄）", "")
-            self.probe_kind_combo.addItem("target（有註冊）", "target")
-            self.probe_kind_combo.addItem("nontarget（沒註冊）", "nontarget")
-            self.probe_kind_combo.currentIndexChanged.connect(
-                self._probe_kind_changed
+            # G3-w P3: the two per-round dropdowns are removed (spec
+            # §4.1). Ground truth now comes from the operator's
+            # annotation buttons: ✓ writes the derived values, ✗ opens
+            # the disclosure area below, skip writes an explicit value.
+            # The per-round values live in `_annot_probe_kind` /
+            # `_annot_identity`, reset at every round start so no value
+            # can leak from the previous round (decision: no residual).
+            # Combos never return: free text is rejected (a mistyped
+            # identity is a silent ground-truth error), every option is
+            # a closed domain — gallery keys, non-target stems, or the
+            # runbook-defined `outsider` marker.
+            self._annot_probe_kind = ""
+            self._annot_identity = ""
+            self._nontarget_dir: str | None = None
+            self._nontarget_stems: list[str] = []
+
+            self.ground_truth_combo = QComboBox()
+            self.ground_truth_combo.setObjectName("groundTruthPicker")
+            self.ground_truth_combo.setVisible(False)
+            self.nontarget_dir_button = QPushButton("選 non-target 資料夾")
+            self.nontarget_dir_button.setObjectName("nontargetDirPicker")
+            self.nontarget_dir_button.setVisible(False)
+            self.nontarget_dir_button.clicked.connect(
+                self._pick_nontarget_dir
+            )
+            self.ground_truth_combo.currentIndexChanged.connect(
+                self._ground_truth_picked
             )
 
-            self.presenting_identity_combo = QComboBox()
-            self.presenting_identity_combo.setObjectName("presentingIdentityPicker")
-            self.presenting_identity_combo.addItem("（未記錄）", "")
-            self._populate_presenting_identities("")
-            # Deliberately NOT wired to `_probe_kind_changed`. That
-            # handler rebuilds the list, and a rebuild clears the
-            # selection — so connecting the identity combo to it made
-            # every pick of an identity immediately erase itself.
-            # Only `probe_kind` drives the rebuild, because only
-            # `probe_kind` changes what the identity list means.
-
-            probe_row = QHBoxLayout()
-            probe_row.addWidget(QLabel("probe_kind"))
-            probe_row.addWidget(self.probe_kind_combo)
-            probe_row.addWidget(QLabel("presenting_identity"))
-            probe_row.addWidget(self.presenting_identity_combo)
+            disclosure_row = QHBoxLayout()
+            disclosure_row.addWidget(QLabel("實際是誰"))
+            disclosure_row.addWidget(self.ground_truth_combo)
+            disclosure_row.addWidget(self.nontarget_dir_button)
+            self.disclosure_widget = QWidget()
+            self.disclosure_widget.setLayout(disclosure_row)
+            self.disclosure_widget.setVisible(False)
 
             consent_row = QHBoxLayout()
             self.record_consent_checkbox = QCheckBox("record consent")
@@ -488,6 +475,12 @@ else:
             # label_enrolled (explicit identity required) / label_unknown.
             self.correct_button = QPushButton("正確")
             self.incorrect_button = QPushButton("錯誤")
+            # G3-w P3: skip is a peer of ✓／✗ (spec §4.2), not a field
+            # inside the disclosure area. It is unavailable on
+            # `invalid_input` rounds (spec §4.5) and never shown for
+            # `cancelled`／`error` (spec §4.6, no buttons at all).
+            self.skip_button = QPushButton("略過")
+            self.skip_button.setObjectName("skipVerdict")
             # D2b (operator decision d-20260929173733098323-10): with the
             # lens kept open after a round, the operator needs an explicit
             # way to run another round on the SAME open camera, and an
@@ -510,11 +503,15 @@ else:
             self.incorrect_button.clicked.connect(
                 lambda _checked=False: self.press_incorrect()
             )
+            self.skip_button.clicked.connect(
+                lambda _checked=False: self.press_skip()
+            )
             controls.addWidget(self.start_button)
             controls.addWidget(self.cancel_button)
             controls.addWidget(self.delete_button)
             controls.addWidget(self.correct_button)
             controls.addWidget(self.incorrect_button)
+            controls.addWidget(self.skip_button)
             controls.addWidget(self.recognize_again_button)
             controls.addWidget(self.stop_camera_button)
 
@@ -534,7 +531,7 @@ else:
             layout.addWidget(self.frames_label)
             layout.addWidget(self.failure_reason_label)
             layout.addWidget(self.camera_combo)
-            layout.addLayout(probe_row)
+            layout.addWidget(self.disclosure_widget)
             layout.addLayout(consent_row)
             layout.addLayout(controls)
             self.setCentralWidget(root)
@@ -542,6 +539,8 @@ else:
             self.delete_button.setEnabled(True)
             self.correct_button.setEnabled(False)
             self.incorrect_button.setEnabled(False)
+            self.skip_button.setEnabled(False)
+            self.skip_button.setVisible(self._next_session is not None)
             # D2b: both lens controls are meaningful only in the
             # Start-gated loop, and only once a round has opened the
             # camera. They are hidden in the legacy single-round path.
@@ -550,68 +549,104 @@ else:
             self.recognize_again_button.setEnabled(False)
             self.stop_camera_button.setEnabled(False)
 
-        def _populate_presenting_identities(self, probe_kind: str) -> None:
-            """Rebuild the identity candidates for the chosen probe kind.
+        def _refresh_ground_truth_options(self) -> None:
+            """Rebuild the disclosure combo for the current round result.
 
-            The candidate list IS the gallery's own key set, so every
-            option is a real identity by construction — the operator
-            cannot type or select one that isn't loaded.
-
-            For `nontarget` the list is deliberately not populated. The
-            runbook assigns that decision to W0-b scheduling, and this
-            task is only its prerequisite. Leaving the combo on its
-            single disabled item keeps the row honest: the operator sees
-            「尚未定義」 rather than an empty cell they might read as a
-            recorded 「this round had no identity」.
+            Closed domain, never free text (spec §4.3): gallery keys for
+            the `matched` case; gallery keys plus `outsider` for the
+            not-found cases; the runtime non-target folder stems plus
+            `outsider` as the no-roster path. `outsider` is the
+            runbook-defined marker, never invented here.
             """
-            combo = self.presenting_identity_combo
+            from facecore.live.contracts import SessionStatus
+
+            combo = self.ground_truth_combo
             combo.blockSignals(True)
             try:
                 combo.clear()
-                if probe_kind == "nontarget":
-                    combo.addItem("（尚未定義：待 W0-b 排程）", "")
-                    combo.setEnabled(False)
-                    return
-                combo.setEnabled(True)
-                combo.addItem("（未記錄）", "")
+                terminal = self.desktop.terminal
+                status = terminal.status if terminal is not None else None
                 gallery = getattr(self, "gallery", None)
                 embeddings = getattr(gallery, "embeddings", None) or {}
-                for identity in sorted(embeddings):
-                    combo.addItem(identity, identity)
+                if status == SessionStatus.matched:
+                    for identity in sorted(embeddings):
+                        combo.addItem(identity, ("target", identity))
+                    # Grid 3: matched but the person is not enrolled —
+                    # the operator corrects to a non-target stem or the
+                    # runbook-defined `outsider` marker (spec §4.3).
+                    for stem in self._nontarget_stems:
+                        combo.addItem(stem, ("nontarget", stem))
+                    combo.addItem("outsider（隨機路人）", ("nontarget", "outsider"))
+                else:
+                    for identity in sorted(embeddings):
+                        combo.addItem(identity, ("target", identity))
+                    for stem in self._nontarget_stems:
+                        combo.addItem(stem, ("nontarget", stem))
+                    combo.addItem("outsider（隨機路人）", ("nontarget", "outsider"))
             finally:
                 combo.blockSignals(False)
 
-        def _probe_kind_changed(self, _row: int = -1) -> None:
-            """Keep the identity list consistent with the chosen kind.
+        def _ground_truth_picked(self, _row: int = -1) -> None:
+            """Store the operator's disclosure pick as this round's truth.
 
-            The two columns are one fact, not two: `nontarget` means the
-            person is not enrolled, so offering enrolled identities there
-            would invite a contradiction. Switching kind therefore
-            REBUILDS the identity list, which also clears any identity
-            picked under the previous kind — a stale `enroll-23` left in
-            the combo would otherwise be written to the next round.
+            The pick is a (probe_kind, identity) pair, never a bare
+            identity: the two columns are one fact, so they are stored
+            together and cannot drift apart between pick and write.
             """
-            probe_kind = self.probe_kind_combo.currentData() or ""
-            self._populate_presenting_identities(probe_kind)
+            data = self.ground_truth_combo.currentData()
+            if isinstance(data, tuple) and len(data) == 2:
+                self._annot_probe_kind, self._annot_identity = data
+            else:
+                self._annot_probe_kind, self._annot_identity = "", ""
+
+        def _pick_nontarget_dir(self) -> None:
+            """Let the operator point at a non-target folder (spec §4.4).
+
+            The folder is enumerated at runtime; no filename is ever
+            hard-coded or written into the repo. Changing the folder
+            contents takes effect without any code change.
+            """
+            from pathlib import Path
+
+            from PySide6.QtWidgets import QFileDialog
+
+            from facecore.live.frame_pipeline import GALLERY_IMAGE_SUFFIXES
+
+            picked = QFileDialog.getExistingDirectory(
+                self, "選 non-target 資料夾"
+            )
+            if not picked:
+                return
+            exts = {e.lower() for e in GALLERY_IMAGE_SUFFIXES}
+            stems = sorted(
+                p.stem
+                for p in Path(picked).iterdir()
+                if p.is_file() and p.suffix.lower() in exts
+            )
+            self._nontarget_dir = picked
+            self._nontarget_stems = stems
+            self._refresh_ground_truth_options()
+            self._set_status(f"已選 non-target 資料夾（{len(stems)} 個候選）")
 
         def _probe_kind_value(self) -> str:
-            """The `probe_kind` to record on the next round (empty = 未記錄)."""
-            data = self.probe_kind_combo.currentData()
-            return data if isinstance(data, str) else ""
+            """The `probe_kind` to record on the next round.
+
+            The value comes from the operator's button annotation, not
+            from combo selection (the per-round combos were removed in
+            P3). The write-time-read property the writer_wiring guard
+            protects still holds: the annotation is read here, at write
+            time, never latched earlier.
+            """
+            return self._annot_probe_kind
 
         def _presenting_identity_value(self) -> str:
             """The `presenting_identity` to record on the next round.
 
-            Empty whenever the combo is disabled (the `nontarget` side)
-            or unset. That empty string means 「沒有記錄」, not a value —
-            which is why the `nontarget` side shows a visible disabled
-            item instead of a blank cell.
+            Same source change as `_probe_kind_value`: the value comes
+            from the operator's button annotation, not from combo
+            selection. Empty means 「沒有記錄」, not a value.
             """
-            combo = self.presenting_identity_combo
-            if not combo.isEnabled():
-                return ""
-            data = combo.currentData()
-            return data if isinstance(data, str) else ""
+            return self._annot_identity
 
         def _camera_picked(self, row: int) -> None:
             """G3 R1: a pick only routes the device; nothing opens.
@@ -1488,6 +1523,22 @@ else:
             self.cancel_button.setEnabled(False)
             self.correct_button.setEnabled(True)
             self.incorrect_button.setEnabled(True)
+            # G3-w P3: skip is unavailable on `invalid_input` rounds
+            # (spec §4.5) — there is no identification to decline, only
+            # the missed-person flag the ✓／✗ buttons record. The
+            # disclosure area starts hidden on every round (progressive
+            # disclosure: it appears only after ✗).
+            skippable = result is None or (
+                result.status != SessionStatus.invalid_input
+            )
+            self.skip_button.setEnabled(skippable)
+            self.skip_button.setVisible(skippable)
+            self.disclosure_widget.setVisible(False)
+            # G3-w P3: no residual — the new round starts with empty
+            # annotation. Whatever the previous round picked stays with
+            # that round's row.
+            self._annot_probe_kind = ""
+            self._annot_identity = ""
             # D2b: the lens is open, so both controls are available. The
             # preview keeps ticking — the worker is still running and
             # still publishing frames into the preview channel.
@@ -1624,24 +1675,71 @@ else:
             raise ValueError(f"unknown failure kind {kind!r}")
 
         def press_correct(self) -> None:
-            """G3 W3 正確 key: persist the operator verdict, back to Ready.
+            """G3-w P3 正確 key: derive ground truth, persist, back to Ready.
 
-            Correct endorses what is shown: a matched round records the
-            shown identity (operator-confirmed, kind enrolled); a
-            not-found round records unenrolled (operator confirms absent).
+            Correct endorses what is shown (spec §4.2): a matched round
+            records the shown identity (`target`); a not-found round
+            records `nontarget` + `outsider` — the operator confirms that
+            nobody enrolled is there, and `outsider` is the runbook-defined
+            marker for that fact. Zero extra input.
             """
+            from facecore.live.contracts import SessionStatus
+
+            terminal = self.desktop.terminal
+            if terminal is not None and terminal.status == SessionStatus.matched:
+                identity = self.desktop.display_identity()
+                self._annot_probe_kind = "target"
+                # The system already named them and the operator agrees:
+                # the identity is the shown one, never a guess.
+                self._annot_identity = identity or ""
+            else:
+                self._annot_probe_kind = "nontarget"
+                self._annot_identity = "outsider"
             self._press_key(correct=True)
 
         def press_incorrect(self) -> None:
-            """G3 W3 錯誤 key: persist the operator verdict, back to Ready.
+            """G3-w P3 錯誤 key: open the disclosure area (spec §4.2).
 
-            Incorrect never records the system prediction: the label is
-            uncertain with no identity, so a misrecognition is never
-            auto-recorded as correct.
+            First press only reveals the input area — the operator has
+            not judged anything yet. The write happens on
+            `confirm_incorrect`, so an accidental ✗ never records a
+            wrong identity. Pressing ✗ again after picking is the same
+            as confirming.
             """
+            if not self.disclosure_widget.isVisible():
+                self._refresh_ground_truth_options()
+                self.disclosure_widget.setVisible(True)
+                self._set_status("請選擇實際是誰，再按一次錯誤確認")
+                return
+            self.confirm_incorrect()
+
+        def confirm_incorrect(self) -> None:
+            """Write the ✗ verdict with the disclosure pick."""
+            if not self._annot_probe_kind:
+                self._set_status("請先選擇實際是誰")
+                return
             self._press_key(correct=False)
 
-        def _press_key(self, *, correct: bool) -> None:
+        def press_skip(self) -> None:
+            """G3-w P3 略過 key: an explicit non-judgement (spec §4.2).
+
+            `skipped` is a value, not an absence: it records that the
+            operator deliberately declined this round. Per decision, the
+            recommended skip leaves `probe_kind`/`presenting_identity`
+            empty and never rewrites stored CSVs.
+            """
+            from facecore.live.contracts import SessionStatus
+
+            terminal = self.desktop.terminal
+            if terminal is not None and (
+                terminal.status == SessionStatus.invalid_input
+            ):
+                return
+            self._annot_probe_kind = ""
+            self._annot_identity = ""
+            self._press_key(correct=False, verdict="skipped")
+
+        def _press_key(self, *, correct: bool, verdict: str | None = None) -> None:
             if self._next_session is None:
                 raise RuntimeError(
                     "label keys require the continuous loop (next_session factory)"
@@ -1729,10 +1827,14 @@ else:
                             # D7-A W1: the App-startup gallery report.
                             gallery_load_report=self.load_report,
                             # G3-w P3: the verdict is the button just
-                            # pressed — correct/incorrect are the only two
-                            # values this path can produce (spec §5.1).
+                            # pressed — correct/incorrect, or the explicit
+                            # skipped value (spec §5.1). `verdict` is only
+                            # ever set by `press_skip`; every other path
+                            # derives it from the button.
                             operator_verdict=(
-                                "correct" if correct else "incorrect"
+                                verdict
+                                if verdict is not None
+                                else ("correct" if correct else "incorrect")
                             ),
                         )
                     except OSError as exc:
