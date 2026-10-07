@@ -949,8 +949,11 @@ def test_a_real_demo_round_fills_the_diagnostic_fields(
     # The threshold snapshot must carry this round's actual profile.
     assert row["match_threshold"] == "0.45", row["match_threshold"]
     assert row["required_support"] == "1"
-    # W0 fields stay empty until W0-a supplies an input path.
-    assert row["probe_kind"] == "" and row["presenting_identity"] == ""
+    # G3-w P3: ✓ on a matched round derives `target` plus the shown
+    # identity (spec §4.2) — the W0 fields are no longer empty on a
+    # judged round. The `operator_verdict` cell carries `correct`.
+    assert row["probe_kind"] == "target", row["probe_kind"]
+    assert row["operator_verdict"] == "correct", row["operator_verdict"]
 
 
 # ---------------------------------------------------------------------------
