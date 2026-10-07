@@ -343,3 +343,77 @@ class TestG3ReopenContinuity:
         assert rows[0] == first_rows[0]
         assert rows[1]["label_kind"] == "uncertain"
         window2.close()
+
+
+class TestRecordModeSkipWritesNoRow:
+    """Record-mode skip must not write a row (rework 5, decision 選 d).
+
+    The research ledger has no verdict column and `uncertain` would be a
+    placeholder, not a judgement — so the record branch of `press_skip`
+    returns early. Without this test, removing that branch stays green
+    everywhere (primary round-5 mutation: 86 passed).
+    """
+
+    def test_record_skip_leaves_no_row_and_says_so(
+        self, qt_app: Any, tmp_path: Path
+    ) -> None:
+        from tests.live.test_qt_window import _AdvancingClock
+
+        factory = _RoundFactory(
+            tmp_path, FakeCapture(_face_frames()), _matching_scorer
+        )
+        first_desktop, first_consent, first_attempt = factory()
+        clock = _AdvancingClock()
+        results_csv = tmp_path / "results.csv"
+        window = QtResearchWindow(
+            first_desktop,
+            consent=first_consent,
+            recorder=factory.recorder,
+            attempt_id=first_attempt,
+            offscreen=True,
+            clock_ns=clock,
+            clock_advance=clock.advance,
+            next_session=factory,
+            results_csv=results_csv,
+        )
+        window.show()
+        window.enter_ready()
+        window.start_clicked()
+        window.process_until_terminal(max_steps=200)
+        assert window.mode == "result"
+        window.press_skip()
+        assert len(window.completed_rounds) == 0, (
+            "a skipped round must not be queued for commit"
+        )
+        assert not results_csv.is_file(), (
+            "a skipped round must not create results.csv"
+        )
+        assert "本輪不留列" in window.status_label.text(), (
+            "the status must say the round leaves no row, "
+            f"got {window.status_label.text()!r}"
+        )
+        window.close()
+
+    def test_confirm_without_pick_writes_nothing(
+        self, qt_app: Any, tmp_path: Path
+    ) -> None:
+        """✗ confirm with no pick must refuse, not write (fail-closed).
+
+        The disclosure pick is the round's ground truth; confirming
+        without one must leave no row rather than invent values (primary
+        round-5 mutation: guard removed → 13 passed).
+        """
+        factory = _RoundFactory(
+            tmp_path, FakeCapture(_face_frames()), _matching_scorer
+        )
+        window = _open_window(qt_app, factory)
+        window.process_until_terminal(max_steps=200)
+        assert window.mode == "result"
+        window.press_incorrect()
+        assert window.mode == "result", "disclosure must not write"
+        window.confirm_incorrect()
+        assert len(window.completed_rounds) == 0, (
+            "confirming with no pick must not queue a round"
+        )
+        assert window.mode == "result", "the round must stay open"
+        window.close()
