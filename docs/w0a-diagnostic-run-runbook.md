@@ -526,17 +526,16 @@ frames_sampled > 0
 
 空字串的意思是「**沒有記錄**」。它**不是**「不是非目標輪」，也**不是**資料壞掉。
 
-- **`target` 側已可填。** `src/facecore/live/qt_window.py`（D7-A W0-b，#154）加了兩個下拉：`probe_kind` 的值域取自下表（`target`／`nontarget`），`presenting_identity` 的候選直接來自 `sorted(gallery.embeddings)` —— **operator 打不出錯字，也選不到沒載入的身分**。兩條 demo 寫入路徑都在寫入那一刻讀值，所以同一個 App session 裡換人只要切一次。
-- **`nontarget` 側的 `presenting_identity` 仍值域未定義，所以仍留空。** 那一側的下拉是一個 disabled 的「（尚未定義：待 W0-b 排程）」項目，不是自由文字 —— 可填會讓 operator 自己發明值，而空白無法與「忘了填」區分。這不是缺陷，是**下表那條規則還沒被定義**。
+- **`target` 側已可填。** App 的標註按鈕會寫入這兩欄：按「正確」時程式從系統結果推導（認成某人 → `target`；沒找到 → `nontarget`＋`outsider`）；按「錯誤」時展開輸入區由你選（註冊組身分、non-target 清單或 `outsider`）。兩條 demo 寫入路徑都在寫入那一刻讀值。
+- **`nontarget` 側填 `outsider` 或清單檔名。** 「沒有註冊的測試者填什麼」已於 2026-10-05 定為 `outsider`（見下表「W0-b 排程時的記錄規則」）；手邊有 non-target 對照表時改填該張照片的檔名（App 讀你選的資料夾列出候選）。**不可留空，不可自己發明值。**
 
-⚠️ **所以 `presenting_identity` 的空字串現在有兩種來源，兩者意義不同，統計時不可混為一談**（加上 `probe_kind` 整欄未記錄，實際可達的組合有四種）。⚠️ **下表是現況（App 尚未實作 G3-w spec 的 P3）；spec 實作後 `nontarget` 側填 `outsider` 或清單檔名，該列不再可能，更新是 P3 實作 PR 的連帶範圍，見 `docs/specs/2026-10-05-g3-operator-verdict-ground-truth.md` §2.3 與附錄 A.3**：
+⚠️ **下表是 P3 實作後（App 有 ✓／✗／略過三按鈕）的可達組合。** 每輪下拉已刪除，「漏填」兩列不再可能；`nontarget` 側已有值域，「值域未定義」列不再可能：
 
 | 可達組合 | `presenting_identity` | 意義 |
 | --- | --- | --- |
-| `probe_kind` 整欄留空（未記錄） | 空 | 這一輪沒有 ground truth |
-| `probe_kind` 整欄留空（未記錄） | 有值 | ⚠️ **這是漏填** —— `probe_kind` 留空時身分下拉仍是可選狀態（`（未記錄）` 與已載入身分並列），operator 可以只選身分不選種類。**不可當成 `target` 或 `nontarget`** |
-| `probe_kind=nontarget` | 空（值域未定義） | 這一輪是沒註冊的測試者，但**用哪個標記**還沒定義 |
-| `probe_kind=target` | 空 | ⚠️ **這是漏填，不是合法值** —— target 側下拉是可選的已載入身分，沒有理由空著 |
+| `probe_kind` 整欄留空（未記錄） | 空 | 這一輪沒有 ground truth（未進入標註流程且有列時，例如中途中止） |
+| `probe_kind=target` | 有值（註冊組身分） | 這一輪是註冊的測試者 |
+| `probe_kind=nontarget` | 有值（`outsider` 或清單檔名） | 這一輪是沒註冊的測試者 |
 
 ⚠️ **不要因為看到空值就去修它，也不要自己猜一個值填進去。** 猜一個 `target` 進去，會污染之後所有的跨身分統計 —— 那比沒有更糟。
 
@@ -623,7 +622,7 @@ frames_sampled > 0
 
 ### F. `probe_kind` / `presenting_identity`
 
-- [ ] **F1** 說出分側節「可達組合」表的四種組合裡，`probe_kind` 整欄留空的兩種（沒記錄；記了身分但沒記種類是漏填），以及**分側節認定哪兩種是漏填、為什麼不可當成 `target` 或 `nontarget`**
+- [ ] **F1** 說出分側節「可達組合」表的三種組合（未記錄；`target`＋身分；`nontarget`＋`outsider`／檔名），以及**空值只代表「沒有記錄」、不可當成 `target` 或 `nontarget****
 - [ ] **F2** ⚠️ 說出**為什麼不能自己猜一個值填進去**，以及那會怎樣污染統計
 - [ ] **F3** 說出 `probe_kind` 的**合法值只有兩個**
 - [ ] **F4** ⚠️ 指出分側節 blockquote 所列的兩處程式碼註解落差（`#147` 已修正／移除的兩處，以及仍在的 `cli.py` 那句已過期文字列為待裁決項），並說明以本手冊為準

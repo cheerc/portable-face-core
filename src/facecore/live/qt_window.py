@@ -1721,6 +1721,12 @@ else:
             operator deliberately declined this round. Per decision, the
             recommended skip leaves `probe_kind`/`presenting_identity`
             empty and never rewrites stored CSVs.
+
+            The write goes through `_record_unlabeled_round` — the same
+            path as 再次辨識 — so the row carries `label_kind="unlabeled"`
+            and the SOP's labeled-round formula does not count a skipped
+            round as answered. No third writer is added: the writer_wiring
+            exact-two guard stays in force.
             """
             from facecore.live.contracts import SessionStatus
 
@@ -1731,9 +1737,15 @@ else:
                 return
             self._annot_probe_kind = ""
             self._annot_identity = ""
-            self._press_key(correct=False, verdict="skipped")
+            self._record_unlabeled_round()
+            self.correct_button.setEnabled(False)
+            self.incorrect_button.setEnabled(False)
+            self.skip_button.setEnabled(False)
+            self._set_status("已略過 · skipped")
+            self._refresh_saved_state()
+            self.enter_ready(status="已略過 · skipped")
 
-        def _press_key(self, *, correct: bool, verdict: str | None = None) -> None:
+        def _press_key(self, *, correct: bool) -> None:
             if self._next_session is None:
                 raise RuntimeError(
                     "label keys require the continuous loop (next_session factory)"
@@ -1821,14 +1833,13 @@ else:
                             # D7-A W1: the App-startup gallery report.
                             gallery_load_report=self.load_report,
                             # G3-w P3: the verdict is the button just
-                            # pressed — correct/incorrect, or the explicit
-                            # skipped value (spec §5.1). `verdict` is only
-                            # ever set by `press_skip`; every other path
-                            # derives it from the button.
+                            # pressed — correct/incorrect (spec §5.1).
+                            # `skipped` never flows through this path: both
+                            # non-judgement exits (略過 button and 再次辨識)
+                            # write via `_record_unlabeled_round` with
+                            # `label_kind="unlabeled"`.
                             operator_verdict=(
-                                verdict
-                                if verdict is not None
-                                else ("correct" if correct else "incorrect")
+                                "correct" if correct else "incorrect"
                             ),
                         )
                     except OSError as exc:
