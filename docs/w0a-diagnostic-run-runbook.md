@@ -622,7 +622,7 @@ frames_sampled > 0
 
 ### F. `probe_kind` / `presenting_identity`
 
-- [ ] **F1** 說出分側節「可達組合」表的三種組合（未記錄；`target`＋身分；`nontarget`＋`outsider`／檔名），以及**空值只代表「沒有記錄」、不可當成 `target` 或 `nontarget****
+- [ ] **F1** 說出分側節「可達組合」表的三種組合（未記錄；`target`＋身分；`nontarget`＋`outsider`／檔名），以及**空值只代表「沒有記錄」、不可當成 `target` 或 `nontarget`**
 - [ ] **F2** ⚠️ 說出**為什麼不能自己猜一個值填進去**，以及那會怎樣污染統計
 - [ ] **F3** 說出 `probe_kind` 的**合法值只有兩個**
 - [ ] **F4** ⚠️ 指出分側節 blockquote 所列的兩處程式碼註解落差（`#147` 已修正／移除的兩處，以及仍在的 `cli.py` 那句已過期文字列為待裁決項），並說明以本手冊為準
