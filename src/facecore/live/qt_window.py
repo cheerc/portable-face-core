@@ -437,10 +437,13 @@ else:
 
             self.ground_truth_combo = QComboBox()
             self.ground_truth_combo.setObjectName("groundTruthPicker")
-            self.ground_truth_combo.setVisible(False)
             self.nontarget_dir_button = QPushButton("選 non-target 資料夾")
             self.nontarget_dir_button.setObjectName("nontargetDirPicker")
-            self.nontarget_dir_button.setVisible(False)
+            # Visibility is owned by the disclosure parent alone: hiding
+            # the children here as well would keep them hidden when the
+            # parent is shown (Qt does not re-show an explicitly hidden
+            # child with its parent), leaving the disclosure area empty
+            # with no selectable menu.
             self.nontarget_dir_button.clicked.connect(
                 self._pick_nontarget_dir
             )
@@ -552,37 +555,28 @@ else:
         def _refresh_ground_truth_options(self) -> None:
             """Rebuild the disclosure combo for the current round result.
 
-            Closed domain, never free text (spec §4.3): gallery keys for
-            the `matched` case; gallery keys plus `outsider` for the
-            not-found cases; the runtime non-target folder stems plus
-            `outsider` as the no-roster path. `outsider` is the
+            Closed domain, never free text (spec §4.3): gallery keys,
+            runtime non-target folder stems, and the runbook-defined
+            `outsider` marker as the no-roster path. `outsider` is the
             runbook-defined marker, never invented here.
             """
-            from facecore.live.contracts import SessionStatus
-
             combo = self.ground_truth_combo
             combo.blockSignals(True)
             try:
                 combo.clear()
-                terminal = self.desktop.terminal
-                status = terminal.status if terminal is not None else None
                 gallery = getattr(self, "gallery", None)
                 embeddings = getattr(gallery, "embeddings", None) or {}
-                if status == SessionStatus.matched:
-                    for identity in sorted(embeddings):
-                        combo.addItem(identity, ("target", identity))
-                    # Grid 3: matched but the person is not enrolled —
-                    # the operator corrects to a non-target stem or the
-                    # runbook-defined `outsider` marker (spec §4.3).
-                    for stem in self._nontarget_stems:
-                        combo.addItem(stem, ("nontarget", stem))
-                    combo.addItem("outsider（隨機路人）", ("nontarget", "outsider"))
-                else:
-                    for identity in sorted(embeddings):
-                        combo.addItem(identity, ("target", identity))
-                    for stem in self._nontarget_stems:
-                        combo.addItem(stem, ("nontarget", stem))
-                    combo.addItem("outsider（隨機路人）", ("nontarget", "outsider"))
+                # One option set for every status: gallery keys (grid 2
+                # corrections and the matched identity itself), runtime
+                # non-target stems, and the runbook-defined `outsider`
+                # marker (grid 3 and the no-roster path, spec §4.3). No
+                # per-status branching: the operator — not the system
+                # result — decides which one this round was.
+                for identity in sorted(embeddings):
+                    combo.addItem(identity, ("target", identity))
+                for stem in self._nontarget_stems:
+                    combo.addItem(stem, ("nontarget", stem))
+                combo.addItem("outsider（隨機路人）", ("nontarget", "outsider"))
             finally:
                 combo.blockSignals(False)
 

@@ -298,6 +298,13 @@ def test_press_incorrect_discloses_then_writes_incorrect(app, tmp_path: Path):
     win.press_incorrect()
     assert _read_verdicts_len(demo_csv) == 0, "disclosure must not write"
     assert win.disclosure_widget.isVisible(), "input area must appear"
+    # Regression guard: showing the parent must show the children too.
+    # Qt does not re-show an explicitly hidden child with its parent, so
+    # hiding the children at build time left the disclosure area empty
+    # with no selectable menu — and the existing tests only asserted the
+    # parent, letting it stay green.
+    assert win.ground_truth_combo.isVisible(), "menu must be visible"
+    assert win.nontarget_dir_button.isVisible(), "folder button must show"
     idx = _find_ground_truth(win, ("target", "enroll-07"))
     assert idx >= 0, "gallery identity must be offered"
     # Route through the real signal: move away first so the pick always
