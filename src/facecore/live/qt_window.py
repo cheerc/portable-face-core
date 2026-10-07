@@ -1050,6 +1050,10 @@ else:
                     probe_kind=self._probe_kind_value(),
                     presenting_identity=self._presenting_identity_value(),
                     gallery_load_report=self.load_report,
+                    # G3-w P3: the rerun path is a deliberate
+                    # non-judgement, recorded as an explicit value so it
+                    # cannot collide with a missing verdict (spec §5.3).
+                    operator_verdict="skipped",
                 )
             except OSError as exc:
                 # Fail-closed: a round we cannot record must not look
@@ -1724,6 +1728,12 @@ else:
                             presenting_identity=self._presenting_identity_value(),
                             # D7-A W1: the App-startup gallery report.
                             gallery_load_report=self.load_report,
+                            # G3-w P3: the verdict is the button just
+                            # pressed — correct/incorrect are the only two
+                            # values this path can produce (spec §5.1).
+                            operator_verdict=(
+                                "correct" if correct else "incorrect"
+                            ),
                         )
                     except OSError as exc:
                         # D7-A #141: same as the unlabeled path — the
