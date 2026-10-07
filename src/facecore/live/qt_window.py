@@ -1746,7 +1746,7 @@ else:
             self._annot_probe_kind = ""
             self._annot_identity = ""
             if self._results_csv is not None and self.recorder is not None:
-                self._press_key(correct=False)
+                self._press_key(correct=False, verdict="skipped")
                 if self._mode == self._MODE_READY:
                     self._set_status("已略過 · skipped")
                 return
@@ -1758,7 +1758,9 @@ else:
             self._refresh_saved_state()
             self.enter_ready(status="已略過 · skipped")
 
-        def _press_key(self, *, correct: bool) -> None:
+        def _press_key(
+            self, *, correct: bool, verdict: str | None = None
+        ) -> None:
             if self._next_session is None:
                 raise RuntimeError(
                     "label keys require the continuous loop (next_session factory)"
@@ -1846,13 +1848,15 @@ else:
                             # D7-A W1: the App-startup gallery report.
                             gallery_load_report=self.load_report,
                             # G3-w P3: the verdict is the button just
-                            # pressed — correct/incorrect (spec §5.1).
-                            # `skipped` never flows through this path: both
-                            # non-judgement exits (略過 button and 再次辨識)
-                            # write via `_record_unlabeled_round` with
-                            # `label_kind="unlabeled"`.
+                            # pressed — correct/incorrect — or the explicit
+                            # `skipped` passed only by the record-mode skip
+                            # path (spec §5.1). The demo-mode skip never
+                            # flows through here: it writes via
+                            # `_record_unlabeled_round`.
                             operator_verdict=(
-                                "correct" if correct else "incorrect"
+                                verdict
+                                if verdict is not None
+                                else ("correct" if correct else "incorrect")
                             ),
                         )
                     except OSError as exc:
