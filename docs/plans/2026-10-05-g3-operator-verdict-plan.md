@@ -37,14 +37,16 @@
 
 ⚠️ **`uv sync --extra dev` 不會移除先前安裝的套件。** ⚠️ 我第一組量測因此是壞的 —— 兩次都跑在同一個已污染的 `.venv`，得出「無差額」的假結論。
 
-⚠️ **⚠️ 另一個同型的坑：repo 共用的 `.venv` 裡殘留了 `PySide6`。** ⚠️ 實測該 venv 的 `find_spec("PySide6")` 回 `True`，⚠️ **所以用它跑本文件的驗收命令會得到與 §1.2 不同的數字**（⚠️ 例如 `test_d7_w1_gallery_visibility.py` 會是 17 passed 而非 16 passed, 1 skipped，⚠️ **因為那支測試的函式體內 skip 條件不成立**）。
+⚠️ **⚠️ 另一個同型的坑：repo 共用的 `.venv` 裡殘留了 `PySide6`。** ⚠️ 實測該 venv 的 `find_spec("PySide6")` 回 `True`，⚠️ **所以用它跑本文件的驗收命令會得到與隔離 venv 不同的結果**（⚠️ 例如該檔的函式體內 skip 條件在共用 venv 下不成立，⚠️ **因為那支測試的函式體內 skip 條件依賴 PySide6 是否可 import**）。
 
-⚠️ **⚠️ 所以：本文件所有「預期 N passed／N skipped」的驗收命令都必須用下面那個隔離 venv，⚠️ 不得用 repo 共用的 `.venv`。** ⚠️ **⚠️ 照共用 venv 跑會得到不符的數字，而那會讓實作者以為自己失敗了、去修一個沒壞的東西** —— ⚠️ **錯的預期值比沒有預期值更糟。**
+⚠️ **⚠️ 所以：本文件所有驗收命令都必須用下面那個隔離 venv，⚠️ 不得用 repo 共用的 `.venv`。** ⚠️ **⚠️ 照共用 venv 跑會得到不符的結果，而那會讓實作者以為自己失敗了、去修一個沒壞的東西** —— ⚠️ **錯的預期值比沒有預期值更糟。**
 ⚠️ **正確做法**（本計畫所有 CI 相關驗收都用這個）：
 
 ```bash
 rm -rf /tmp/venv-verify && uv venv /tmp/venv-verify --python 3.14
 VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
+/tmp/venv-verify/bin/ruff check src tests              # verify job Lint
+# 預期：All checks passed!
 /tmp/venv-verify/bin/python -m pytest <檔> -q          # verify job 環境
 /tmp/venv-verify/bin/python -c "import PySide6"        # 應 ModuleNotFoundError
 ```
@@ -56,41 +58,41 @@ VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
 | `verify` | `pip install -e .[dev]` | ❌ |
 | `qt-smoke` | `pip install -e .[dev,research-ui]` | ✅ |
 
-### 1.2 三支受影響測試的實測結果
+### 1.2 三支受影響測試的 job／skip 結構（靜態清單，不保存 run 計數）
 
 | 測試檔 | verify job（`.[dev]`）| qt-smoke job（`.[dev,research-ui]`）| 備註 |
 |---|---|---|---|
-| `tests/live/test_d7_w0b_probe_kind_input.py` | **5 skipped** | **5 passed** | ⚠️ **verify job 對它只報 skip** |
-| `tests/live/test_d7_w0b_writer_wiring.py` | **3 passed** | — | PySide6-free，**verify job 會跑** |
-| `tests/cli/test_d7_w1_gallery_visibility.py` | **16 passed, 1 skipped** | 在 qt-smoke 的 `Run offscreen synthetic Qt smoke` 步驟顯式清單內（`grep -n 'test_d7_w1_gallery_visibility.py' .github/workflows/ci.yml` 定位）| 兩處都跑，⚠️ **但 verify 少一支**（見下）|
+| `tests/live/test_d7_w0b_probe_kind_input.py` | Module-level skip without PySide6 | Qt-enabled `qt-smoke` file list | verify-only results do not establish its Qt-path behavior |
+| `tests/live/test_d7_w0b_writer_wiring.py` | PySide6-free; included in verify | — | The verify job executes this file without the Qt extra |
+| `tests/cli/test_d7_w1_gallery_visibility.py` | Non-Qt tests run; the Qt-specific path skips without PySide6 | Explicit entry in qt-smoke's `Run offscreen synthetic Qt smoke` file list | verify runs the file but does not exercise its Qt-only path; see below |
 
 
 ⚠️ **⚠️ 為什麼 `test_d7_w1_gallery_visibility.py` 在 verify job 少一支**：
 
 ⚠️ **它沒有 module-level `skipif`，但有一支測試在函式體內 `pytest.skip`** —— `grep -n 'find_spec("PySide6")' tests/cli/test_d7_w1_gallery_visibility.py` 可定位，⚠️ 該處在 `import PySide6.QtWidgets` 前先 `pytest.skip("needs the Qt demo path")`。
 
-⚠️ **所以 `grep -cE '^\s*def test_'` 給的 17 是「檔案裡有幾支測試」，⚠️ 不是「verify job 會跑幾支」。** ⚠️ **`--collect-only` 也看不出來** —— 函式體內的 skip 在執行期才發生，collect 階段照樣收。⚠️ **要量這件事必須實跑 `-rs` 並看 `SKIPPED` 行。**
+⚠️ **所以 `grep -cE '^\s*def test_'` 只量到「檔案裡有幾支測試」，⚠️ 不是「verify job 會跑幾支」。** ⚠️ **`--collect-only` 也看不出來** —— 函式體內的 skip 在執行期才發生，collect 階段照樣收。⚠️ **要量這件事必須實跑 `-rs` 並看 `SKIPPED` 行。**
 
 ⚠️ **兩個直接後果**：
 
 1. ⚠️ **`test_d7_w0b_probe_kind_input.py` 的重寫，證明它被執行只能靠 qt-smoke job。** ⚠️ **用 verify job 的數字證明它是壞證據** —— 該檔在 verify 是 module-level skipif，⚠️ 只會看到 skip 數變化，看不到 pass。
 2. ⚠️ **`writer_wiring` 是 PySide6-free → verify job 就跑它。** ⚠️ **所以它若因 UI 改動轉紅，verify job 立刻抓到，不必等 qt-smoke。** ⚠️ 這是 #154 當初刻意讓它 PySide6-free 的效果。
 
-⚠️ **⚠️ 而第 1 條對 `test_d7_w1_gallery_visibility.py` 不適用** —— ⚠️ 它是函式體內 skip，⚠️ **verify job 會跑其中 16 支**，⚠️ 所以它轉紅時 verify job 看得到（⚠️ 但只會看到 16 支的結果，⚠️ 那支需 Qt demo path 的要等 qt-smoke）。
+⚠️ **⚠️ 第 1 條對 `test_d7_w1_gallery_visibility.py` 不適用** —— ⚠️ 它是函式體內 skip；verify 會執行非 Qt 路徑並在 Qt 依賴分支 skip，qt-smoke 則明列該檔。⚠️ **要確認當前版本哪些測試實際執行，必須在隔離 venv 實跑 `-rs` 並看輸出；本表不保存 passed/skipped 計數。**
 
 ⚠️ **本表的計數何時失效、該由誰處理**：
 
 - ⚠️ **計數本身是量測記錄，不是永久權威。** ⚠️ 它們的作用是決定 P4 要靠哪個 job 證明自己被執行，⚠️ **而那正是 D0 §11 第 15 項記錄過的失效形狀**（守護寫了但沒有任何 CI job 執行它，而 repo 仍全綠）。
-- ⚠️ **`test_d7_w0b_probe_kind_input.py` 在 P4 重寫之後，本表的計數全部失效。**
-- ⚠️ **⚠️ P4 必須「刪掉」本表的計數，不是「標為過期」。** ⚠️ 標為過期等於留一個假權威 —— ⚠️ 讀者看到數字加一個「已過期」標記，仍會拿那個數字當基線，⚠️ **而那正是 `PROJECT-STATE.md` 曾出現過的病（同一句既說「已刪除」又保留刪除前的數字，三輪 review 沒抓到）。**
-- ⚠️ **刪掉計數不會讓本節失效**：⚠️ 本節的**命題**是「P4 的重寫只有 `qt-smoke` 會跑、`verify` 只會 skip」—— ⚠️ **那是 CI job 的結構事實，數字刪掉後仍然成立。** ⚠️ **過期的是那兩個計數，不是命題。**
-- ⚠️ ⚠️ **本條不得只存在於本檔** —— ⚠️ 「P4 完成後要刪這些計數」若不寫進 P4 的 dispatch，⚠️ **會隨 session 斷裂而消失。**
+- ⚠️ **`test_d7_w0b_probe_kind_input.py` 在 P4 重寫之後，過去的 run 結果不能沿用**；本表只保留 job／skip 結構，不保存 pass／skip 計數。
+- ⚠️ **P4 必須在該階段的 exact head 重新驗證 `verify` 與 `qt-smoke` 各自是否執行目標測試**，並把實際命令與 CI 證據寫進 task/PR；不得把舊的 run totals 回填成本計畫的基線。
+- ⚠️ **刪除數值不會讓本節失效**：本節保留的命題是「P4 重寫由 `qt-smoke` 執行 Qt 路徑，而 `verify` 環境的 skip 行為不同」；這是 job／skip 結構，不是過去的結果數字，P4 仍須按 exact head 覆驗。
+- ⚠️ ⚠️ **P4 的 dispatch 必須明列這項 exact-head job-coverage 驗收** —— ⚠️ 不能只留在本計畫裡，否則會隨 session 斷裂而漏掉。
 
 ### 1.3 qt-smoke 的執行模型（⚠️ 這是本專案反覆踩坑的地方）
 
 ⚠️ **`qt-smoke` 的 `Run offscreen synthetic Qt smoke` 步驟是「明確檔案清單」，從不跑 `tests/` 全套。** ⚠️ 新增測試檔若不在清單內，**不會被任何 CI job 執行**，⚠️ 而 repo 仍全綠（D0 §11 第 15 項記錄過一次，`#154` 又撞過一次）。
 
-⚠️ **所以本計畫的硬規則**：⚠️ **任何新增／重寫的測試，必須落在既有 `ci.yml` 顯式清單內的檔案。** ⚠️ 確實需要新檔時，必須同時改 `ci.yml`，⚠️ **且該階段的驗收必須用 §1.1 的隔離 venv 證明新檔確實被 collect**（`--collect-only -q` 的數字），**不得只讀 workflow 檔。**
+⚠️ **所以本計畫的硬規則**：⚠️ **任何新增／重寫的測試，必須落在既有 `ci.yml` 顯式清單內的檔案。** ⚠️ 確實需要新檔時，必須同時改 `ci.yml`，⚠️ **且該階段的驗收必須用 §1.1 隔離 venv 證明新檔確實被執行**（實跑加 `-rs` 看執行／skip 行），**不得只讀 workflow 檔，也不得只用 `--collect-only`** —— 函式體內的 skip 在 collect 階段看不出來。
 
 ---
 
@@ -104,6 +106,12 @@ VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
 | **P2** | 資料模型：`operator_verdict` 欄 ＋ 三條守護改寫 | `g3w-operator-verdict-column` | 程式 | P1 |
 | **P3** | UI：五格標註流程 ＋ non-target 清單 ＋ 移除舊下拉 | `g3w-verdict-ui` | 程式 | P2 |
 | **P4** | `test_d7_w0b_probe_kind_input.py` 重寫 ＋ `_press_key` 端到端（R1） | `g3w-verdict-ui-tests` | 測試 | P3 |
+
+### Schema-identification documentation ownership
+
+⚠️ **每次 schema change 的實作者負責手動更新兩處 operator-facing 欄位識別文件**：SOP 的「最後一欄的標題是／你的檔案是」對照表，以及 `PROJECT-STATE.md` 的 G3-w 表格列和其後的 current-schema 權威敘述。Lead 必須逐處對照目前 CSV producer 的 schema 驗收，不能把一處更新推定成其他處已同步。
+
+⚠️ **這兩處目前沒有 row-level 的自動 guard**；欄位識別表是手動維護，不得宣稱已被 `test_d7_demo_log_header_guard.py` 覆蓋（該檔只守 header 形狀與寫入前比對，從不讀 operator 文件）。`test_d7_w3_diagnostic_log_fields.py` 的 `test_the_operator_docs_can_identify_a_log_with_the_current_last_column` 只檢查 runbook 與 SOP 是否列出當前最後一欄及其欄數，不檢查 PROJECT-STATE 的散文句，也不檢查兩份 operator 文件彼此是否一致。獨立 guard-design task 將裁定是否只守表格列，或也需涵蓋 `PROJECT-STATE` 的散文句；本計畫只記錄 owner，不預先設計 guard。
 
 ⚠️ **P2 在 P3 之前的理由（比「中間會不一致」更硬）**：
 
@@ -159,11 +167,11 @@ awk 'NR==547' docs/w0a-diagnostic-run-runbook.md   # 應含「兩側都已可填
 git diff origin/main -- docs/w0a-diagnostic-run-runbook.md | grep -cE '^[-+]\| .probe_kind'
 # 預期：0
 
-# 4. 三步驟（不動 Python，應無變動）
+# 4. 三步驟（不動 Python，應無變動；命令只列形狀，不填未實跑的結果數字）
 uv sync --extra dev
-uv run --extra dev ruff check src tests     # 預期：All checks passed!
-uv run --extra dev mypy src                 # 預期：Success: no issues found in 86 source files
-uv run --extra dev pytest tests/ -q         # 預期：1212 passed, 128 skipped, 1 xfailed
+uv run --extra dev ruff check src tests     # 以該 head 的實際輸出為準
+uv run --extra dev mypy src                 # 以該 head 的實際輸出為準
+uv run --extra dev pytest tests/ -q         # 以該 head 的實際輸出為準，不得把舊 head 的 totals 回填成本計畫的基線
 ```
 
 ⚠️ **review 重點**：⚠️ **逐字比對附錄 A 的「改為」文字**（commander 明寫的要求）· ⚠️ **`runbook` 那兩列直接影響 operator 在 W0-b 的操作**，⚠️ 不得因為「純文件」就降低強度。
@@ -216,9 +224,9 @@ PY
 rm -rf /tmp/venv-verify && uv venv /tmp/venv-verify --python 3.14
 VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
 /tmp/venv-verify/bin/python -m pytest tests/cli/test_d7_w1_gallery_visibility.py -q
-# 預期：16 passed, 1 skipped（⚠️ 不是 17 passed —— 見 §1.2；qt-smoke job 才是 17 passed）
+# 預期見 §1.2 的 job／skip 結構（verify 跑非 Qt 路徑、Qt-only 路徑 skip；qt-smoke 跑全檔）。本計畫不保存 passed／skip 計數，結果以該 head 的實際輸出為準。
 /tmp/venv-verify/bin/python -m pytest tests/live/test_d7_w0b_writer_wiring.py -q
-# 預期：3 passed   ← 這證明 verify job 確實執行它（PySide6-free）
+# 該檔 PySide6-free，verify job 會執行；結果以該 head 的實際輸出為準，本計畫不保存計數
 
 # 3. ⚠️ 紅色變異實驗：把新欄從 tuple 拿掉 → G1 必須轉紅
 #    （在 git archive 另開副本做，不要原地改再 cp 還原）
@@ -331,15 +339,15 @@ uv run --extra dev --extra research-ui python -m pytest tests/live/test_qt_windo
 ⚠️ **驗收命令**：
 
 ```bash
-# 1. qt-smoke job 確實執行它（verify job 只會 skip）
+# 1. qt-smoke job 確實執行它（verify job 只會 skip；module-level skipif 見該檔 `pytestmark`）
 uv run --extra dev --extra research-ui python -m pytest tests/live/test_d7_w0b_probe_kind_input.py -q
-# 預期：N passed（無 skipped —— 有 PySide6）
+# 結果以該 head 的實際輸出為準，本計畫不保存 passed／skip 計數
 
 # 2. ⚠️ 對照：verify job 環境下它是 skipped（證明兩個 job 的差額真實存在）
 rm -rf /tmp/venv-verify && uv venv /tmp/venv-verify --python 3.14
 VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
 /tmp/venv-verify/bin/python -m pytest tests/live/test_d7_w0b_probe_kind_input.py -q
-# 預期：N skipped
+# 結果以該 head 的實際輸出為準，本計畫不保存計數
 
 # 3. 三種突變各自轉紅（見上）
 ```
@@ -367,9 +375,9 @@ VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
 | 階段 | 新增／修改的測試 | 由哪個 CI job 執行 | 證明方式 |
 |---|---|---|---|
 | P1 | 無 | — | — |
-| P2 | `test_d7_w1_gallery_visibility.py`（改寫）· `test_d7_w0b_writer_wiring.py`（間接）· `test_d7_w0b_probe_kind_input.py`（一行） | **verify**（兩者 PySide6-free）| §1.2 的隔離 venv collect-only |
-| P3 | `test_qt_window.py`（既有） | **qt-smoke**（顯式清單）| `--collect-only` ＋ 有 PySide6 的 pass |
-| P4 | `test_d7_w0b_probe_kind_input.py`（重寫）| ⚠️ **只有 qt-smoke** ⚠️（verify 只會 skip）| §1.2 的 passed/skipped 差額 |
+| P2 | `test_d7_w1_gallery_visibility.py`（改寫）· `test_d7_w0b_writer_wiring.py`（間接）· `test_d7_w0b_probe_kind_input.py`（一行） | **verify**（兩者 PySide6-free）| §1.1 隔離 venv 實跑（`-rs` 看執行／skip 行） |
+| P3 | `test_qt_window.py`（既有） | **qt-smoke**（顯式清單）| 有 PySide6 的實跑（`-rs` 看執行／skip 行） |
+| P4 | `test_d7_w0b_probe_kind_input.py`（重寫）| ⚠️ **只有 qt-smoke** ⚠️（verify 只會 skip）| §1.2 的 job／skip 結構命題（不保存計數，以該 head 實跑為準） |
 
 ---
 

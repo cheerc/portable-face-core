@@ -529,7 +529,7 @@ frames_sampled > 0
 - **`target` 側已可填。** `src/facecore/live/qt_window.py`（D7-A W0-b，#154）加了兩個下拉：`probe_kind` 的值域取自下表（`target`／`nontarget`），`presenting_identity` 的候選直接來自 `sorted(gallery.embeddings)` —— **operator 打不出錯字，也選不到沒載入的身分**。兩條 demo 寫入路徑都在寫入那一刻讀值，所以同一個 App session 裡換人只要切一次。
 - **`nontarget` 側的 `presenting_identity` 仍值域未定義，所以仍留空。** 那一側的下拉是一個 disabled 的「（尚未定義：待 W0-b 排程）」項目，不是自由文字 —— 可填會讓 operator 自己發明值，而空白無法與「忘了填」區分。這不是缺陷，是**下表那條規則還沒被定義**。
 
-⚠️ **所以 `presenting_identity` 的空字串現在有兩種來源，兩者意義不同，統計時不可混為一談**（加上 `probe_kind` 整欄未記錄，實際可達的組合有四種）：
+⚠️ **所以 `presenting_identity` 的空字串現在有兩種來源，兩者意義不同，統計時不可混為一談**（加上 `probe_kind` 整欄未記錄，實際可達的組合有四種）。⚠️ **下表是現況（App 尚未實作 G3-w spec 的 P3）；spec 實作後 `nontarget` 側填 `outsider` 或清單檔名，該列不再可能，更新是 P3 實作 PR 的連帶範圍，見 `docs/specs/2026-10-05-g3-operator-verdict-ground-truth.md` §2.3 與附錄 A.3**：
 
 | 可達組合 | `presenting_identity` | 意義 |
 | --- | --- | --- |
@@ -623,10 +623,10 @@ frames_sampled > 0
 
 ### F. `probe_kind` / `presenting_identity`
 
-- [ ] **F1** 說出這兩欄現在是空的**兩種可能**（沒記錄 vs 記了但沒值），以及**為什麼現在只可能是第一種**
+- [ ] **F1** 說出分側節「可達組合」表的四種組合裡，`probe_kind` 整欄留空的兩種（沒記錄；記了身分但沒記種類是漏填），以及**分側節認定哪兩種是漏填、為什麼不可當成 `target` 或 `nontarget`**
 - [ ] **F2** ⚠️ 說出**為什麼不能自己猜一個值填進去**，以及那會怎樣污染統計
 - [ ] **F3** 說出 `probe_kind` 的**合法值只有兩個**
-- [ ] **F4** ⚠️ 指出 `cli.py` 有**兩處已知錯誤的程式碼註解**，並說明以本手冊為準
+- [ ] **F4** ⚠️ 指出分側節 blockquote 所列的兩處程式碼註解落差（`#147` 已修正／移除的兩處，以及仍在的 `cli.py` 那句已過期文字列為待裁決項），並說明以本手冊為準
 - [ ] **F5** ⚠️ 如果你的 log 有第 36–38 欄（`expected_count`／`loaded_count`／`gallery_rejected`），說出**這三欄怎麼讀**，以及**為什麼 `gallery_rejected` 空字串有兩種來源、要靠 `expected_count` 才有沒有數字來分辨**
 
 ### G. 全程不問任何人
