@@ -117,6 +117,23 @@ class TestCommitOnLabel:
         window.start_clicked()
         window.process_until_terminal(max_steps=200)
         window.press_incorrect()
+        # G3-w P3: first ✗ only discloses the input area (progressive
+        # disclosure); the round is written on confirm. This window has
+        # no gallery, so pick the runbook-defined `outsider` marker —
+        # what matters here is that both rounds persist, not which
+        # identity corrects them.
+        assert window.mode == "result"
+        window._refresh_ground_truth_options()
+        identities = [
+            window.ground_truth_combo.itemData(i)
+            for i in range(window.ground_truth_combo.count())
+        ]
+        assert ("nontarget", "outsider") in identities
+        window._annot_probe_kind, window._annot_identity = (
+            "nontarget",
+            "outsider",
+        )
+        window.confirm_incorrect()
         assert window.mode == "ready"
         # Window NEVER closed here: crash now must not lose the rounds.
         with open(factory.results_csv, newline="") as handle:

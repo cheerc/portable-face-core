@@ -1,30 +1,28 @@
-"""D7-A W0-b: the ground-truth columns must be recordable per round.
+"""D7-A W0-b: the operator verdict must reach the demo CSV row.
 
-`probe_kind` / `presenting_identity` have existed in the demo CSV header
-since #138 and every row has carried an empty string, because nothing
-ever passed a non-empty value. The runbook spent a section explaining
-that empty means 「沒有記錄」.
+`operator_verdict` has existed in the demo CSV header since #158, but no
+writer ever passed a non-empty value: both Qt writers omit the kwarg, so
+every row carries the default empty string. The runbook-adjacent claim
+that 「空 verdict = 未進入標註流程」 therefore never meets data.
 
-What these tests defend is NOT 「a widget exists」 — that is trivially
-true and proves nothing. A combo that is constructed and never read, or
-one whose selection is frozen at App startup, satisfies every check a
-reader would naturally write:
+What these tests defend is the VALUE PATH, not the widget set: pressing
+the operator's ✓／✗／再次辨識 buttons must land `correct`／`incorrect`／
+`skipped` in the written row. A test that only checks 「a button exists」
+or calls `g3_demo_round_row` directly (as the old `:283` test did) passes
+on a build where the column stays permanently empty.
 
-    assert window.probe_kind_combo is not None      # passes on a dead widget
-    assert "target" in items(window.probe_kind_combo)  # passes if nothing consumes it
+The distinction that matters is the same one this file always defended:
+「每輪可獨立設定」 is a claim about time. It is kept here in button form
+— setting the ground truth via the new annotation state rather than the
+removed combos, then requiring different rounds to produce different
+cells.
 
-Both of those pass on a build where the columns stay permanently empty.
-So the guard here is about the VALUE PATH: the value the operator picks
-must reach the CSV row, and must be re-read for every round rather than
-captured once.
-
-The distinction that matters, and the one a future reader is most likely
-to get wrong, is that 「每輪可獨立設定」 is a claim about time. It means
-picking `nontarget` for round 1 and `target` for round 2 must produce
-different cells. A single App start holds one CSV file (#145), and the
-App is designed for 20+ consecutive rounds inside one window, so an
-implementation that latched the value at startup would look perfectly
-correct in any single-round test.
+History: the seven tests below that drove `win.probe_kind_combo` /
+`win.presenting_identity_combo` were removed when P3 removed the
+per-round dropdowns (spec §4.1, commander D2 single-commit). The five
+helpers are reused verbatim — they are real wiring (FakeCapture, real
+DesktopSession, real _QtResearchWindow), the most valuable part of this
+file.
 """
 
 from __future__ import annotations
@@ -95,13 +93,18 @@ def _profile():
     )
 
 
-def _desktop(session_id: str = "w0b-1"):
+def _desktop(session_id: str = "w0b-1", *, matched: bool = False):
     """A DesktopSession wired the way `tests/live/test_desktop.py` does.
 
-    The window's two combos are read at WRITE time and never touch the
-    engine, so the desktop only has to be constructible — but it must be
-    real, because a stub would let the window's own constructor fail for
-    an unrelated reason and mask what these tests are about.
+    The window reads annotation state at WRITE time and never touches the
+    engine for it, so the desktop only has to be constructible — but it
+    must be real, because a stub would let the window's own constructor
+    fail for an unrelated reason and mask what these tests are about.
+
+    `matched=True` uses a scoring scorer so the round lands `matched`
+    (the verdict path works on any terminal, but a matched round is the
+    operator's main case); the default all-reject scorer lands
+    `invalid_input`.
     """
     import numpy as np
 
@@ -116,7 +119,7 @@ def _desktop(session_id: str = "w0b-1"):
         rgb[0, 0, 0] = seq % 256
         return FramePacket(sequence=seq, captured_ns=seq * 200_000_000, rgb=rgb)
 
-    def _scorer(packet):
+    def _reject(packet):
         return FrameObservation(
             sequence=packet.sequence,
             captured_ns=packet.captured_ns,
@@ -127,6 +130,21 @@ def _desktop(session_id: str = "w0b-1"):
             face_box=None,
             identity_scores={},
             quality_rank=0.0,
+            model_generation="test-gen",
+            gallery_digest="1" * 64,
+        )
+
+    def _match(packet):
+        return FrameObservation(
+            sequence=packet.sequence,
+            captured_ns=packet.captured_ns,
+            processed_ns=packet.captured_ns + 1_000_000,
+            quality_pass=True,
+            quality_reasons=(),
+            face_count=1,
+            face_box=(0.0, 0.0, 2.0, 2.0),
+            identity_scores={"enroll-23": 0.9, "enroll-07": 0.1},
+            quality_rank=0.9,
             model_generation="test-gen",
             gallery_digest="1" * 64,
         )
@@ -143,8 +161,8 @@ def _desktop(session_id: str = "w0b-1"):
     engine = SessionEngine(_profile(), "1" * 64, "test-gen")
     return DesktopSession(
         engine=engine,
-        source=FakeCapture(frames=[_packet(seq) for seq in range(1, 4)]),
-        scorer=_scorer,
+        source=FakeCapture(frames=[_packet(seq) for seq in range(1, 60)]),
+        scorer=_match if matched else _reject,
         session_id=session_id,
     ), consent
 
@@ -179,189 +197,267 @@ def _round_row(tmp_path: Path) -> tuple[Path, dict[str, int]]:
     return path, {len(r) for r in csv.reader(path.open(encoding="utf-8"))}
 
 
-def test_probe_kind_domain_is_exactly_target_and_nontarget(app):
-    """runbook:535 — 「只有兩個：`target`、`nontarget`。沒有第三個值」.
+def _verdict_window(app, tmp_path: Path, **kwargs: Any) -> Any:
+    """A demo-mode window whose ✓／✗ path can persist (fail-closed safe).
 
-    A test that only checked 「target exists」 would let a stray third
-    option in. The domain is closed, so it is pinned from both sides.
+    Demo mode (plaintext `demo_results_csv`, no recorder) is the sink
+    these tests exercise: `has_label_persistence` accepts it, so
+    `_press_key` reaches the CSV writer instead of refusing with
+    「標註未綁定，無法落盤」. The round is driven to a real terminal via
+    `process_until_terminal`, never synthesized.
     """
-    win = _window(app)
-    values = [
-        win.probe_kind_combo.itemData(i)
-        for i in range(win.probe_kind_combo.count())
-    ]
-    non_empty = [v for v in values if v]
-    assert non_empty == ["target", "nontarget"], (
-        f"probe_kind must offer exactly target/nontarget, got {non_empty}"
-    )
+    import os
 
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from facecore.live.qt_window import _QtResearchWindow
+    from tests.live.test_qt_window import _AdvancingClock
 
-def test_identity_candidates_are_the_gallery_keys(app):
-    """The combo must offer loaded identities, never free text.
+    store = tmp_path / "store"
+    store.mkdir(parents=True, exist_ok=True)
+    from facecore.research.cli import demo_results_csv_path
 
-    A free-text identity one character off (`enrol-24`) is a silent
-    ground-truth error, and these columns exist to be ground truth. So
-    the assertion is on the OPTION SET, not on the presence of a widget.
-    """
-    win = _window(app, gallery=_gallery(["enroll-23", "enroll-07"]))
-    win.probe_kind_combo.setCurrentIndex(
-        win.probe_kind_combo.findData("target")
-    )
-    combo = win.presenting_identity_combo
-    values = [combo.itemData(i) for i in range(combo.count())]
-    assert "enroll-23" in values, "loaded identities must be offered"
-    assert "enroll-07" in values, "loaded identities must be offered"
-    # Anything that is not a loaded identity would defeat the point.
-    assert values == ["", "enroll-07", "enroll-23"], (
-        "identity options must be exactly gallery keys plus the unset "
-        f"item, got {values}"
-    )
+    demo_csv = demo_results_csv_path(store, "2026-10-05T00:00:00+00:00")
 
-
-def test_switching_to_nontarget_disables_the_identity_combo(app):
-    """The non-target side is undefined on purpose, and must LOOK it.
-
-    The runbook assigns 「沒有註冊的測試者填什麼」 to W0-b scheduling. This
-    task is only that prerequisite, so the operator must be able to see
-    that the value is not available yet — a blank cell would read as
-    「this round had no identity」, which is a claim, not an absence.
-    """
-    win = _window(app, gallery=_gallery(["enroll-23"]))
-    combo = win.presenting_identity_combo
-    assert combo.isEnabled(), "target side must be usable before any pick"
-
-    win.probe_kind_combo.setCurrentIndex(
-        win.probe_kind_combo.findData("nontarget")
-    )
-    assert not combo.isEnabled(), (
-        "the nontarget identity must not be writable — it is undefined until "
-        "W0-b scheduling defines it"
-    )
-    assert combo.count() == 1 and combo.itemData(0) == "", (
-        "the disabled side must show one explicit item, not leftover identities"
-    )
-
-
-def _round(*, attempt_id: str = "a1"):
-    """A real `RoundComplete` wrapping a real `SessionResult`.
-
-    Both are validated on construction (`SessionResult.__post_init__`
-    rejects a `matched` status without a matched identity), so this
-    cannot drift into a shape the row reducer never sees.
-    """
-    from facecore.live.contracts import SessionResult, SessionStatus
-    from facecore.live.qt_window import RoundComplete
-
-    terminal = SessionResult(
-        session_id="w0b-1",
-        schema_version="v1",
-        status=SessionStatus.matched,
-        matched_identity="enroll-23",
-        reason_codes=("supported_3_frames",),
-        elapsed_ms=1000.0,
-        frames_sampled=5,
-        frames_usable=3,
-        frames_rejected=2,
-        frames_dropped=0,
-        support_sequences=(3,),
-        profile_digest="2" * 64,
-        model_generation="test-gen",
-        gallery_digest="1" * 64,
-    )
-    return RoundComplete(
-        session_id="w0b-1",
-        attempt_id=attempt_id,
-        terminal=terminal,
-        observations=(),
-        label_kind="enrolled",
-        label_identity="enroll-23",
-        profile_version="g3-v1",
-        started_utc="2026-10-05T00:00:00+00:00",
-    )
-
-
-def test_the_value_reaches_the_csv_row(app, tmp_path: Path):
-    """End-to-end: the operator's pick must land in the written row.
-
-    This is the test a 「widget exists」 reading would not write. It goes
-    through `append_g3_demo_results_csv` so the assertion is on the file
-    the operator opens, not on an internal attribute.
-    """
-    path, widths = _round_row(tmp_path)
-    assert widths == {39}, f"header must stay 39 columns, got {widths}"
-
-    def _pick(probe_kind: str, identity: str) -> dict[str, Any]:
-        from facecore.research.cli import g3_demo_round_row
-
-        return g3_demo_round_row(
-            _round(),
-            required_support=3,
-            labeled_at_utc="2026-10-05T00:00:01+00:00",
-            probe_kind=probe_kind,
-            presenting_identity=identity,
+    def _next_session():
+        desktop2, consent2 = _desktop(
+            session_id=f"w0b-{len(states) + 1}", matched=True
         )
+        desktop2.configure_demo_label_persistence(
+            demo_csv, actor_ref="qt-operator"
+        )
+        states.append(desktop2)
+        return desktop2, consent2, None
 
-    r1 = _pick("target", "enroll-23")
-    assert r1["probe_kind"] == "target"
-    assert r1["presenting_identity"] == "enroll-23"
+    desktop, consent = _desktop(matched=True)
+    states: list[Any] = [desktop]
+    clock = _AdvancingClock()
 
-    r2 = _pick("nontarget", "")
-    assert r2["probe_kind"] == "nontarget"
-    assert r2["presenting_identity"] == ""
+    win = _QtResearchWindow(
+        desktop,
+        consent=consent,
+        gallery=_gallery(["enroll-23", "enroll-07"]),
+        offscreen=True,
+        demo_results_csv=demo_csv,
+        next_session=_next_session,
+        clock_ns=clock,
+        clock_advance=clock.advance,
+        **kwargs,
+    )
+    win.show()
+    win.enter_ready()
+    win.start_clicked()
+    win.process_until_terminal(max_steps=200)
+    return win, demo_csv
 
 
-def test_each_round_can_set_its_own_value(app):
-    """「每輪可獨立設定」 is a claim about TIME, and this is that claim.
+def _read_verdicts(demo_csv: Path) -> list[dict[str, str]]:
+    with demo_csv.open(encoding="utf-8", newline="") as fh:
+        return list(csv.DictReader(fh))
 
-    One App start holds one CSV file (#145), and the window is built for
-    20+ consecutive rounds. An implementation that latched the value at
-    startup would pass any single-round test, so the guard reads the
-    value TWICE with different picks and requires different cells.
+
+def _find_ground_truth(win: Any, pair: tuple[str, str]) -> int:
+    """Index of the (probe_kind, identity) option, or -1.
+
+    `QComboBox.findData` does not reliably match tuple payloads
+    (QVariant round-trip), so compare the stored pairs directly.
     """
-    from facecore.research.cli import g3_demo_round_row
+    combo = win.ground_truth_combo
+    for i in range(combo.count()):
+        if combo.itemData(i) == pair:
+            return i
+    return -1
 
-    win = _window(app, gallery=_gallery(["enroll-23", "enroll-24"]))
 
-    def _row_for(probe_kind: str, identity: str) -> dict[str, Any]:
-        combo_idx = win.probe_kind_combo.findData(probe_kind)
-        assert combo_idx >= 0, f"{probe_kind} must be offered"
-        win.probe_kind_combo.setCurrentIndex(combo_idx)
-        id_combo = win.presenting_identity_combo
-        if identity:
-            idx = id_combo.findData(identity)
-            assert idx >= 0, f"{identity} must be offered when probe_kind=target"
-            id_combo.setCurrentIndex(idx)
-        return {
-            "probe_kind": win._probe_kind_value(),
-            "presenting_identity": win._presenting_identity_value(),
-        }
+def test_press_correct_writes_verdict_correct(app, tmp_path: Path):
+    """✓ must land `operator_verdict=correct` in the written row.
 
-    r1_values = _row_for("target", "enroll-23")
-    r1 = g3_demo_round_row(
-        _round(),
-        required_support=3,
-        labeled_at_utc="2026-10-05T00:00:01+00:00",
-        probe_kind=r1_values["probe_kind"],
-        presenting_identity=r1_values["presenting_identity"],
-    )
-    r2_values = _row_for("nontarget", "")
-    r2 = g3_demo_round_row(
-        _round(),
-        required_support=3,
-        labeled_at_utc="2026-10-05T00:00:02+00:00",
-        probe_kind=r2_values["probe_kind"],
-        presenting_identity=r2_values["presenting_identity"],
+    RED on current code: neither Qt writer passes `operator_verdict`,
+    so the row carries the default empty string.
+    """
+    win, demo_csv = _verdict_window(app, tmp_path)
+    assert win._mode == win._MODE_RESULT, "round must reach Result first"
+    win.press_correct()
+    rows = _read_verdicts(demo_csv)
+    assert len(rows) == 1, f"exactly one row must be written, got {len(rows)}"
+    assert rows[0]["operator_verdict"] == "correct", (
+        f"✓ must write correct, got {rows[0]['operator_verdict']!r}"
     )
 
-    assert (r1["probe_kind"], r1["presenting_identity"]) == (
-        "target",
-        "enroll-23",
+
+def test_press_incorrect_discloses_then_writes_incorrect(app, tmp_path: Path):
+    """✗ must first disclose the input area, then write `incorrect`.
+
+    Progressive disclosure (spec §4.2): the first ✗ press only reveals
+    the ground-truth picker — the operator has judged nothing yet, so
+    nothing is written. After picking, confirming writes `incorrect`
+    with the picked pair. An accidental ✗ alone must never record a
+    wrong identity.
+    """
+    win, demo_csv = _verdict_window(app, tmp_path)
+    assert win._mode == win._MODE_RESULT, "round must reach Result first"
+    win.press_incorrect()
+    assert _read_verdicts_len(demo_csv) == 0, "disclosure must not write"
+    assert win.disclosure_widget.isVisible(), "input area must appear"
+    # Regression guard: showing the parent must show the children too.
+    # Qt does not re-show an explicitly hidden child with its parent, so
+    # hiding the children at build time left the disclosure area empty
+    # with no selectable menu — and the existing tests only asserted the
+    # parent, letting it stay green.
+    assert win.ground_truth_combo.isVisible(), "menu must be visible"
+    assert win.nontarget_dir_button.isVisible(), "folder button must show"
+    idx = _find_ground_truth(win, ("target", "enroll-07"))
+    assert idx >= 0, "gallery identity must be offered"
+    # Route through the real signal: move away first so the pick always
+    # fires even when the target is already the current row.
+    win.ground_truth_combo.setCurrentIndex(
+        (idx + 1) % win.ground_truth_combo.count()
     )
-    # The second round must NOT inherit round 1's pick. A latched value
-    # would make this `("target", "enroll-23")` again.
-    assert (r2["probe_kind"], r2["presenting_identity"]) == ("nontarget", ""), (
-        "round 2 must record its own pick, not round 1's"
+    win.ground_truth_combo.setCurrentIndex(idx)
+    win.confirm_incorrect()
+    rows = _read_verdicts(demo_csv)
+    assert len(rows) == 1, f"exactly one row must be written, got {len(rows)}"
+    assert rows[0]["operator_verdict"] == "incorrect", (
+        f"✗ must write incorrect, got {rows[0]['operator_verdict']!r}"
     )
+    assert rows[0]["probe_kind"] == "target", (
+        f"✗ must write the picked kind, got {rows[0]['probe_kind']!r}"
+    )
+    assert rows[0]["presenting_identity"] == "enroll-07", (
+        "✗ must write the picked identity, "
+        f"got {rows[0]['presenting_identity']!r}"
+    )
+
+
+def _read_verdicts_len(demo_csv: Path) -> int:
+    if not demo_csv.is_file():
+        return 0
+    return len(_read_verdicts(demo_csv))
+
+
+def test_rerun_path_writes_verdict_skipped(app, tmp_path: Path):
+    """再次辨識 without a verdict must write `operator_verdict=skipped`.
+
+    RED on current code: `_record_unlabeled_round` forwards ground truth
+    but not the verdict, so the row is the 「ground truth 有值 ＋ verdict
+    空」 tuple the spec declares a data anomaly (§5.1).
+    """
+    win, demo_csv = _verdict_window(app, tmp_path)
+    assert win._mode == win._MODE_RESULT, "round must reach Result first"
+    win.recognize_again_clicked()
+    rows = _read_verdicts(demo_csv)
+    assert len(rows) == 1, f"exactly one row must be written, got {len(rows)}"
+    assert rows[0]["operator_verdict"] == "skipped", (
+        f"再次辨識 must write skipped, got {rows[0]['operator_verdict']!r}"
+    )
+
+
+def test_each_round_can_set_its_own_verdict(app, tmp_path: Path):
+    """「每輪可獨立設定」 in button form: two rounds, two verdicts.
+
+    The time proposition this file always defended, with the setting
+    mechanism changed from combos to buttons. A verdict latched at
+    startup would make both rows identical.
+    """
+    win, demo_csv = _verdict_window(app, tmp_path)
+    assert win._mode == win._MODE_RESULT, "round must reach Result first"
+    win.press_correct()
+    win.start_clicked()
+    win.process_until_terminal(max_steps=200)
+    assert win._mode == win._MODE_RESULT, "round 2 must reach Result"
+    win.press_incorrect()
+    idx2 = _find_ground_truth(win, ("nontarget", "outsider"))
+    assert idx2 >= 0, "outsider must be offered without a folder"
+    win.ground_truth_combo.setCurrentIndex(
+        (idx2 + 1) % win.ground_truth_combo.count()
+    )
+    win.ground_truth_combo.setCurrentIndex(idx2)
+    win.confirm_incorrect()
+    rows = _read_verdicts(demo_csv)
+    assert len(rows) == 2, f"two rows must be written, got {len(rows)}"
+    assert (rows[0]["operator_verdict"], rows[1]["operator_verdict"]) == (
+        "correct",
+        "incorrect",
+    ), (
+        "round 2 must record its own verdict, not round 1's: "
+        f"got {[r['operator_verdict'] for r in rows]}"
+    )
+    assert rows[1]["probe_kind"] == "nontarget", (
+        "round 2 must not inherit round 1's kind: "
+        f"got {rows[1]['probe_kind']!r}"
+    )
+
+
+def test_skip_button_writes_verdict_skipped(app, tmp_path: Path):
+    """略過 must write `operator_verdict=skipped` with empty ground truth.
+
+    Skip is a peer of ✓／✗ (spec §4.2), not a disclosure option. Per
+    decision, the recommended skip leaves `probe_kind` /
+    `presenting_identity` empty and never rewrites stored CSVs — so the
+    row carries empty ground truth plus the explicit value.
+    """
+    win, demo_csv = _verdict_window(app, tmp_path)
+    assert win._mode == win._MODE_RESULT, "round must reach Result first"
+    assert win.skip_button.isVisible(), "skip must be offered here"
+    win.press_skip()
+    rows = _read_verdicts(demo_csv)
+    assert len(rows) == 1, f"exactly one row must be written, got {len(rows)}"
+    assert rows[0]["operator_verdict"] == "skipped", (
+        f"略過 must write skipped, got {rows[0]['operator_verdict']!r}"
+    )
+    assert rows[0]["probe_kind"] == "", "skip must not invent a kind"
+    assert rows[0]["presenting_identity"] == "", "skip must not invent a who"
+
+
+def test_invalid_input_round_has_no_skip(app, tmp_path: Path):
+    """`invalid_input` rounds offer only ✓／✗ (spec §4.5).
+
+    There is no identification to decline there — only the missed-person
+    flag the two buttons record — so a skip button would invite random
+    presses that pollute `operator_verdict`.
+    """
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from facecore.live.qt_window import _QtResearchWindow
+    from tests.live.test_qt_window import _AdvancingClock
+
+    from facecore.research.cli import demo_results_csv_path
+
+    store = tmp_path / "store"
+    store.mkdir(parents=True, exist_ok=True)
+    demo_csv = demo_results_csv_path(store, "2026-10-05T00:00:00+00:00")
+    clock = _AdvancingClock()
+
+    def _next_session():
+        desktop2, consent2 = _desktop(session_id="w0b-ii")
+        desktop2.configure_demo_label_persistence(
+            demo_csv, actor_ref="qt-operator"
+        )
+        return desktop2, consent2, None
+
+    desktop, consent = _desktop()
+    win = _QtResearchWindow(
+        desktop,
+        consent=consent,
+        gallery=_gallery(["enroll-23", "enroll-07"]),
+        offscreen=True,
+        demo_results_csv=demo_csv,
+        next_session=_next_session,
+        clock_ns=clock,
+        clock_advance=clock.advance,
+    )
+    win.show()
+    win.enter_ready()
+    win.start_clicked()
+    win.process_until_terminal(max_steps=200)
+    assert win._mode == win._MODE_RESULT, "round must reach Result first"
+    assert win.desktop.terminal is not None
+    assert win.desktop.terminal.status.value == "invalid_input", (
+        "this fixture must land invalid_input, "
+        f"got {win.desktop.terminal.status.value}"
+    )
+    assert not win.skip_button.isVisible(), "skip must be hidden here"
+    assert not win.skip_button.isEnabled(), "skip must be disabled here"
 
 
 # The 「both writers forward the values」 guard used to live here, counting

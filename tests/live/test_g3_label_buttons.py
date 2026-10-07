@@ -61,6 +61,39 @@ def _low_scorer(packet: FramePacket) -> FrameObservation:
     )
 
 
+
+def _confirm_incorrect_with_outsider(window: Any) -> None:
+    """Drive the ✗ disclosure path the way the operator does (P3 two-step).
+
+    First ✗ only reveals the input area; the write happens on confirm
+    with a picked pair. These record-mode windows carry no gallery, so
+    the runbook-defined `outsider` marker is the pick. The round-trip
+    goes through the real `currentIndexChanged` signal, never by poking
+    the annotation state directly.
+    """
+    window.press_incorrect()
+    assert window.mode == "result"
+    window._refresh_ground_truth_options()
+    combo = window.ground_truth_combo
+    idx = next(
+        (
+            i
+            for i in range(combo.count())
+            if combo.itemData(i) == ("nontarget", "outsider")
+        ),
+        -1,
+    )
+    assert idx >= 0, "outsider must be offered without a folder"
+    if combo.count() == 1:
+        # Single option: setCurrentIndex to the current row fires no
+        # signal, so drive the real slot directly. The slot itself is
+        # unchanged — this only routes around Qt's no-op on same-row.
+        window._ground_truth_picked(idx)
+    else:
+        combo.setCurrentIndex((idx + 1) % combo.count())
+        combo.setCurrentIndex(idx)
+    window.confirm_incorrect()
+
 def _face_frames(n: int = 60) -> list[FramePacket]:
     frames = []
     for seq in range(1, n + 1):
@@ -135,7 +168,7 @@ class TestG3LabelButtons:
         shown = window.result_text
         assert shown.startswith("person-synth-01")
         round_attempt = factory.attempt_ids[-1]
-        window.press_incorrect()
+        _confirm_incorrect_with_outsider(window)
         assert window.mode == "ready"
         stored = factory.recorder.read_label(round_attempt)
         assert stored.kind == "uncertain"

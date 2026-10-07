@@ -111,7 +111,7 @@ VIRTUAL_ENV=/tmp/venv-verify uv pip install -e '.[dev]'
 
 ⚠️ **每次 schema change 的實作者負責手動更新兩處 operator-facing 欄位識別文件**：SOP 的「最後一欄的標題是／你的檔案是」對照表，以及 `PROJECT-STATE.md` 的 G3-w 表格列和其後的 current-schema 權威敘述。Lead 必須逐處對照目前 CSV producer 的 schema 驗收，不能把一處更新推定成其他處已同步。
 
-⚠️ **這兩處目前沒有 row-level 的自動 guard**；欄位識別表是手動維護，不得宣稱已被 `test_d7_demo_log_header_guard.py` 覆蓋（該檔只守 header 形狀與寫入前比對，從不讀 operator 文件）。`test_d7_w3_diagnostic_log_fields.py` 的 `test_the_operator_docs_can_identify_a_log_with_the_current_last_column` 只檢查 runbook 與 SOP 是否列出當前最後一欄及其欄數，不檢查 PROJECT-STATE 的散文句，也不檢查兩份 operator 文件彼此是否一致。獨立 guard-design task 將裁定是否只守表格列，或也需涵蓋 `PROJECT-STATE` 的散文句；本計畫只記錄 owner，不預先設計 guard。
+⚠️ **這兩處目前沒有 row-level 的自動 guard**；欄位識別表是手動維護，不得宣稱已被 `test_d7_demo_log_header_guard.py` 覆蓋（該檔只守 header 形狀、寫入前比對與檔名格式範例；它確實讀 runbook 抽檔名範例，但不檢查欄位識別表的「最後一欄／欄數」）。`test_d7_w3_diagnostic_log_fields.py` 的 `test_the_operator_docs_can_identify_a_log_with_the_current_last_column` 只檢查 runbook 與 SOP 是否列出當前最後一欄及其欄數，不檢查 PROJECT-STATE 的散文句，也不檢查兩份 operator 文件彼此是否一致。獨立 guard-design task 將裁定是否只守表格列，或也需涵蓋 `PROJECT-STATE` 的散文句；本計畫只記錄 owner，不預先設計 guard。
 
 ⚠️ **P2 在 P3 之前的理由（比「中間會不一致」更硬）**：
 
