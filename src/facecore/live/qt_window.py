@@ -1727,6 +1727,14 @@ else:
             and the SOP's labeled-round formula does not count a skipped
             round as answered. No third writer is added: the writer_wiring
             exact-two guard stays in force.
+
+            Record mode keeps its pre-existing path instead: the round is
+            committed through `_press_key` (label `uncertain`, row written
+            to `results.csv`), because `_record_unlabeled_round` is
+            demo-only and returns without writing when there is no demo
+            csv — otherwise a record-mode skip would silently drop a row
+            the old path wrote. The sink decides the write semantics; the
+            「已略過」 status shown afterwards is the same either way.
             """
             from facecore.live.contracts import SessionStatus
 
@@ -1737,6 +1745,11 @@ else:
                 return
             self._annot_probe_kind = ""
             self._annot_identity = ""
+            if self._results_csv is not None and self.recorder is not None:
+                self._press_key(correct=False)
+                if self._mode == self._MODE_READY:
+                    self._set_status("已略過 · skipped")
+                return
             self._record_unlabeled_round()
             self.correct_button.setEnabled(False)
             self.incorrect_button.setEnabled(False)
