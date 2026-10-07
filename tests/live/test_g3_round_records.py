@@ -56,6 +56,39 @@ def _face_frames(n: int = 60) -> list[FramePacket]:
     return frames
 
 
+
+def _confirm_incorrect_with_outsider(window: Any) -> None:
+    """Drive the ✗ disclosure path the way the operator does (P3 two-step).
+
+    First ✗ only reveals the input area; the write happens on confirm
+    with a picked pair. These record-mode windows carry no gallery, so
+    the runbook-defined `outsider` marker is the pick. The round-trip
+    goes through the real `currentIndexChanged` signal, never by poking
+    the annotation state directly.
+    """
+    window.press_incorrect()
+    assert window.mode == "result"
+    window._refresh_ground_truth_options()
+    combo = window.ground_truth_combo
+    idx = next(
+        (
+            i
+            for i in range(combo.count())
+            if combo.itemData(i) == ("nontarget", "outsider")
+        ),
+        -1,
+    )
+    assert idx >= 0, "outsider must be offered without a folder"
+    if combo.count() == 1:
+        # Single option: setCurrentIndex to the current row fires no
+        # signal, so drive the real slot directly. The slot itself is
+        # unchanged — this only routes around Qt's no-op on same-row.
+        window._ground_truth_picked(idx)
+    else:
+        combo.setCurrentIndex((idx + 1) % combo.count())
+        combo.setCurrentIndex(idx)
+    window.confirm_incorrect()
+
 class _RoundFactory:
     """Recorder-bound round sessions over one shared source (W3 pattern)."""
 
@@ -155,7 +188,7 @@ class TestG3RoundRecords:
         window.press_correct()
         window.start_clicked()
         window.process_until_terminal(max_steps=200)
-        window.press_incorrect()
+        _confirm_incorrect_with_outsider(window)
         assert len(window.completed_rounds) == 2
         results_csv = tmp_path / "results.csv"
         for round_ in window.completed_rounds:
@@ -298,7 +331,7 @@ class TestG3ReopenContinuity:
         )
         window2 = _open_window(qt_app, factory2)
         window2.process_until_terminal(max_steps=200)
-        window2.press_incorrect()
+        _confirm_incorrect_with_outsider(window2)
         for round_ in window2.completed_rounds:
             committed, failed = commit_g3_rounds(
                 factory2.recorder, results_csv, [round_]

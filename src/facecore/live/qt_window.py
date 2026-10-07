@@ -1728,13 +1728,12 @@ else:
             round as answered. No third writer is added: the writer_wiring
             exact-two guard stays in force.
 
-            Record mode keeps its pre-existing path instead: the round is
-            committed through `_press_key` (label `uncertain`, row written
-            to `results.csv`), because `_record_unlabeled_round` is
-            demo-only and returns without writing when there is no demo
-            csv — otherwise a record-mode skip would silently drop a row
-            the old path wrote. The sink decides the write semantics; the
-            「已略過」 status shown afterwards is the same either way.
+            Record mode writes no row for a skip: there is no verdict
+            column in the 17-column research ledger, and the old
+            `uncertain` value was a placeholder, not a judgement. The
+            sink decides the write semantics; the 「已略過」 status shown
+            afterwards reports the operator's action, and in record mode
+            it does not imply a stored row.
             """
             from facecore.live.contracts import SessionStatus
 
@@ -1746,9 +1745,12 @@ else:
             self._annot_probe_kind = ""
             self._annot_identity = ""
             if self._results_csv is not None and self.recorder is not None:
-                self._press_key(correct=False, verdict="skipped")
-                if self._mode == self._MODE_READY:
-                    self._set_status("已略過 · skipped")
+                self.correct_button.setEnabled(False)
+                self.incorrect_button.setEnabled(False)
+                self.skip_button.setEnabled(False)
+                self._set_status("已略過 · skipped（本輪不留列）")
+                self._refresh_saved_state()
+                self.enter_ready(status="已略過 · skipped（本輪不留列）")
                 return
             self._record_unlabeled_round()
             self.correct_button.setEnabled(False)
@@ -1758,9 +1760,7 @@ else:
             self._refresh_saved_state()
             self.enter_ready(status="已略過 · skipped")
 
-        def _press_key(
-            self, *, correct: bool, verdict: str | None = None
-        ) -> None:
+        def _press_key(self, *, correct: bool) -> None:
             if self._next_session is None:
                 raise RuntimeError(
                     "label keys require the continuous loop (next_session factory)"
@@ -1848,15 +1848,13 @@ else:
                             # D7-A W1: the App-startup gallery report.
                             gallery_load_report=self.load_report,
                             # G3-w P3: the verdict is the button just
-                            # pressed — correct/incorrect — or the explicit
-                            # `skipped` passed only by the record-mode skip
-                            # path (spec §5.1). The demo-mode skip never
-                            # flows through here: it writes via
-                            # `_record_unlabeled_round`.
+                            # pressed — correct/incorrect (spec §5.1).
+                            # `skipped` never flows through this path: both
+                            # non-judgement exits write via
+                            # `_record_unlabeled_round`, and record-mode
+                            # skip writes no row at all.
                             operator_verdict=(
-                                verdict
-                                if verdict is not None
-                                else ("correct" if correct else "incorrect")
+                                "correct" if correct else "incorrect"
                             ),
                         )
                     except OSError as exc:
