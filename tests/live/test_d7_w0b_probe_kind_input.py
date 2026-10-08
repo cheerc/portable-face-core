@@ -529,6 +529,63 @@ def test_press_incorrect_picks_nontarget_stem_writes_demo_csv(app, tmp_path: Pat
     assert rows[0]["presenting_identity"] == "nontarget-01"
 
 
+def test_window_layout_split_and_bottom_controls(app):
+    """Layout rework: camera on left, info on right, controls pinned at bottom.
+
+    Defends that the window uses a horizontal split for content (preview left,
+    scrollable info right) and places the controls row directly at the bottom
+    of the central vertical layout so operator buttons remain on-screen.
+    """
+    from PySide6.QtWidgets import QHBoxLayout, QScrollArea, QVBoxLayout
+
+    win = _window(app)
+    central = win.centralWidget()
+    assert central is not None
+    main_layout = central.layout()
+    assert isinstance(main_layout, QVBoxLayout)
+    # Bottom item must be the controls layout containing the action buttons
+    assert main_layout.count() >= 2
+    bottom_item = main_layout.itemAt(main_layout.count() - 1)
+    assert isinstance(bottom_item, QHBoxLayout)
+    # Verify controls buttons sit in this bottom row
+    buttons = [
+        bottom_item.itemAt(i).widget()
+        for i in range(bottom_item.count())
+        if bottom_item.itemAt(i).widget() is not None
+    ]
+    assert win.start_button in buttons
+    assert win.correct_button in buttons
+    assert win.incorrect_button in buttons
+    assert win.skip_button in buttons
+
+    # Content layout above controls
+    content_item = main_layout.itemAt(0)
+    assert isinstance(content_item, QHBoxLayout)
+    # Left widget contains preview and camera combo
+    left_item = content_item.itemAt(0)
+    assert left_item.widget() is not None
+    left_widgets = [
+        left_item.widget().layout().itemAt(i).widget()
+        for i in range(left_item.widget().layout().count())
+        if left_item.widget().layout().itemAt(i).widget() is not None
+    ]
+    assert win.camera_combo in left_widgets
+    assert win.preview_label in left_widgets
+
+    # Right item is a QScrollArea containing info labels
+    right_item = content_item.itemAt(1)
+    assert isinstance(right_item.widget(), QScrollArea)
+    right_inner = right_item.widget().widget()
+    assert right_inner is not None
+    right_widgets = [
+        right_inner.layout().itemAt(i).widget()
+        for i in range(right_inner.layout().count())
+        if right_inner.layout().itemAt(i).widget() is not None
+    ]
+    assert win.status_label in right_widgets
+    assert win.disclosure_widget in right_widgets
+
+
 # The 「both writers forward the values」 guard used to live here, counting
 # the literal `probe_kind=self._probe_kind_value()` and asserting >= 2. It
 # moved to tests/live/test_d7_w0b_writer_wiring.py, which parses the AST

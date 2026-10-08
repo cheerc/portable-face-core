@@ -226,10 +226,12 @@ try:
     from PySide6.QtWidgets import (
         QCheckBox,
         QComboBox,
+        QFrame,
         QHBoxLayout,
         QLabel,
         QMainWindow,
         QPushButton,
+        QScrollArea,
         QVBoxLayout,
         QWidget,
     )
@@ -358,7 +360,7 @@ else:
 
         def _build_ui(self) -> None:
             root = QWidget(self)
-            layout = QVBoxLayout(root)
+            main_layout = QVBoxLayout(root)
             self.watermark_label = QLabel(self.desktop.watermark)
             self.watermark_label.setObjectName("researchWatermark")
             self.device_label = QLabel(f"裝置 · device: {self.device_id}")
@@ -522,26 +524,48 @@ else:
             controls.addWidget(self.recognize_again_button)
             controls.addWidget(self.stop_camera_button)
 
-            layout.addWidget(self.watermark_label)
-            layout.addWidget(self.device_label)
-            layout.addWidget(self.ttl_label)
-            layout.addWidget(self.enrollment_label)
-            layout.addWidget(self.status_label)
-            layout.addWidget(self.countdown_label)
-            layout.addWidget(self.saved_state_label)
-            layout.addWidget(self.identity_label)
-            layout.addWidget(self.guide_label)
-            layout.addWidget(self.preview_label)
-            layout.addWidget(self.candidate_thumbnail_label)
-            layout.addWidget(self.result_identity_label)
-            layout.addWidget(self.scores_label)
-            layout.addWidget(self.frames_label)
-            layout.addWidget(self.failure_reason_label)
-            layout.addWidget(self.camera_combo)
-            layout.addWidget(self.disclosure_widget)
-            layout.addLayout(consent_row)
-            layout.addLayout(controls)
+            content_layout = QHBoxLayout()
+
+            # Left column: camera selection, preview, guide box, candidate thumbnail
+            left_widget = QWidget()
+            left_layout = QVBoxLayout(left_widget)
+            left_layout.addWidget(self.camera_combo)
+            left_layout.addWidget(self.preview_label)
+            left_layout.addWidget(self.guide_label)
+            left_layout.addWidget(self.candidate_thumbnail_label)
+            left_layout.addStretch()
+
+            # Right column: info, status labels, verification, disclosure, consent
+            right_widget = QWidget()
+            right_layout = QVBoxLayout(right_widget)
+            right_layout.addWidget(self.watermark_label)
+            right_layout.addWidget(self.device_label)
+            right_layout.addWidget(self.ttl_label)
+            right_layout.addWidget(self.enrollment_label)
+            right_layout.addWidget(self.status_label)
+            right_layout.addWidget(self.countdown_label)
+            right_layout.addWidget(self.saved_state_label)
+            right_layout.addWidget(self.identity_label)
+            right_layout.addWidget(self.result_identity_label)
+            right_layout.addWidget(self.scores_label)
+            right_layout.addWidget(self.frames_label)
+            right_layout.addWidget(self.failure_reason_label)
+            right_layout.addWidget(self.disclosure_widget)
+            right_layout.addLayout(consent_row)
+            right_layout.addStretch()
+
+            right_scroll = QScrollArea()
+            right_scroll.setWidgetResizable(True)
+            right_scroll.setFrameShape(QFrame.Shape.NoFrame)
+            right_scroll.setWidget(right_widget)
+
+            content_layout.addWidget(left_widget)
+            content_layout.addWidget(right_scroll, stretch=1)
+
+            main_layout.addLayout(content_layout, stretch=1)
+            main_layout.addLayout(controls)
             self.setCentralWidget(root)
+            self.resize(780, 540)
             self.cancel_button.setEnabled(False)
             self.delete_button.setEnabled(True)
             self.correct_button.setEnabled(False)
