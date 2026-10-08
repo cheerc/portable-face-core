@@ -284,6 +284,7 @@ else:
             enrollment_dir: Path | None = None,
             load_report: Any = None,
             demo_results_csv: Path | None = None,
+            nontarget_dir: Path | str | None = None,
         ) -> None:
             super().__init__()
             self.desktop = desktop
@@ -328,6 +329,7 @@ else:
             # D3: gallery, enrollment folder and startup loading report.
             self.gallery = gallery
             self.enrollment_dir = enrollment_dir
+            self._initial_nontarget_dir = nontarget_dir
             self.load_report = load_report or getattr(gallery, "load_report", None)
 
             if (recorder is None) != (attempt_id is None):
@@ -434,6 +436,7 @@ else:
             self._annot_identity = ""
             self._nontarget_dir: str | None = None
             self._nontarget_stems: list[str] = []
+            self._discover_nontarget_dir(getattr(self, "_initial_nontarget_dir", None))
 
             self.ground_truth_combo = QComboBox()
             self.ground_truth_combo.setObjectName("groundTruthPicker")
@@ -450,6 +453,7 @@ else:
             self.ground_truth_combo.currentIndexChanged.connect(
                 self._ground_truth_picked
             )
+            self._refresh_ground_truth_options()
 
             disclosure_row = QHBoxLayout()
             disclosure_row.addWidget(QLabel("實際是誰"))
@@ -593,6 +597,75 @@ else:
             else:
                 self._annot_probe_kind, self._annot_identity = "", ""
 
+        def _load_nontarget_dir(self, directory: Path | str) -> list[str]:
+            """Load image stems from a non-target directory."""
+            from pathlib import Path
+
+            from facecore.live.frame_pipeline import GALLERY_IMAGE_SUFFIXES
+
+            p = Path(directory).expanduser()
+            if not p.is_dir():
+                return []
+            exts = {e.lower() for e in GALLERY_IMAGE_SUFFIXES}
+            stems = sorted(
+                f.stem
+                for f in p.iterdir()
+                if f.is_file() and f.suffix.lower() in exts
+            )
+            self._nontarget_dir = str(p)
+            self._nontarget_stems = stems
+            return stems
+
+        def _discover_nontarget_dir(
+            self, explicit_dir: Path | str | None = None
+        ) -> None:
+            """Auto-discover or set the default non-target directory.
+
+            Checks:
+            1. An explicitly provided `explicit_dir` (if valid dir).
+            2. Sibling directory of `self.enrollment_dir`:
+               `enrollment_dir.parent / "non-target"`, `"nontarget"`, `"non_target"`.
+            3. `g3-local.json` setting (if present and has nontarget_dir).
+            """
+            from pathlib import Path
+
+            if explicit_dir is not None:
+                p = Path(explicit_dir).expanduser()
+                if p.is_dir():
+                    self._load_nontarget_dir(p)
+                    return
+
+            if self.enrollment_dir is not None:
+                enr = Path(self.enrollment_dir).expanduser()
+                parent = enr.parent
+                if parent.is_dir():
+                    for name in ("non-target", "nontarget", "non_target"):
+                        candidate = parent / name
+                        if candidate.is_dir():
+                            self._load_nontarget_dir(candidate)
+                            return
+
+            try:
+                import json
+
+                from facecore.research.g3_config import default_config_path
+
+                cfg_path = default_config_path()
+                if cfg_path.is_file():
+                    payload = json.loads(cfg_path.read_text(encoding="utf-8"))
+                    if isinstance(payload, dict):
+                        raw = (
+                            payload.get("nontarget_dir")
+                            or payload.get("non_target_dir")
+                        )
+                        if raw:
+                            p = Path(str(raw)).expanduser()
+                            if p.is_dir():
+                                self._load_nontarget_dir(p)
+                                return
+            except Exception:
+                pass
+
         def _pick_nontarget_dir(self) -> None:
             """Let the operator point at a non-target folder (spec §4.4).
 
@@ -600,25 +673,14 @@ else:
             hard-coded or written into the repo. Changing the folder
             contents takes effect without any code change.
             """
-            from pathlib import Path
-
             from PySide6.QtWidgets import QFileDialog
-
-            from facecore.live.frame_pipeline import GALLERY_IMAGE_SUFFIXES
 
             picked = QFileDialog.getExistingDirectory(
                 self, "選 non-target 資料夾"
             )
             if not picked:
                 return
-            exts = {e.lower() for e in GALLERY_IMAGE_SUFFIXES}
-            stems = sorted(
-                p.stem
-                for p in Path(picked).iterdir()
-                if p.is_file() and p.suffix.lower() in exts
-            )
-            self._nontarget_dir = picked
-            self._nontarget_stems = stems
+            stems = self._load_nontarget_dir(picked)
             self._refresh_ground_truth_options()
             self._set_status(f"已選 non-target 資料夾（{len(stems)} 個候選）")
 

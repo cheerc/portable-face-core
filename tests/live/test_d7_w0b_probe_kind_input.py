@@ -460,6 +460,75 @@ def test_invalid_input_round_has_no_skip(app, tmp_path: Path):
     assert not win.skip_button.isEnabled(), "skip must be disabled here"
 
 
+def test_auto_discovers_sibling_nontarget_dir(app, tmp_path: Path):
+    """Enrollment directory's sibling `non-target` must be auto-discovered.
+
+    When `enrollment_dir` is provided, `_QtResearchWindow` checks its sibling
+    `non-target` directory at initialization time and loads its image stems
+    into `_nontarget_stems`, setting `_nontarget_dir`.
+    """
+    sample_root = tmp_path / "face_sample"
+    enroll_dir = sample_root / "enrollment"
+    nontarget_dir = sample_root / "non-target"
+    enroll_dir.mkdir(parents=True)
+    nontarget_dir.mkdir(parents=True)
+    (nontarget_dir / "nontarget-01.jpg").write_bytes(b"fake-jpg")
+    (nontarget_dir / "nontarget-02.png").write_bytes(b"fake-png")
+    (nontarget_dir / "ignore.txt").write_text("not-an-image", encoding="utf-8")
+
+    from facecore.live.qt_window import _QtResearchWindow
+
+    desktop, consent = _desktop()
+    win = _QtResearchWindow(
+        desktop,
+        consent=consent,
+        gallery=_gallery(["enroll-23"]),
+        enrollment_dir=enroll_dir,
+        offscreen=True,
+    )
+    assert win._nontarget_dir == str(nontarget_dir)
+    assert win._nontarget_stems == ["nontarget-01", "nontarget-02"]
+    win._refresh_ground_truth_options()
+    idx = _find_ground_truth(win, ("nontarget", "nontarget-01"))
+    assert idx >= 0, "auto-discovered non-target stem must be in disclosure options"
+    idx2 = _find_ground_truth(win, ("nontarget", "nontarget-02"))
+    assert idx2 >= 0, "second auto-discovered stem must be in disclosure options"
+
+
+def test_press_incorrect_picks_nontarget_stem_writes_demo_csv(app, tmp_path: Path):
+    """Selecting an auto-discovered non-target stem writes to demo CSV.
+
+    When operator clicks ✗, selects a non-target identity (e.g. nontarget-01)
+    and confirms, the demo CSV must record:
+      operator_verdict=incorrect
+      probe_kind=nontarget
+      presenting_identity=nontarget-01
+    """
+    sample_root = tmp_path / "face_sample"
+    enroll_dir = sample_root / "enrollment"
+    nontarget_dir = sample_root / "non-target"
+    enroll_dir.mkdir(parents=True)
+    nontarget_dir.mkdir(parents=True)
+    (nontarget_dir / "nontarget-01.jpg").write_bytes(b"fake-jpg")
+
+    win, demo_csv = _verdict_window(app, tmp_path, enrollment_dir=enroll_dir)
+    assert win._mode == win._MODE_RESULT, "round must reach Result first"
+    win.press_incorrect()
+    assert win.disclosure_widget.isVisible(), "disclosure area must appear"
+    idx = _find_ground_truth(win, ("nontarget", "nontarget-01"))
+    assert idx >= 0, "auto-discovered non-target must be offered"
+    win.ground_truth_combo.setCurrentIndex(
+        (idx + 1) % win.ground_truth_combo.count()
+    )
+    win.ground_truth_combo.setCurrentIndex(idx)
+    win.confirm_incorrect()
+    rows = _read_verdicts(demo_csv)
+    assert len(rows) == 1, f"exactly one row must be written, got {len(rows)}"
+    assert rows[0]["operator_verdict"] == "incorrect"
+    assert rows[0]["probe_kind"] == "nontarget"
+    assert rows[0]["presenting_identity"] == "nontarget-01"
+
+
 # The 「both writers forward the values」 guard used to live here, counting
 # the literal `probe_kind=self._probe_kind_value()` and asserting >= 2. It
 # moved to tests/live/test_d7_w0b_writer_wiring.py, which parses the AST
