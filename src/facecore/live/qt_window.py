@@ -420,7 +420,9 @@ else:
                 self.camera_combo.addItem(cam_label, cam_index)
             self.camera_combo.currentIndexChanged.connect(self._camera_picked)
             self.preview_label = QLabel("synthetic preview")
-            self.preview_label.setMinimumSize(240, 240)
+            self.preview_label.setMinimumSize(240, 180)
+            self.preview_label.setMaximumSize(380, 260)
+            self.preview_label.setScaledContents(True)
             self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
             # G3-w P3: the two per-round dropdowns are removed (spec
@@ -528,6 +530,7 @@ else:
 
             # Left column: camera selection, preview, guide box, candidate thumbnail
             left_widget = QWidget()
+            left_widget.setMaximumWidth(400)
             left_layout = QVBoxLayout(left_widget)
             left_layout.addWidget(self.camera_combo)
             left_layout.addWidget(self.preview_label)
@@ -559,7 +562,7 @@ else:
             right_scroll.setFrameShape(QFrame.Shape.NoFrame)
             right_scroll.setWidget(right_widget)
 
-            content_layout.addWidget(left_widget)
+            content_layout.addWidget(left_widget, 0)
             content_layout.addWidget(right_scroll, stretch=1)
 
             main_layout.addLayout(content_layout, stretch=1)
