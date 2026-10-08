@@ -251,7 +251,7 @@ except ImportError as exc:  # pragma: no cover - exercised without extra
 
 else:
 
-    class _AspectPreviewLabel(QLabel):
+    class _AspectPreviewLabel(QLabel):  # type: ignore[misc]
         """Preview label scaling pixmaps with KeepAspectRatio to keep guides square."""
 
         def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
