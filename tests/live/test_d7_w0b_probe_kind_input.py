@@ -593,6 +593,8 @@ def test_adaptive_width_on_high_resolution(app):
     balloon to 1280px to squeeze the right panel. Instead, left column is
     constrained (<= 400px) and the right scrollable panel expands to take the
     majority of the horizontal space (substantially wider than left panel).
+    Additionally, the square guide box drawn over the frame must maintain
+    KeepAspectRatio (aspect ~1.0) rather than being squashed by non-uniform scaling.
     """
     import numpy as np
 
@@ -617,6 +619,24 @@ def test_adaptive_width_on_high_resolution(app):
     assert right_scroll.width() > left_widget.width() * 2, (
         f"right scroll area must expand on 1920x1080, got {right_scroll.width()} "
         f"vs left {left_widget.width()}"
+    )
+
+    # Verify square guide box is painted with KeepAspectRatio (ratio ~1.0)
+    grabbed = win.preview_label.grab().toImage()
+    xs, ys = [], []
+    for y in range(grabbed.height()):
+        for x in range(grabbed.width()):
+            c = grabbed.pixelColor(x, y)
+            if c.green() > 40 and c.red() < 20 and c.blue() < 20:
+                xs.append(x)
+                ys.append(y)
+    assert xs and ys, "guide box pixels must be rendered in preview"
+    guide_w = max(xs) - min(xs) + 1
+    guide_h = max(ys) - min(ys) + 1
+    ratio = guide_w / guide_h
+    assert 0.95 <= ratio <= 1.05, (
+        f"square guide must preserve aspect ratio (~1.0), got {ratio:.3f} "
+        f"({guide_w}x{guide_h})"
     )
 
 
