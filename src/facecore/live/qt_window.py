@@ -222,7 +222,7 @@ _QT_WINDOW_FACTORY: Any
 
 try:
     from PySide6.QtCore import QTimer, Qt
-    from PySide6.QtGui import QImage, QPixmap
+    from PySide6.QtGui import QImage, QPainter, QPixmap
     from PySide6.QtWidgets import (
         QCheckBox,
         QComboBox,
@@ -250,6 +250,46 @@ except ImportError as exc:  # pragma: no cover - exercised without extra
     _QT_WINDOW_FACTORY = _QtResearchWindowUnavailable
 
 else:
+
+    class _AspectPreviewLabel(QLabel):  # type: ignore[misc]
+        """Preview label scaling pixmaps with KeepAspectRatio to keep guides square."""
+
+        def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+            super().__init__(text, parent)
+            self._raw_pixmap: QPixmap | None = None
+
+        def setPixmap(self, pixmap: QPixmap | QImage) -> None:
+            if isinstance(pixmap, QImage):
+                self._raw_pixmap = QPixmap.fromImage(pixmap)
+            else:
+                self._raw_pixmap = pixmap
+            super().setPixmap(QPixmap())
+            self.update()
+
+        def pixmap(self) -> QPixmap:
+            return (
+                self._raw_pixmap
+                if self._raw_pixmap is not None
+                else QPixmap()
+            )
+
+        def clear(self) -> None:
+            self._raw_pixmap = None
+            super().clear()
+
+        def paintEvent(self, event: Any) -> None:
+            if self._raw_pixmap is not None and not self._raw_pixmap.isNull():
+                painter = QPainter(self)
+                scaled = self._raw_pixmap.scaled(
+                    self.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                x = (self.width() - scaled.width()) // 2
+                y = (self.height() - scaled.height()) // 2
+                painter.drawPixmap(x, y, scaled)
+            else:
+                super().paintEvent(event)
 
     class _QtResearchWindow(QMainWindow):  # type: ignore[misc]
         """Small offscreen-testable Qt view over a real DesktopSession."""
@@ -419,8 +459,11 @@ else:
             for cam_index, cam_label in self._camera_options:
                 self.camera_combo.addItem(cam_label, cam_index)
             self.camera_combo.currentIndexChanged.connect(self._camera_picked)
-            self.preview_label = QLabel("synthetic preview")
+            # G3-w: constrain preview to avoid ballooning when high-res frames arrive,
+            # while keeping aspect ratio intact so the square guide is not distorted.
+            self.preview_label = _AspectPreviewLabel("synthetic preview")
             self.preview_label.setMinimumSize(240, 240)
+            self.preview_label.setMaximumSize(380, 260)
             self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
             # G3-w P3: the two per-round dropdowns are removed (spec
@@ -528,6 +571,7 @@ else:
 
             # Left column: camera selection, preview, guide box, candidate thumbnail
             left_widget = QWidget()
+            left_widget.setMaximumWidth(400)
             left_layout = QVBoxLayout(left_widget)
             left_layout.addWidget(self.camera_combo)
             left_layout.addWidget(self.preview_label)
@@ -559,7 +603,7 @@ else:
             right_scroll.setFrameShape(QFrame.Shape.NoFrame)
             right_scroll.setWidget(right_widget)
 
-            content_layout.addWidget(left_widget)
+            content_layout.addWidget(left_widget, 0)
             content_layout.addWidget(right_scroll, stretch=1)
 
             main_layout.addLayout(content_layout, stretch=1)

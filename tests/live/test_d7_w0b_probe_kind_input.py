@@ -586,6 +586,60 @@ def test_window_layout_split_and_bottom_controls(app):
     assert win.disclosure_widget in right_widgets
 
 
+def test_adaptive_width_on_high_resolution(app):
+    """When a 1280x720 camera frame arrives, right panel expands on wide screens.
+
+    Under high resolution (e.g. 1920x1080), the left camera widget must not
+    balloon to 1280px to squeeze the right panel. Instead, left column is
+    constrained (<= 400px) and the right scrollable panel expands to take the
+    majority of the horizontal space (substantially wider than left panel).
+    Additionally, the square guide box drawn over the frame must maintain
+    KeepAspectRatio (aspect ~1.0) rather than being squashed by non-uniform scaling.
+    """
+    import numpy as np
+
+    win = _window(app)
+    win.show()
+    fake_frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    win.set_frame(fake_frame)
+
+    win.resize(1920, 1080)
+    app.processEvents()
+
+    central = win.centralWidget()
+    assert central is not None
+    main_layout = central.layout()
+    content_layout = main_layout.itemAt(0)
+    left_widget = content_layout.itemAt(0).widget()
+    right_scroll = content_layout.itemAt(1).widget()
+
+    assert left_widget.width() <= 400, (
+        f"left widget width must be constrained, got {left_widget.width()}"
+    )
+    assert right_scroll.width() > left_widget.width() * 2, (
+        f"right scroll area must expand on 1920x1080, got {right_scroll.width()} "
+        f"vs left {left_widget.width()}"
+    )
+
+    # Verify square guide box is painted with KeepAspectRatio (ratio ~1.0)
+    grabbed = win.preview_label.grab().toImage()
+    xs, ys = [], []
+    for y in range(grabbed.height()):
+        for x in range(grabbed.width()):
+            c = grabbed.pixelColor(x, y)
+            if c.green() > 40 and c.red() < 20 and c.blue() < 20:
+                xs.append(x)
+                ys.append(y)
+    assert xs and ys, "guide box pixels must be rendered in preview"
+    guide_w = max(xs) - min(xs) + 1
+    guide_h = max(ys) - min(ys) + 1
+    ratio = guide_w / guide_h
+    assert 0.95 <= ratio <= 1.05, (
+        f"square guide must preserve aspect ratio (~1.0), got {ratio:.3f} "
+        f"({guide_w}x{guide_h})"
+    )
+
+
 # The 「both writers forward the values」 guard used to live here, counting
 # the literal `probe_kind=self._probe_kind_value()` and asserting >= 2. It
 # moved to tests/live/test_d7_w0b_writer_wiring.py, which parses the AST
