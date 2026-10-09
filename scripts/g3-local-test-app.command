@@ -97,7 +97,7 @@ SESSION="g3-$(date +%Y%m%d-%H%M%S)"
 # that recording is on. Use `--mode record --record-consent --image-consent`
 # for the research executor.
 uv run --no-sync --extra research-ui python -m facecore.research.cli live \
-  --profile profiles/g3-v1.json \
+  --profile profiles/g3-v1-arcface-r50.json \
   --store "$HOME/Downloads/face_sample/_facecore/store" \
   --device 0 \
   --session "$SESSION" \

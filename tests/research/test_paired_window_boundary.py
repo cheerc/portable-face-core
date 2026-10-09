@@ -137,7 +137,7 @@ class _ScriptedEmbedder:
     rather than by image content.
     """
 
-    model_version = "sface_2021dec"
+    model_version = "face_recognition_sface_2021dec"
 
     def __init__(self, live_vec: tuple[float, float, float]) -> None:
         self._calls = 0
@@ -152,7 +152,7 @@ class _ScriptedEmbedder:
         else:
             vec = self._live
         arr = np.array(vec, dtype=np.float32)
-        return arr / float(np.linalg.norm(arr)), "sface_2021dec"
+        return arr / float(np.linalg.norm(arr)), "face_recognition_sface_2021dec"
 
 
 class _SteppedCamera(CaptureSource):

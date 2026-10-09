@@ -1,9 +1,12 @@
 """ArcFace manifest、前處理與真實權重的 test-first 契約。"""
 
 import hashlib
+import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from facecore.contracts.manifest import ModelManifest
 from facecore.pipeline.align import AlignedCrop
@@ -72,3 +75,29 @@ def test_arcface_rgb_normalization_and_session_io(tmp_path, monkeypatch):
         tensor[0, :, 0, 0], [-1, (128 - 127.5) / 127.5, 1], atol=1e-7
     )
     np.testing.assert_allclose(vector, [0.6, 0.8], atol=1e-7)
+
+
+def test_device_gated_r50_synthetic_crop_matches_reference(socket_blocker):
+    models = Path(
+        os.environ.get("FACECORE_MODELS", Path(__file__).parents[2] / "models")
+    )
+    artifact = models / "w600k_r50.onnx"
+    if not artifact.is_file():
+        pytest.skip("requires downloaded R50 artifact (FACECORE_MODELS)")
+    import onnxruntime as ort
+
+    rgb = np.random.default_rng(7).integers(0, 256, (112, 112, 3), dtype=np.uint8)
+    crop = AlignedCrop(112, 112, 3, rgb.tobytes())
+    vector, version = Embedder(ModelManifest.arcface_w600k_r50_fp32(), artifact).embed(
+        crop
+    )
+    session = ort.InferenceSession(str(artifact), providers=["CPUExecutionProvider"])
+    blob = ((rgb.astype(np.float32) - 127.5) / 127.5).transpose(2, 0, 1)[None]
+    reference = session.run(
+        [session.get_outputs()[0].name], {session.get_inputs()[0].name: blob}
+    )[0][0]
+    reference /= np.linalg.norm(reference)
+    assert version == "arcface-w600k-r50-fp32"
+    assert vector.shape == (512,)
+    np.testing.assert_allclose(vector, reference, atol=1e-6, rtol=0)
+    assert abs(float(np.dot(vector, reference)) - 1) <= 1e-6

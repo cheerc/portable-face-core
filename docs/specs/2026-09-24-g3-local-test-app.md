@@ -30,6 +30,8 @@ operator 可自行離線測試，過程不需 agent；結果留本機，測完�
 - 每一**實際辨識輪次**的影像 staging、crop mapping、真實診斷與 trace 都綁到該輪的 attempt/session；預覽必須與該輪推論使用**同一組方形幾何映射**。開始前的設定／前一輪資料不得被當成當輪資料；一輪失敗不得覆寫另一輪。只在完整 commit 成功後才顯示「已保存」，crop mapping 單獨持久化不算結果已存檔。
 - 多臉特殊演算法、校準門檻、改註冊照、自動相機選擇、learning／promotion、holdout 與正式帳號畫面均不在此修訂範圍。仍由 operator 在單人背景測試。gallery 固定 one-shot，使用既有 `g3-v1` profile；本輪不根據第一次真機失敗調參。
 
+**2026-10-09 註記：** G3 預設改用 ArcFace R50 與專用 profile，見 [ADR 0011](../decisions/0011-arcface-r50-g3-default.md)／`d-20261009075738925782-1`；上段保留原修訂基準。
+
 ## 4. 原因與修復範圍
 
 首次 operator 真機測試在相機選定後出現靜止預覽、倒數維持 `5000 ms`，結果 `invalid_input：zero_usable_frames_collected`。原碼盤點證成三個必修結構缺口：初始 `DesktopSession` 有預覽／裁切 callbacks，連續 round 新建 session 卻漏接；Qt 倒數 closure 綁初始 session；非固定窗口在單個 tick 用完步數就提早 `finish`。此因果只說明**可重現的程式路徑**，不聲稱已從真人影像確認無合格幀的唯一原因。

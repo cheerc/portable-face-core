@@ -1,5 +1,11 @@
 # Project State
 
+## G3 模型現況（2026-10-09）
+
+G3 default 採 ArcFace `w600k_r50.onnx` 與 `profiles/g3-v1-arcface-r50.json`；decision `d-20261009075738925782-1` 取代 SFace 不換模型的方向錨點，實作 fork 為 `d-20261009080904985166-2`。用途限自用、非商用、不散佈，權重不進 Git；缺失、hash 不符或 profile 錯配拒絕啟動，無 fallback。
+
+Source of truth：[ADR 0011](decisions/0011-arcface-r50-g3-default.md)；[授權與驗收 provenance](research/2026-10-09-arcface-r50-license-provenance.md)；[實作計畫](plans/2026-10-09-arcface-r50-implementation-plan.md)；[操作 SOP](g3-local-test-sop.md)。下方 SFace／D0／D5／D6 描述保留為歷史 frozen baseline，不是目前 G3 default。Phase-1A／1B governance 與歷史 eval 的 SFace defaults 不變。此次接入不宣稱代表性人群準確率或部署驗收完成。
+
 更新：2026-10-03（同步至 `main` `2059380`）。**目前主線是「Mac Demo 修復與驗收」（D0–D4）＋「D5／D6 靜態與模型比較」，並正在推進「D7-A 診斷 log 基礎設施」；不再是「繼續擴充 G3 研究工具」。**
 證據基準：`cf1d6dd0b3f4238ce333f961b74efa24c9e5b820`（PR-A，D5 harness）。D0 已完成並凍結基準，見
 [Mac Demo 修復基準 D0](mac-demo-baseline-d0.md)。

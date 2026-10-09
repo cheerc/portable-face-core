@@ -41,6 +41,55 @@ class ModelManifest:
     input_width: int
     input_height: int
     mobile_usability: str | None
+    input_mean: float = 0.0
+    input_scale: float = 1.0
+    redistribution: str = "依 weight_license"
+
+    @classmethod
+    def arcface_w600k_r50_fp32(cls) -> "ModelManifest":
+        return cls(
+            model_id="arcface-w600k-r50-fp32",
+            source_repo="deepinsight/insightface",
+            artifact_url=(
+                "https://github.com/deepinsight/insightface/releases/download/"
+                "v0.7/buffalo_l.zip"
+            ),
+            retrieval_date="2026-10-09（本機查核；原始下載日期未確認）",
+            code_license="MIT",
+            weight_license=(
+                "ALL models are available for non-commercial research purposes only"
+            ),
+            license_locator=(
+                "https://github.com/deepinsight/insightface/tree/master/model_zoo"
+            ),
+            weight_sha256=(
+                "4c06341c33c2ca1f86781dab0e829f88ad5b64be9fba56e56bc9ebdefc619e43"
+            ),
+            provenance=ProvenanceStatus.RESOLVED,
+            provenance_note=(
+                "buffalo_l: ResNet50@WebFace600K；"
+                "依 d-20261009075738925782-1 限自用、非商用、不散佈。"
+            ),
+            embedding_dim=512,
+            input_width=112,
+            input_height=112,
+            mobile_usability=(
+                "2026-10-09 ORT 1.30.0 / onnx 1.23.2 checker: "
+                "NNAPI as-is 0/130 NO, fixed-shape 130/130 YES; "
+                "CoreML NeuralNetwork as-is 0/130 NO, fixed-shape 130/130 YES; "
+                "CoreML MLProgram as-is 0/130 NO, fixed-shape 103/130 NO "
+                "(26 partitions; unsupported BatchNormalization, Flatten). "
+                "Command: python -I -c 'import logging,sys; "
+                "logging.basicConfig(level=logging.INFO); "
+                "from onnxruntime.tools.mobile_helpers.usability_checker "
+                "import run_analyze_model; "
+                "sys.argv=[\"checker\",sys.argv[1]]; run_analyze_model()' "
+                "~/facecore-models/w600k_r50.onnx"
+            ),
+            input_mean=127.5,
+            input_scale=127.5,
+            redistribution="無；權重不進 Git、不散佈",
+        )
 
     @classmethod
     def sface_2021dec_fp32(cls) -> "ModelManifest":

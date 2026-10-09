@@ -2,6 +2,8 @@
 
 **狀態：第一次真機測試待 operator 自行執行。** 本文件依 `cheerc/portable-face-core` main `abe7700` 撰寫（D4 前置 PR 之後會再更新）。自動測試以合成影格走完「開視窗→選相機→連續辨識→按正確／錯誤／再次辨識→即時存檔」；本機真模型已成功由「註冊組」建出 gallery。**尚未由 operator 在真相機上驗過。** 不要把此文件當成真人辨識已成功的證據。
 
+G3 預設使用本機 `w600k_r50.onnx` 與 ArcFace 專用 profile；權重缺失、hash 不符或 profile 錯配時拒絕啟動，不換其他模型。使用範圍與 provenance 見 [ADR 0011](decisions/0011-arcface-r50-g3-default.md)。歷史 SFace 評估仍使用 `g3-v1.json`。
+
 ## 每次啟動會先顯示版本（重要）
 
 雙擊 App 後，Terminal 會**先印出版本資訊**，再開視窗：
@@ -61,7 +63,7 @@ G3 本機測試 App — 目前版本
 
 ```sh
 uv run --extra research-ui python -m facecore.research.cli live \
-  --profile profiles/g3-v1.json \
+  --profile profiles/g3-v1-arcface-r50.json \
   --store "$HOME/Downloads/face_sample/_facecore/store" \
   --key-dir "$HOME/Downloads/face_sample/_facecore/research_keys" \
   --device 0 --session "g3-$(date +%Y%m%d-%H%M%S)" \

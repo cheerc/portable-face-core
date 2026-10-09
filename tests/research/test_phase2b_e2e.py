@@ -213,7 +213,7 @@ class _ScriptedEmbedder:
     mapping the 1-based live-frame index to a vector.
     """
 
-    model_version = "sface_2021dec"
+    model_version = "face_recognition_sface_2021dec"
 
     def __init__(
         self, live_vec: LiveVec
@@ -232,7 +232,7 @@ class _ScriptedEmbedder:
         else:
             vec = self._live_vec
         arr = np.array(vec, dtype=np.float32)
-        return arr / float(np.linalg.norm(arr)), "sface_2021dec"
+        return arr / float(np.linalg.norm(arr)), "face_recognition_sface_2021dec"
 
 
 class _SteppedCamera(CaptureSource):
