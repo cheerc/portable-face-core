@@ -97,7 +97,7 @@ class _ShadeLandmarkDetector:
 
 
 class _StubEmbedder:
-    model_version = "sface-test"
+    model_version = "face_recognition_sface_2021dec"
 
     def embed(self, crop: Any) -> tuple[Any, str]:
         return np.full((8,), 0.5, dtype=np.float32), self.model_version
@@ -547,7 +547,7 @@ class TestGalleryConfigCLI:
             gallery_dir=tmp_path / "no-such-enroll-group",
             capture_factory=lambda _dev: FakeCapture(frames=frames),
             detector_factory=lambda _models: None,
-            embedder_factory=lambda _models: None,
+            embedder_factory=lambda _models: _StubEmbedder(),
         )
         assert rc == 2
         assert "註冊組建立失敗" in capsys.readouterr().err

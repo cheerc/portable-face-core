@@ -99,10 +99,10 @@ def _mock_detector_embedder() -> tuple[MagicMock, MagicMock]:
     mock_detector = MagicMock()
     mock_detector.detect.return_value = [face]
     mock_embedder = MagicMock()
-    mock_embedder.model_version = "sface_2021dec"
+    mock_embedder.model_version = "face_recognition_sface_2021dec"
     mock_embedder.embed.side_effect = lambda crop: (
         np.array([1.0, 0.0], dtype=np.float32),
-        "sface_2021dec",
+        "face_recognition_sface_2021dec",
     )
     return mock_detector, mock_embedder
 

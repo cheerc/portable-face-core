@@ -1,9 +1,8 @@
 """ONNX embedding with manifest integrity gate (Task 6).
 
-Preprocessing contract (pinned Phase 1 against the downloaded artifact +
-OpenCV face_recognize.cpp:58): the aligned crop is RGB, raw [0,255], zero
-mean; the net input is NCHW float32. L2 normalization is embedder duty
-(OpenCV normalizes in match(); raw fc1 norms are != 1.0, measured).
+前處理由 manifest 決定：SFace 保持 RGB raw [0,255]、zero mean；
+ArcFace RGB 使用 manifest mean／scale。兩者皆為 NCHW float32，輸出
+以 L2 normalization 正規化；模型 IO 名稱從 session 讀取。
 """
 
 import hashlib
@@ -51,7 +50,10 @@ class Embedder:
             crop.height, crop.width, 3
         )
         tensor = np.transpose(arr, (2, 0, 1))[None].astype(np.float32)
-        raw = self._session.run(["fc1"], {"data": tensor})[0][0]
+        tensor = (tensor - self._manifest.input_mean) / self._manifest.input_scale
+        input_name = self._session.get_inputs()[0].name
+        output_name = self._session.get_outputs()[0].name
+        raw = self._session.run([output_name], {input_name: tensor})[0][0]
         norm = float(np.linalg.norm(raw))
         if norm == 0.0:
             raise ModelIntegrityError(

@@ -33,7 +33,7 @@ class TestLauncher:
         assert "--config" in text
         assert "--continuous" in text
         assert "--ui qt" in text
-        assert "profiles/g3-v1.json" in text
+        assert "--profile profiles/g3-v1-arcface-r50.json" in text
         assert "uv sync --extra research-ui" in text
 
     def test_launcher_runs_in_demo_mode(self) -> None:
@@ -167,7 +167,7 @@ class TestModelGalleryErrorSplit:
                 return []
 
         class _StubEmbed:
-            model_version = "sface-test"
+            model_version = "face_recognition_sface_2021dec"
 
             def embed(self, crop: Any) -> Any:
                 return _np.full((8,), 0.5, dtype="float32"), self.model_version

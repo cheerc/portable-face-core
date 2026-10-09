@@ -149,11 +149,11 @@ def _run_true(tmp_path: Path, tag: str, **kw):
     empty_detector.detect.return_value = []
 
     class _Emb:
-        model_version = "sface_2021dec"
+        model_version = "face_recognition_sface_2021dec"
 
         def embed(self, crop):  # noqa: ANN001, ANN202
             arr = np.array((1.0, 0.0, 0.0), dtype=np.float32)
-            return arr / float(np.linalg.norm(arr)), "sface_2021dec"
+            return arr / float(np.linalg.norm(arr)), "face_recognition_sface_2021dec"
 
     base = dict(
         device="1",

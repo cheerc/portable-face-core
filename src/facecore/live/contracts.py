@@ -74,6 +74,7 @@ class ResearchProfile:
     detector_version: str
     quality_policy_version: str
     continuity_max_center_delta_ratio: float | None = None
+    embedding_model_version: str | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != "v1":
@@ -153,7 +154,11 @@ class ResearchProfile:
         return hashlib.sha256(canonical_bytes).hexdigest()
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        # 舊 profile 的序列化與 digest 保持不變。
+        if self.embedding_model_version is None:
+            payload.pop("embedding_model_version")
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ResearchProfile:

@@ -1060,6 +1060,37 @@ def commit_g3_rounds(
     return committed, failed
 
 
+def _arcface_embedder(models_dir: Path) -> Any:
+    from facecore.contracts.manifest import ModelManifest
+    from facecore.pipeline.embed import Embedder
+
+    return Embedder(
+        ModelManifest.arcface_w600k_r50_fp32(), models_dir / "w600k_r50.onnx"
+    )
+
+
+def _validate_embedder_profile(embedder: Any, profile: ResearchProfile) -> str:
+    model_version = getattr(embedder, "model_version", None)
+    declared = profile.embedding_model_version
+    arcface = "arcface-w600k-r50-fp32"
+    sface = "face_recognition_sface_2021dec"
+    incompatible = model_version not in (arcface, sface)
+    if declared is not None and declared != model_version:
+        incompatible = True
+    if model_version == arcface:
+        incompatible |= declared != arcface or profile.match_threshold != 0.60
+    elif model_version == sface:
+        incompatible |= profile.match_threshold == 0.60
+    elif profile.match_threshold == 0.60:
+        incompatible = True
+    if incompatible:
+        raise ModelSetupError(
+            f"模型與 profile 不相容：model={model_version!r}, "
+            f"profile model={declared!r}, threshold={profile.match_threshold}"
+        )
+    return str(model_version)
+
+
 def _build_true_context(
     models: Path,
     corpus: Path | None,
@@ -1115,12 +1146,18 @@ def _build_true_context(
         # gallery failures so the Chinese startup reason names the
         # right cause.
         raise ModelSetupError(f"模型檔載入失敗：{exc}") from exc
+    model_version = _validate_embedder_profile(embedder, profile)
+    generation = (
+        "arcface-112-rgb-minus127.5-div127.5+align3"
+        if model_version == "arcface-w600k-r50-fp32"
+        else TRUE_PIPELINE_GENERATION
+    )
     if gallery_dir is not None:
         gallery = build_gallery_from_folder(
             gallery_dir,
             detector=detector,
             embedder=embedder,
-            generation=TRUE_PIPELINE_GENERATION,
+            generation=generation,
         )
     else:
         assert corpus is not None
@@ -1129,7 +1166,7 @@ def _build_true_context(
             repo_root=models,
             detector=detector,
             embedder=embedder,
-            generation=TRUE_PIPELINE_GENERATION,
+            generation=generation,
         )
     policy = profile_to_policy(profile)
     return ScoringContext(
@@ -1512,7 +1549,11 @@ def cmd_live(
                         corpus,
                         profile,
                         detector_factory=detector_factory,
-                        embedder_factory=embedder_factory,
+                        embedder_factory=(
+                            _arcface_embedder
+                            if embedder_factory is None
+                            else embedder_factory
+                        ),
                         gallery_dir=gallery_dir,
                     )
                 except ModelSetupError as exc:
