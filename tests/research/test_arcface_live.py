@@ -88,6 +88,16 @@ def test_live_rejects_embedder_without_model_identity(tmp_path, capsys):
     assert "模型與 profile 不相容" in capsys.readouterr().err
 
 
+def test_live_rejects_unknown_factory_model_version(tmp_path, capsys):
+    rc = live(
+        tmp_path,
+        profile(0.363),
+        embedder_factory=lambda _: SimpleNamespace(model_version="arcface_r50_v1"),
+    )
+    assert rc == 2
+    assert "模型與 profile 不相容" in capsys.readouterr().err
+
+
 def test_arcface_profile_only_changes_identity_and_match_threshold():
     base = json.loads((ROOT / "profiles/g3-v1.json").read_text())
     arc = json.loads((ROOT / "profiles/g3-v1-arcface-r50.json").read_text())
