@@ -1,5 +1,13 @@
 # Project State
 
+## 專案已收尾（2026-10-09）
+
+**本 repo 已收尾。** decision `d-20261009125609621457-5` 將本 repo 的目的定為「確認人臉辨識流程可用」，並判定此目的已經達成：G3 換用 ArcFace R50 後，operator 已用家人實測接受結果。演算法實驗（W0-b 冒名實測、門檻／support 校正、多模板等）停止，改到 Android 端重新進行。
+
+**後續工作移到新的 Android repo。入口文件：[Android 移植交接](ANDROID-HANDOFF.md)**，內容包括要移植的清單與精確參數、不必重做的結論、Android 端必須重新驗證的項目、已知陷阱，以及建議的技術方案。新 repo 請對 tag `android-handoff-baseline` 讀碼。
+
+本節以下的段落都是收尾前的歷史紀錄，裡面提到的「主線」「下一步」「Next Session」都已經不再有效。
+
 ## G3 模型現況（2026-10-09）
 
 G3 default 採 ArcFace `w600k_r50.onnx` 與 `profiles/g3-v1-arcface-r50.json`；decision `d-20261009075738925782-1` 取代 SFace 不換模型的方向錨點，實作 fork 為 `d-20261009080904985166-2`。用途限自用、非商用、不散佈，權重不進 Git；缺失、hash 不符或 profile 錯配拒絕啟動，無 fallback。
