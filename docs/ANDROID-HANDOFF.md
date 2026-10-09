@@ -141,14 +141,14 @@ Android 端只要照搬**同一組 ONNX 模型與同一套前處理**，選型�
 | `timeout_ms` | 5000 | 辨識窗口 |
 | `max_frames` | 26 | 窗口內最多處理的幀數 |
 | `queue_limit` | 1 | 只保留最新一幀（推論跟不上就丟舊幀） |
-| `continuity_max_center_delta_ratio` | 0.5 | 臉中心位移 ÷ 前一幀臉尺寸 > 0.5 → `invalid_input`（防換人） |
+| `continuity_max_center_delta_ratio` | 0.5 | 臉框中心的歐氏位移 ÷ 前一個可用幀臉框的 `max(w,h)` > 0.5 → `invalid_input`（防換人；`session.py:36-43`） |
 
 **計時**：窗口從相機送出的**第一個影格**開始計時，不從按下按鈕開始，也不要求這一幀有臉或品質合格（`controller.py:303-314` 在評分前就呼叫 anchor；`session.py:273-303` `anchor_recognition`）。開相機花的時間不算在 5 秒內。
 
 **每一幀依下列順序處理**（`session.py` `observe`），任一步驟有結果就停在該步：
 
 0. （防護性檢查）序號倒退、時間倒退，或 model generation／gallery digest 在 session 中途改變 → 以錯誤結束。
-1. 拍攝時間超過 deadline → 結束為 `timeout`（見下方逾時規則）。
+1. 拍攝時間超過 deadline → 轉入下方「逾時規則」；若此前沒有任何可用幀，結果是 `invalid_input` 而不是 `timeout`（`session.py:365` 轉呼叫 `finish`）。
 2. 畫面有**多於 1 張臉** → 結束為 `invalid_input`（`input_multiple_faces`，需重新開始）。
 3. 沒有臉，或品質關卡不過 → **清空**支持窗口，繼續取樣。
 4. 臉中心位移超過 continuity 上限 → 結束為 `invalid_input`（`continuity_jump_detected`）。
@@ -162,7 +162,7 @@ Android 端只要照搬**同一組 ONNX 模型與同一套前處理**，選型�
 - 窗口內完全沒有可用幀 → `invalid_input`，原因再細分為 `no_frames_captured`／`all_frames_rejected_no_face`／`all_frames_rejected_quality`／`all_frames_rejected_mixed_causes`。
 - 有可用幀但沒累積滿 → session 狀態**一律是 `timeout`、identity 為空**。另附一個**最佳幀診斷分級** `best_baseline_{matched|review|unknown}`（`compute_baseline_best_quality`，`session.py:847-885`）：
   - 最佳幀依 `quality_rank` 挑選（同分取較早的 sequence），**不是挑分數最高的那幀**。
-  - 該幀依 `top1 ≥ match` 且 `margin ≥ margin` → matched；否則 `top1 ≥ review_threshold` → review；其餘為 unknown。沒有 runner-up 時一律 unknown。
+  - 該幀若 `top1 ≥ match_threshold` **且**（實測）`margin ≥ margin_threshold` → matched；否則 `top1 ≥ review_threshold` → review；其餘為 unknown。沒有 runner-up 時一律 unknown（`session.py:878-885`）。
   - 分級為 matched 或 review 時，reason codes 是 `insufficient_evidence`、`support_k_of_3`、`best_baseline_*`；為 unknown 時是 `deadline_exceeded`、`best_baseline_unknown`。
   - `best_baseline_matched` 的意思是「有強的單幀，但沒湊滿 3 幀」，這只是診斷用的分級，**不代表辨識成功**。
 
