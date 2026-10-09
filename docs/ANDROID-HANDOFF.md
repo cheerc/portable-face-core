@@ -30,7 +30,7 @@ Android 端只要照搬**同一組 ONNX 模型與同一套前處理**，選型�
 | 已確認 | locator |
 |---|---|
 | 換成 ArcFace R50 後，SFace 時期「本人與家人分數重疊」的問題消失，operator 實測接受 | `d-20261009075738925782-1`、`d-20261009125609621457-5` |
-| repo 內的 ArcFace 實作與 operator 實測用的 reference 數值等價（逐張 embedding 在 1e-6 內） | PR #171；`docs/research/2026-10-09-arcface-r50-license-provenance.md` |
+| repo 內的 ArcFace 實作與 operator 實測用的 reference 數值等價（已通過逐張等價驗收；合成影像上的同類 guard 與容差定義見 `tests/pipeline/test_arcface_embed.py`） | PR #171；`docs/research/2026-10-09-arcface-r50-license-provenance.md` |
 | 模型完整性：SHA 不符或檔案缺失就拒絕啟動，沒有 fallback | `src/facecore/pipeline/embed.py:27-42`、`src/facecore/research/cli.py:1072-1090` |
 
 | **沒有**確認（不要當成已知） | 說明 |
@@ -57,9 +57,9 @@ Android 端只要照搬**同一組 ONNX 模型與同一套前處理**，選型�
 
 ### 2.2 影像解碼與方向
 
-- 相機影格在推論前要先依旋轉角轉正（`frame_pipeline.py:376-385`：`np.rot90`，k = orientation/90）。
+- 相機影格在推論前要先依旋轉角轉正（`frame_pipeline.py:376-385`：`np.rot90`，k = orientation/90；`np.rot90` 的正 k 是逆時針）。Android 的 `rotationDegrees` 方向慣例**不能直接假設與此相同**，換算後要用已知方向的測試影像驗證，再納入 golden 測資。
 - **鏡像只影響預覽顯示，推論一律用原始方向的影像**（`frame_pipeline.py:378-379` 註解）。前鏡頭預覽通常是鏡像，切勿把鏡像後的像素送進模型。
-- 註冊照片：見 2.8 的 EXIF 陷阱。
+- 註冊照片：見第 5 節的 EXIF 陷阱。
 
 ### 2.3 偵測：YuNet（`src/facecore/pipeline/yunet.py`）
 
@@ -104,11 +104,12 @@ Android 端只要照搬**同一組 ONNX 模型與同一套前處理**，選型�
 | 臉的短邊 | ≥ 112 px | 偵測框 `min(w,h)`（原圖像素） |
 | 清晰度 | ≥ 60.0 | 對齊後 luma 的 Laplacian 變異數（4 鄰域核） |
 | 曝光 | mean luma ∈ [40, 215]，且 clipped 比例 ≤ 0.05 | luma = 0.299R+0.587G+0.114B；clipped = luma ≤2 或 ≥253 |
-| 偏航 yaw | ≤ 30° | `|nose_x − 兩眼中點x| / 兩眼距 × 90` |
-| 俯仰 pitch | ≤ 20° | `|nose_y − 眼嘴中線y| / 眼嘴垂直距 × 90` |
+| 偏航 yaw | ≤ 30° | `eye_dx = abs(le_x − re_x)`（**水平**眼距，不是兩眼的歐氏距離）；`yaw = min(abs(n_x − (re_x+le_x)/2) / eye_dx × 90, 90)` |
+| 俯仰 pitch | ≤ 20° | `eye_y`＝兩眼 y 平均、`mouth_y`＝兩嘴角 y 平均、`vertical = abs(mouth_y − eye_y)`；`pitch = min(abs(n_y − (eye_y+mouth_y)/2) / vertical × 90, 90)` |
 | 遮擋 | 0 個低信心 landmark | YuNet 沒有逐點信心，固定為 1.0，所以實際上不會觸發 |
 
-yaw／pitch 是**粗略代理值**，不是真實角度（`measure.py:10-12` 自陳）。
+- yaw／pitch 的退化保護（`measure.py:51-64`）：`eye_dx < 1e-6` 時 yaw、pitch 都回 90；`vertical < 1e-6` 時 pitch 回 90。兩者最後都 clamp 到 90。landmark 順序為右眼、左眼、鼻、右嘴角、左嘴角。
+- yaw／pitch 是**粗略代理值**，不是真實角度（`measure.py:10-12` 自陳）。分母如果改用歐氏距離，判定結果就會跟本 repo 不同。
 
 ### 2.6 Embedding：ArcFace R50（`src/facecore/pipeline/embed.py`、`contracts/manifest.py:49-90`）
 
@@ -116,7 +117,7 @@ yaw／pitch 是**粗略代理值**，不是真實角度（`measure.py:10-12` 自
 |---|---|
 | 輸入 | 對齊後 112×112 **RGB**（不是 BGR） |
 | 前處理 | `(pixel − 127.5) / 127.5`，NCHW float32 |
-| IO 名稱 | 輸入 `input.1` `[N,3,112,112]`；輸出 `683` `[N,512]`。名稱要從 session 讀取，不要寫死 |
+| IO 名稱 | 輸入 `input.1`，shape `[None,3,112,112]`（batch 為動態）；輸出 `683`，宣告 shape `[1,512]`。以上是 2026-10-09 用 ORT 讀取 SHA `4c06341c…` 檔案所得。名稱要從 session 讀取，不要寫死 |
 | 後處理 | **L2 normalize**；norm 為 0 就報錯 |
 | model version | `arcface-w600k-r50-fp32` |
 
@@ -133,7 +134,7 @@ yaw／pitch 是**粗略代理值**，不是真實角度（`measure.py:10-12` 自
 |---|---|---|
 | `match_threshold` | **0.60** | 單幀支持門檻（ArcFace 語境；SFace 的 0.363 不可沿用） |
 | `margin_threshold` | 0.10 | top1 − top2 下限 |
-| `review_threshold` | 0.30 | 逾時時用來把最佳幀歸成 review 或 unknown 的診斷分界 |
+| `review_threshold` | 0.30 | 逾時時替「最佳幀」做診斷分級用（見下方逾時規則） |
 | `required_support` | 3 | 同一身分累積 3 個支持幀即判 `matched` |
 | `min_support_interval_ms` | 200 | 兩個支持幀至少間隔 200ms，間隔不足的幀跳過（不清空） |
 | `sample_interval_ms` | 200 | 取樣間隔 |
@@ -142,11 +143,28 @@ yaw／pitch 是**粗略代理值**，不是真實角度（`measure.py:10-12` 自
 | `queue_limit` | 1 | 只保留最新一幀（推論跟不上就丟舊幀） |
 | `continuity_max_center_delta_ratio` | 0.5 | 臉中心位移 ÷ 前一幀臉尺寸 > 0.5 → `invalid_input`（防換人） |
 
-判定規則：
+**計時**：窗口從相機送出的**第一個影格**開始計時，不從按下按鈕開始，也不要求這一幀有臉或品質合格（`controller.py:303-314` 在評分前就呼叫 anchor；`session.py:273-303` `anchor_recognition`）。開相機花的時間不算在 5 秒內。
 
-- **任一**不支持事件（沒有臉、品質不過、分數或 margin 不足、top1 換人）都會**清空**支持窗口，重新累積。
-- 窗口從**第一個有效影格**開始計時（`session.py:273-303` `anchor_recognition`），不從按下開始。
-- 逾時：完全沒有可用幀 → `invalid_input`，並細分為 `no_frames_captured`／`all_frames_rejected_no_face`／`all_frames_rejected_quality`／`all_frames_rejected_mixed_causes`；有可用幀但湊不滿支持 → `timeout`，附最佳幀落在 review 或 unknown。
+**每一幀依下列順序處理**（`session.py` `observe`），任一步驟有結果就停在該步：
+
+0. （防護性檢查）序號倒退、時間倒退，或 model generation／gallery digest 在 session 中途改變 → 以錯誤結束。
+1. 拍攝時間超過 deadline → 結束為 `timeout`（見下方逾時規則）。
+2. 畫面有**多於 1 張臉** → 結束為 `invalid_input`（`input_multiple_faces`，需重新開始）。
+3. 沒有臉，或品質關卡不過 → **清空**支持窗口，繼續取樣。
+4. 臉中心位移超過 continuity 上限 → 結束為 `invalid_input`（`continuity_jump_detected`）。
+5. 出現以下任一情況就**清空**支持窗口：沒有分數；沒有 runner-up（gallery 只有一個身分）；`top1 < match_threshold`；`margin < margin_threshold`；profile 不允許自動判定 matched（`can_auto_match()` 為假）。
+6. 距離上一個支持幀不足 `min_support_interval_ms` → **跳過**，窗口保持不變；即使這一幀的 top1 換了人也一樣（`session.py:583-603`）。
+7. top1 和目前候選人**不同** → 窗口**重設為只含這一幀**，換成新候選人並從 1 開始累積，不是丟掉這一幀等下一幀（`session.py:605-612`）。top1 相同 → 這一幀加入窗口。
+8. 窗口累積到 `required_support`（3）→ 結束為 `matched`。
+
+**逾時規則**（`session.py` `finish`，`:668-766`）：
+
+- 窗口內完全沒有可用幀 → `invalid_input`，原因再細分為 `no_frames_captured`／`all_frames_rejected_no_face`／`all_frames_rejected_quality`／`all_frames_rejected_mixed_causes`。
+- 有可用幀但沒累積滿 → session 狀態**一律是 `timeout`、identity 為空**。另附一個**最佳幀診斷分級** `best_baseline_{matched|review|unknown}`（`compute_baseline_best_quality`，`session.py:847-885`）：
+  - 最佳幀依 `quality_rank` 挑選（同分取較早的 sequence），**不是挑分數最高的那幀**。
+  - 該幀依 `top1 ≥ match` 且 `margin ≥ margin` → matched；否則 `top1 ≥ review_threshold` → review；其餘為 unknown。沒有 runner-up 時一律 unknown。
+  - 分級為 matched 或 review 時，reason codes 是 `insufficient_evidence`、`support_k_of_3`、`best_baseline_*`；為 unknown 時是 `deadline_exceeded`、`best_baseline_unknown`。
+  - `best_baseline_matched` 的意思是「有強的單幀，但沒湊滿 3 幀」，這只是診斷用的分級，**不代表辨識成功**。
 
 ### 2.9 註冊（gallery）
 
@@ -169,12 +187,12 @@ yaw／pitch 是**粗略代理值**，不是真實角度（`measure.py:10-12` 自
 | 結論 | 依據 |
 |---|---|
 | **不要再評估 SFace**：本人與未註冊家人的分數範圍重疊，任何單一門檻都分不開 | `d-20261009075738925782-1`（依據含 operator 本機的 2026-10-08 離線評估，該報告在 repo 外、不入 Git） |
-| **不要再評估 Facenet512**：分數整體偏高，SFace 的門檻不能套用，也不比 ArcFace 好 | `docs/research/2026-09-30-d6-deepface-comparison.md`；PR #136 |
+| **不再評估 Facenet512**：這是收尾決策，不是比較結果。事實面只有一點：D6 只比較過 Facenet512 與 SFace，Facenet512 的分數整體偏高，SFace 的門檻不能沿用。該報告明示「不宣稱 Facenet512 較好或較差」，**也沒有和 ArcFace 比較過** | `docs/research/2026-09-30-d6-deepface-comparison.md:15, :94`；PR #136；`d-20261009125609621457-5` |
 | deepface 的 Keras ArcFace 跑不起來，與 InsightFace ONNX 版無關，不必追 | 同上 §6.3 |
 | **MBF（`w600k_mbf.onnx`，13MB）的區分力明顯弱於 R50**，不宜直接當預設 | `d-20261009075738925782-1` 第 5 點 |
 | 偵測輸入必須等比縮放＋置中補零；非等比縮放會傷害分數 | ADR 0009 |
 | 對齊要用 5 點相似變換，不能只裁框再縮放 | ADR 0009 Decision 2；`align.py` contract v3 |
-| 計時從第一個有效影格開始；把開相機的時間算進窗口會造成大量 `invalid_input` | `docs/mac-demo-baseline-d0.md`；D1（PR #119–#125） |
+| 計時要從相機送出的第一個影格開始，把開相機的時間算進窗口會造成大量 `invalid_input` | `docs/mac-demo-baseline-d0.md`；D1（PR #119–#125） |
 | D5 靜態照片集（SFace 時期）裡，品質拒絕全部來自**曝光關卡**；換鏡頭時最先要看曝光拒絕率，而不是先懷疑模型 | `docs/research/2026-09-30-d5-static-baseline.md`；`docs/PROJECT-STATE.md`「D5 現況」 |
 | 授權審查（YuNet MIT；ArcFace 限非商業研究） | `docs/research/2026-10-09-arcface-r50-license-provenance.md`；ADR 0011 |
 | ORT mobile checker：YuNet 可整張交給 NNAPI；R50 必須**固定輸入 shape** 才能交給 NNAPI／CoreML NN | `docs/research/2026-09-30-d6-m-onnx-mobile-usability.md`；`manifest.py:76-90` |
@@ -197,7 +215,7 @@ yaw／pitch 是**粗略代理值**，不是真實角度（`measure.py:10-12` 自
 - **YuNet 2023mar 只接受 640×640**，其他 shape 會被拒絕（`yunet.py:12`）。
 - **ArcFace ONNX 的 IO 名稱不是語意名**（`input.1`／`683`），要從 session 讀取。
 - **ArcFace 要 RGB、YuNet 要 BGR**，兩者不同，最容易接錯。
-- **NNAPI 已被 Google 從 Android 15 起 deprecate**，ONNX Runtime 也已標記其 NNAPI EP 為 deprecated（見第 6 節來源），不要以它為主路徑。
+- **Google 已從 Android 15 起 deprecate NNAPI**。ONNX Runtime v1.21.0 release notes 也寫明「Marked NNAPI EP for deprecation (following Google's deprecation of NNAPI)」（來源見第 6 節）。不要把 NNAPI 當主路徑。
 - R50 原始模型是 dynamic shape；要用 NPU 或 GPU 類 EP，通常得先輸出固定 batch=1 的版本。改了 graph 就要重驗 golden 測資。
 - w600k ONNX 有 initializer 出現在 graph inputs（ORT 會警告），影響部分圖最佳化；可用 ORT 官方工具 `remove_initializer_from_input.py` 清除，但這也算改模型，要重驗。
 - 單幀分數過門檻不等於 matched，必須連續 3 個支持幀；中途任何拒絕都會歸零。這是刻意設計（寧可錯殺，不可錯放；`d-20261003082352062664-3`）。
@@ -213,7 +231,7 @@ yaw／pitch 是**粗略代理值**，不是真實角度（`measure.py:10-12` 自
 | 語言 | Kotlin | Android 官方主語言 |
 | 相機 | **CameraX `ImageAnalysis`**，背壓策略 `STRATEGY_KEEP_ONLY_LATEST` | 對應 `queue_limit=1`（只處理最新一幀）；用 `ImageInfo.rotationDegrees` 轉正（2.2） |
 | 推論 | **ONNX Runtime Android**（Maven `com.microsoft.onnxruntime:onnxruntime-android`），YuNet 與 ArcFace 都用它 | 直接吃現有 `.onnx`，不必轉檔，數值最容易對齊。ORT 行動部署指南建議：非量化模型先用 **XNNPACK EP**，量化模型先用 CPU EP；預建的 Android 套件已內含 XNNPACK |
-| 加速（選用） | 實測不夠快時：Snapdragon 機型可試 **QNN EP**（需要固定 shape，而且要 profile 確認真的跑在 NPU 上）；跨廠牌的 GPU 則要改走 **LiteRT**（`.onnx`→`.tflite` 轉檔），轉完必須重驗 golden 測資 | NNAPI 已 deprecate；ORT 目前在 Android 上沒有通用的 GPU EP |
+| 加速（選用） | 實測不夠快時：Snapdragon 機型可試 **QNN EP**（需要固定 shape，而且要 profile 確認真的跑在 NPU 上）；跨廠牌的 GPU 則要改走 **LiteRT**（`.onnx`→`.tflite` 轉檔），轉完必須重驗 golden 測資 | NNAPI 已 deprecate（見第 5 節）。本文件沒有查證 ORT 在 Android 上是否已有通用 GPU EP，新 repo 開工時請再確認 |
 | 對齊／影像處理 | Kotlin 移植 `similarity_transform`（約 40 行），warp 用 OpenCV Android `warpAffine(INTER_LINEAR, BORDER_REPLICATE)`，或自寫 bilinear 加 edge padding | 要對齊本 repo 的 align3（2.4），用 golden 測資驗收 |
 | 偵測（替代方案） | 也可以用 OpenCV `FaceDetectorYN` 載入同一份 YuNet | 少寫解碼程式，但要驗證門檻與 NMS 參數一致（0.9／0.3） |
 | **不建議** | ML Kit Face Detection、MediaPipe Face Detector 取代 YuNet | landmark 定義與框不同，對齊結果會改變，第 3 節結論就不能沿用。ML Kit 本身也不做身分辨識 |
@@ -226,7 +244,7 @@ yaw／pitch 是**粗略代理值**，不是真實角度（`measure.py:10-12` 自
 - ONNX Runtime 行動部署指南（EP 選擇建議）：https://onnxruntime.ai/docs/tutorials/mobile/
 - ONNX Runtime XNNPACK EP：https://onnxruntime.ai/docs/execution-providers/Xnnpack-ExecutionProvider.html
 - ONNX Runtime QNN EP：https://onnxruntime.ai/docs/execution-providers/QNN-ExecutionProvider.html
-- ONNX Runtime NNAPI EP 頁與 deprecate 討論：https://onnxruntime.ai/docs/execution-providers/NNAPI-ExecutionProvider.html 、https://github.com/microsoft/onnxruntime/issues/23206
+- ONNX Runtime v1.21.0 release notes（NNAPI EP 標記為 deprecation）：https://github.com/microsoft/onnxruntime/releases/tag/v1.21.0
 - Android NNAPI（Android 15 起 deprecated）與遷移指南：https://developer.android.com/ndk/guides/neuralnetworks 、https://developer.android.com/ndk/guides/neuralnetworks/migration-guide
 
 ---
